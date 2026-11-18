@@ -110,9 +110,20 @@ test('a repair plan can be drafted without a model and degrades gracefully', asy
   assert.match(offline.plan.error, /offline/);
 });
 
+test('a later passing run settles the failures still queued', async () => {
+  await sentinel.runSentinelNow({ run: runWith(failing, false) });
+  assert.ok(sentinel.sentinelStatus().openFailures > 0, 'the failing run leaves open work');
+  await sentinel.runSentinelNow({ run: runWith(passing, true) });
+  const status = sentinel.sentinelStatus();
+  assert.equal(status.openFailures, 0);
+  assert.ok(status.failures.some((f) => f.status === 'fixed'), 'the queued failures are marked fixed');
+  const queue = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'must-check', 'repair-queue.json'), 'utf8'));
+  assert.equal(queue.open, 0, 'the repair queue file no longer lists them as open');
+});
+
 test('watching ignores machine state and test scratch folders', () => {
-  const ignored = ['data\\db.json', 'server\\server.log', 'test\\tmp-sentinel-x\\f.txt', 'data\\captures\\a.png'];
-  const watched = ['public\\app.js', 'server\\sentinel.js', 'package.json'];
+  const ignored = ['data\db.json', 'server\server.log', 'test\tmp-sentinel-x\f.txt', 'data\captures\a.png'];
+  const watched = ['public\app.js', 'server\sentinel.js', 'package.json'];
   for (const file of ignored) assert.ok(sentinel.__sentinelIgnored.test(file), `${file} should be ignored`);
   for (const file of watched) assert.ok(!sentinel.__sentinelIgnored.test(file), `${file} should be watched`);
 });
