@@ -52,6 +52,21 @@ let tickTimer = null;
 const MAX_RUNS = 120;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+// Retry backoff is a control boundary, not an uninterruptible sleep. Paused
+// time does not consume the delay, and cancellation must prevent another try.
+async function waitBeforeRetry(run, ms) {
+  let remaining = ms;
+  while (remaining > 0) {
+    await waitWhileRunPaused(run);
+    if (run.cancelRequested) return;
+    const chunk = Math.min(250, remaining);
+    const started = Date.now();
+    await sleep(chunk);
+    remaining -= Math.min(chunk, Date.now() - started);
+  }
+  await waitWhileRunPaused(run);
+}
+
 async function waitWhileRunPaused(run) {
   let paused = false;
   while (run.pauseRequested && !run.cancelRequested) {
@@ -1440,6 +1455,11 @@ async function executeRun(runId) {
       }
     } else {
       for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        await waitWhileRunPaused(run);
+        if (run.cancelRequested) {
+          cancelled = true;
+          break;
+        }
         step.attempts = attempt;
         try {
           const ctx = {
@@ -1538,13 +1558,13 @@ async function executeRun(runId) {
             step.evidenceIds.push(evidence.id);
           }
           pushLog(run, 'warn', `Attempt ${attempt}/${maxAttempts} failed: ${lastError}`, step.id);
-          if (attempt < maxAttempts) {
+          if (attempt < maxAttempts && !run.cancelRequested) {
             const pause = Math.max(0, Number(run.policy?.pauseBeforeRetryMs || 0));
-            if (pause) await sleep(Math.min(pause, 10000));
-            else await sleep(300);
+            await waitBeforeRetry(run, pause ? Math.min(pause, 10000) : 300);
           }
         }
       }
+      if (run.cancelRequested && !succeeded) cancelled = true;
       if (!succeeded && !cancelled && !skipped && repairEnabled) {
         step.repairStartedAt = now();
         repairResult = await attemptRepair(step, lastError);

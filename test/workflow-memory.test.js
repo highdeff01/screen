@@ -216,6 +216,26 @@ test('a recent failed run applies a success-trend penalty to matching memory', (
   assert.ok(after.score < before.score);
 });
 
+test('template lookup backfills historical runs before selecting a live template', () => {
+  const d = store.db();
+  const previousMemory = d.workflowMemory;
+  const previousRuns = d.runs;
+  try {
+    d.workflowMemory = [];
+    d.runs = [
+      { ...run, id: 'simulated_template', dryRun: true, endedAt: '2026-11-17T12:00:00.000Z' },
+      { ...run, id: 'live_template', endedAt: '2026-11-16T12:00:00.000Z' },
+    ];
+    const result = memory.recallWorkflowTemplate({ apps: ['Kiro'] });
+    assert.equal(result.runId, 'live_template');
+    assert.equal(result.mode, 'live');
+    assert.equal(d.workflowMemory.length, 2);
+  } finally {
+    d.workflowMemory = previousMemory;
+    d.runs = previousRuns;
+  }
+});
+
 test('a changed app version blocks reuse of a versioned memory', () => {
   const versioned = {
     ...run,

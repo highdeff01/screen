@@ -176,6 +176,42 @@ function appKey(value) {
   return clean(value || '', 90).replace(/\.exe$/i, '').toLowerCase();
 }
 
+function reconcileContinuation(c, run, { create = false } = {}) {
+  let continuation = c.continuations.find((entry) => entry.runId === run.id);
+  if (!continuation && create && run.status === 'failed') {
+    const workflow = run.workflowSnapshot || db().workflows.find((entry) => entry.id === run.workflowId) || {};
+    continuation = {
+      id: uid('cont'),
+      runId: run.id,
+      workflowId: run.workflowId,
+      workflowName: run.workflowName || workflow.name || '',
+      status: 'needs_attention',
+      reason: run.lastError || run.failureSignature || 'Run did not complete.',
+      retryRunId: null,
+      at: now(),
+    };
+    c.continuations.unshift(continuation);
+    c.continuations = c.continuations.slice(0, MAX_CONTINUATIONS);
+  }
+  if (!continuation) return;
+
+  const recoveryRetryId = run.recovery?.status === 'retrying' && run.recovery.retryRunId !== run.id
+    ? run.recovery.retryRunId
+    : null;
+  const retryId = recoveryRetryId || continuation.retryRunId;
+  const retry = retryId ? db().runs.find((entry) => entry.id === retryId) : null;
+  if (retryId) continuation.retryRunId = retryId;
+  if (run.status === 'passed') {
+    if (continuation.status !== 'completed') continuation.checkedAt = now();
+    continuation.status = 'completed';
+  } else if (retry?.status === 'passed') continuation.status = 'completed';
+  else if (retry?.status === 'failed') continuation.status = 'needs_attention';
+  else if (retryId) continuation.status = 'retrying';
+  else if (run.status === 'failed' || ['retrying', 'auto_pending'].includes(continuation.status)) {
+    continuation.status = 'needs_attention';
+  }
+}
+
 export function learnRun(run) {
   if (
     !run ||
@@ -186,7 +222,11 @@ export function learnRun(run) {
     return null;
   }
   const c = ensureCompanion();
-  if (c.learnedRunIds.includes(run.id)) return c;
+  reconcileContinuation(c, run, { create: true });
+  if (c.learnedRunIds.includes(run.id)) {
+    persist();
+    return c;
+  }
   const workflow = run.workflowSnapshot || db().workflows.find((entry) => entry.id === run.workflowId) || {};
   const steps = Array.isArray(run.steps) ? run.steps : [];
   const app = run.presenter?.app || {};
@@ -261,33 +301,6 @@ export function learnRun(run) {
       goal: clip(workflow.description || run.presenter?.goal || '', 220),
     }, 1, 50);
   }
-  const existingContinuation = c.continuations.find((entry) => entry.runId === run.id);
-  if (run.status === 'failed') {
-    if (existingContinuation) {
-      existingContinuation.status = run.recovery?.status === 'retrying'
-        ? 'retrying'
-        : 'needs_attention';
-      existingContinuation.retryRunId = run.recovery?.retryRunId || existingContinuation.retryRunId || null;
-      existingContinuation.at = existingContinuation.at || now();
-    } else {
-      c.continuations.unshift({
-        id: uid('cont'),
-        runId: run.id,
-        workflowId: run.workflowId,
-        workflowName: run.workflowName || workflow.name || '',
-        status: run.recovery?.status === 'retrying'
-          ? 'retrying'
-          : 'needs_attention',
-        reason: run.lastError || run.failureSignature || 'Run did not complete.',
-        retryRunId: run.recovery?.retryRunId || null,
-        at: now(),
-      });
-    }
-  } else if (run.status === 'passed' && existingContinuation) {
-    existingContinuation.status = 'completed';
-    existingContinuation.checkedAt = now();
-  }
-  c.continuations = c.continuations.slice(0, MAX_CONTINUATIONS);
   c.learnedRunIds = [run.id, ...c.learnedRunIds.filter((id) => id !== run.id)].slice(0, 200);
   c.habits.apps = c.habits.apps.slice(0, MAX_HABITS);
   c.habits.files = c.habits.files.slice(0, MAX_HABITS);
@@ -625,6 +638,9 @@ export async function scanCompanion({ system = true } = {}) {
   if (!c.enabled || setting('companionEnabled', true) === false) return companionState();
   for (const run of db().runs.slice(0, 60)) {
     if (!c.learnedRunIds.includes(run.id)) learnRun(run);
+    else if (!run.shadow && setting('companionLearning', true) !== false) {
+      reconcileContinuation(c, run, { create: true });
+    }
   }
   c.habits.apps = c.habits.apps.filter(
     (app) => !looksLikeFilePath(app.name) || /\.exe$/i.test(String(app.name || ''))
@@ -653,18 +669,7 @@ export async function scanCompanion({ system = true } = {}) {
   for (const continuation of c.continuations) {
     const run = db().runs.find((entry) => entry.id === continuation.runId);
     if (!run) continue;
-    const retryId =
-      continuation.retryRunId ||
-      (run.recovery?.status === 'retrying' && run.recovery.retryRunId !== run.id ? run.recovery.retryRunId : null);
-    const retry = retryId ? db().runs.find((entry) => entry.id === retryId) : null;
-    if (retryId) continuation.retryRunId = retryId;
-    if (run.status === 'passed') continuation.status = 'completed';
-    else if (retry?.status === 'passed') continuation.status = 'completed';
-    else if (retry?.status === 'failed') continuation.status = 'needs_attention';
-    else if (retryId) continuation.status = 'retrying';
-    else if (['retrying', 'auto_pending'].includes(continuation.status)) {
-      continuation.status = 'needs_attention';
-    }
+    reconcileContinuation(c, run);
   }
   persist();
   return companionState();

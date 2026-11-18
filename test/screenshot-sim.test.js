@@ -148,6 +148,86 @@ test('a step with no capture is reported as uncovered instead of guessed', () =>
   assert.ok(result.suggestions.some((line) => /live monitor|screenshot steps/i.test(line)));
 });
 
+test('proxy captures never confirm a step and cannot become a future baseline', () => {
+  const base = Date.now() - 60000;
+  const before = writeFrame('proxy-before.png', [0, 0, 0], base - 500);
+  const later = writeFrame('proxy-later.png', [255, 255, 255], base + 5000);
+  const run = { evidence: [], steps: [
+    { id: 'a', type: 'click', name: 'Click A', status: 'passed', startedAt: new Date(base).toISOString(), endedAt: new Date(base + 500).toISOString() },
+    { id: 'b', type: 'click', name: 'Click B', status: 'passed', startedAt: new Date(base + 1000).toISOString(), endedAt: new Date(base + 5500).toISOString() },
+  ] };
+  const result = sim.analyzeRun(run, { frames: [later, before], resolve: identity });
+  assert.equal(result.breakdown[0].verdict, 'unclear');
+  assert.equal(result.breakdown[0].changedPct, 100);
+  assert.equal(result.breakdown[1].before, before.path);
+  assert.equal(result.breakdown[1].verdict, 'confirmed');
+  assert.equal(result.summary.verdict, 'needs_review');
+  assert.ok(!result.suggestions.some((text) => /Pixel evidence agrees/.test(text)));
+});
+
+test('an old capture or a capture just before the step is not an after frame', () => {
+  const base = Date.now() - 60000;
+  const old = writeFrame('old.png', [0, 0, 0], base - 30000);
+  const during = writeFrame('during.png', [255, 255, 255], base + 50);
+  const run = { evidence: [], steps: [{ id: 'a', type: 'click', name: 'Click', status: 'passed', startedAt: new Date(base).toISOString(), endedAt: new Date(base + 100).toISOString() }] };
+  const result = sim.analyzeRun(run, { frames: [old, during], resolve: identity });
+  assert.equal(result.breakdown[0].verdict, 'missing_baseline');
+  assert.equal(result.summary.verdict, 'needs_review');
+  const justBefore = writeFrame('just-before.png', [0, 0, 0], base - 50);
+  const baselineOnly = sim.analyzeRun(run, { frames: [justBefore], resolve: identity });
+  assert.equal(baselineOnly.breakdown[0].verdict, 'missing');
+});
+
+test('invalid evidence paths do not abort analysis of other captures', () => {
+  const base = Date.now() - 60000;
+  const frame = writeFrame('fallback.png', [0, 0, 0], base + 50);
+  const run = { evidence: [{ id: 'ev', path: '../escape.png', stepId: 'a' }], steps: [
+    { id: 'a', type: 'click', name: 'Click', status: 'passed', startedAt: new Date(base).toISOString(), endedAt: new Date(base + 100).toISOString() },
+  ] };
+  const result = sim.analyzeRun(run, { frames: [frame], resolve: (target) => { if (target.includes('..')) throw new Error('outside root'); return target; } });
+  assert.equal(result.breakdown[0].after, frame.path);
+  assert.equal(result.breakdown[0].verdict, 'missing_baseline');
+});
+
+test('queued simulations analyze stored run evidence and expose the completed result', async () => {
+  const base = Date.now() - 60000;
+  const before = path.join(store.CAPTURES, 'job-before.png');
+  const after = path.join(store.CAPTURES, 'job-after.png');
+  fs.writeFileSync(before, makePng(64, 36, [0, 0, 0]));
+  fs.writeFileSync(after, makePng(64, 36, [255, 255, 255]));
+  fs.utimesSync(before, (base - 1000) / 1000, (base - 1000) / 1000);
+  fs.utimesSync(after, (base + 500) / 1000, (base + 500) / 1000);
+  const run = { id: 'queued-run', workflowName: 'Queued', evidence: [
+    { id: 'ev', stepId: 'click', path: path.relative(store.DATA, after), kind: 'screenshot' },
+  ], steps: [
+    { id: 'click', name: 'Click', type: 'click', status: 'passed', startedAt: new Date(base).toISOString(), endedAt: new Date(base + 1000).toISOString() },
+  ] };
+  store.db().runs.push(run);
+  const record = sim.startSimulation(run.id);
+  assert.equal(record.status, 'running');
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  const result = sim.findSimulation(record.id);
+  assert.equal(result.status, 'completed');
+  assert.equal(result.breakdown[0].verdict, 'confirmed');
+  assert.equal(result.summary.verdict, 'agrees');
+  assert.equal(sim.simulationSummary(result).breakdown[0].changedPct, 100);
+  assert.equal(sim.listSimulations(run.id)[0].id, record.id);
+});
+
+test('PNG decoding rejects truncated scanlines and oversized headers', () => {
+  const header = (width, height) => {
+    const data = Buffer.alloc(13);
+    data.writeUInt32BE(width, 0); data.writeUInt32BE(height, 4); data[8] = 8; data[9] = 2;
+    return chunk('IHDR', data);
+  };
+  const png = (width, height, raw) => Buffer.concat([
+    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), header(width, height),
+    chunk('IDAT', zlib.deflateSync(raw)), chunk('IEND', Buffer.alloc(0)),
+  ]);
+  assert.throws(() => sim.decodePng(png(1, 2, Buffer.alloc(6))), /length/);
+  assert.throws(() => sim.decodePng(png(100000, 100000, Buffer.alloc(0))), /too large/);
+});
+
 test('simulated runs are labelled instead of judged from placeholder pixels', () => {
   const run = {
     id: 'run_dry',
@@ -156,8 +236,12 @@ test('simulated runs are labelled instead of judged from placeholder pixels', ()
     evidence: [],
     steps: [{ id: 'a', type: 'click', name: 'Click', status: 'passed', startedAt: new Date().toISOString(), endedAt: new Date().toISOString() }],
   };
-  const result = sim.analyzeRun(run, { frames: [], resolve: identity });
+  const timestamp = Date.parse(run.steps[0].startedAt);
+  const unrelated = writeFrame('dry-unrelated.png', [255, 255, 255], timestamp);
+  const result = sim.analyzeRun(run, { frames: [unrelated], resolve: identity });
   assert.equal(result.breakdown[0].verdict, 'simulated');
+  assert.equal(result.coverage.withFrames, 0);
+  assert.equal(result.summary.verdict, 'no_evidence');
   assert.equal(result.mode, 'simulated');
   assert.ok(result.suggestions.some((line) => /live mode/i.test(line)));
 });

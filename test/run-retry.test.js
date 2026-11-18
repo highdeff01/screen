@@ -104,3 +104,84 @@ test('retryRun accepts a valid plan that has no type step', async () => {
   }
   store.flush();
 });
+
+function retryWorkflow(id, pauseBeforeRetryMs = 500) {
+  const d = store.db();
+  d.settings.autoNotes = false;
+  d.settings.autoRecoverFailures = false;
+  d.settings.continuityAutoContinue = false;
+  const workflow = {
+    id,
+    name: 'Retry coordination',
+    description: 'Record a note.',
+    status: 'ready',
+    failurePolicy: { onFailure: 'retry', maxRetries: 1, pauseBeforeRetryMs },
+    steps: [{ id: `${id}_step`, type: 'note', name: 'Record note', params: { text: 'test' } }],
+  };
+  d.workflows = [workflow];
+  d.runs = [];
+  return workflow;
+}
+
+async function until(predicate, timeoutMs = 3000) {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() >= deadline) throw new Error('Timed out waiting for run state');
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
+test('cancellation during retry backoff prevents another attempt', async () => {
+  const workflow = retryWorkflow('wf_cancel_backoff', 2000);
+  let attempts = 0;
+  const run = engine.createRun(workflow, {
+    dryRun: true,
+    probe: { executeStep: async () => { attempts += 1; throw new Error('first attempt failed'); } },
+  });
+  await until(() => run.log.some((entry) => entry.message.includes('Attempt 1/2 failed')));
+  engine.cancelRun(run.id);
+  await until(() => run.status === 'cancelled', 1500);
+  assert.equal(attempts, 1);
+  assert.equal(run.steps[0].attempts, 1);
+  assert.equal(run.steps[0].status, 'skipped');
+});
+
+test('pause during retry backoff holds the retry until resumed', async () => {
+  const workflow = retryWorkflow('wf_pause_backoff', 300);
+  let attempts = 0;
+  const run = engine.createRun(workflow, {
+    dryRun: true,
+    probe: { executeStep: async () => {
+      attempts += 1;
+      if (attempts === 1) throw new Error('first attempt failed');
+      return { output: 'done', evidence: [] };
+    } },
+  });
+  await until(() => run.log.some((entry) => entry.message.includes('Attempt 1/2 failed')));
+  engine.controlRun(run.id, 'pause');
+  await until(() => run.paused);
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  assert.equal(attempts, 1);
+  assert.equal(run.status, 'running');
+  engine.controlRun(run.id, 'resume');
+  await until(() => !['queued', 'running'].includes(run.status));
+  assert.equal(attempts, 2);
+  assert.equal(run.steps[0].status, 'passed');
+  assert.equal(run.retryCount, 1);
+});
+
+test('cancellation during a failed attempt does not start a retry', async () => {
+  const workflow = retryWorkflow('wf_cancel_attempt');
+  let attempts = 0;
+  const run = engine.createRun(workflow, {
+    dryRun: true,
+    probe: { executeStep: async (step, ctx) => {
+      attempts += 1;
+      engine.cancelRun(ctx.runId);
+      throw new Error('failed while cancelling');
+    } },
+  });
+  await until(() => run.status === 'cancelled');
+  assert.equal(attempts, 1);
+  assert.equal(run.steps[0].status, 'skipped');
+});

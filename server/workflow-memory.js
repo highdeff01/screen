@@ -301,6 +301,7 @@ export function recallWorkflowTemplate({ apps = [], versions = {}, limit = 1 } =
     .map((value) => String(value || '').trim().toLowerCase())
     .filter(Boolean);
   if (!wanted.length) return null;
+  if (!d.workflowMemory.length) backfillWorkflowMemory();
   const currentVersions = Object.fromEntries(
     Object.entries(versions || {})
       .map(([key, value]) => [String(key).toLowerCase(), String(value || '').trim().toLowerCase()])

@@ -26,7 +26,8 @@ import { visualTesterStatus } from './visual-tester.js';
 
 const GRID_W = 32;
 const GRID_H = 18;
-const MAX_FRAMES = 40;
+const MAX_BASELINE_AGE_MS = 20000;
+const MAX_PNG_BYTES = 64 * 1024 * 1024;
 const MAX_SIMULATIONS = 16;
 const PNG_SIGNATURE = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
 const IMAGE_PATH = /\.(?:png|jpe?g|webp)$/i;
@@ -65,6 +66,7 @@ export function decodePng(buffer) {
     const dataEnd = dataStart + length;
     if (dataEnd + 4 > buffer.length) throw new Error('Truncated PNG chunk.');
     if (type === 'IHDR') {
+      if (length !== 13) throw new Error('Invalid PNG header.');
       width = buffer.readUInt32BE(dataStart);
       height = buffer.readUInt32BE(dataStart + 4);
       bitDepth = buffer[dataStart + 8];
@@ -83,8 +85,10 @@ export function decodePng(buffer) {
   if (colorType !== 2 && colorType !== 6) throw new Error(`Unsupported PNG color type ${colorType}.`);
   const bpp = colorType === 6 ? 4 : 3;
   const stride = width * bpp;
-  const raw = zlib.inflateSync(Buffer.concat(idat));
-  if (raw.length < stride * height) throw new Error('PNG pixel data is short.');
+  const rawSize = (stride + 1) * height;
+  if (!Number.isSafeInteger(rawSize) || rawSize > MAX_PNG_BYTES) throw new Error('PNG is too large to decode.');
+  const raw = zlib.inflateSync(Buffer.concat(idat), { maxOutputLength: rawSize });
+  if (raw.length !== rawSize) throw new Error('PNG pixel data has an invalid length.');
   const pixels = Buffer.alloc(stride * height);
   let pos = 0;
   for (let y = 0; y < height; y++) {
@@ -236,32 +240,30 @@ function captureIndex(resolve) {
   }
 }
 
-function lastBefore(frames, at) {
-  let candidate = null;
-  for (const frame of frames) {
-    if (frame.mtimeMs <= at) candidate = frame;
-    else break;
-  }
-  return candidate;
-}
-
 function framesForStep(run, step, frames, resolve) {
   const explicit = evidenceFor(run, step)
     .map((entry) => {
-      const file = resolve(entry.path);
-      if (!file || !fs.existsSync(file)) return null;
-      const stat = fs.statSync(file);
-      return { path: file, mtimeMs: stat.mtimeMs, source: 'evidence' };
+      try {
+        const file = resolve(entry.path);
+        if (!file) return null;
+        const stat = fs.statSync(file);
+        return { path: file, mtimeMs: stat.mtimeMs, source: 'evidence' };
+      } catch {
+        return null;
+      }
     })
-    .filter(Boolean);
+    .filter(Boolean)
+    .sort((a, b) => a.mtimeMs - b.mtimeMs);
   const startedAt = toMs(step.startedAt);
-  const endedAt = toMs(step.endedAt) || startedAt;
+  const endedAt = toMs(step.endedAt) ?? startedAt;
   const windowFrames =
-    startedAt && endedAt
-      ? frames.filter((frame) => frame.mtimeMs >= startedAt - 100 && frame.mtimeMs <= endedAt + 200)
+    startedAt != null && endedAt != null
+      ? frames.filter((frame) => frame.mtimeMs >= startedAt && frame.mtimeMs <= endedAt)
       : [];
   const owned = explicit.length ? explicit : windowFrames;
-  const before = startedAt ? frames.filter((frame) => frame.mtimeMs < startedAt - 300).slice(-1)[0] || null : null;
+  const before = startedAt != null
+    ? frames.filter((frame) => frame.mtimeMs < startedAt && startedAt - frame.mtimeMs <= MAX_BASELINE_AGE_MS).at(-1) || null
+    : null;
   if (owned.length) {
     return {
       frames: owned.slice(-3),
@@ -290,6 +292,9 @@ function suggestionFor(entry) {
   if (entry.verdict === 'missing') {
     return `No screenshot covers “${entry.name}”. Add a screenshot step after it (or keep the live monitor running) so the step can be judged from pixels.`;
   }
+  if (entry.verdict === 'missing_baseline') {
+    return `“${entry.name}” has no recent baseline. Capture the screen before the step so its change can be compared.`;
+  }
   if (entry.verdict === 'failed_with_change') {
     return `“${entry.name}” failed even though the screen changed: the failure is probably in the assertion, a late check or the following step. Re-read the error before editing this step.`;
   }
@@ -308,7 +313,7 @@ function suggestionFor(entry) {
  */
 export function analyzeRun(run, { resolve = (target) => resolveInside(DATA, target), frames = null } = {}) {
   const steps = Array.isArray(run?.steps) ? run.steps : [];
-  const pool = frames || captureIndex(resolve);
+  const pool = run?.dryRun ? [] : [...(frames || captureIndex(resolve))].sort((a, b) => a.mtimeMs - b.mtimeMs);
   const breakdown = [];
   let previousFrame = null;
   let confirmed = 0;
@@ -321,6 +326,14 @@ export function analyzeRun(run, { resolve = (target) => resolveInside(DATA, targ
   const usedFrames = new Set();
 
   steps.forEach((step, index) => {
+    if (run?.dryRun) {
+      breakdown.push({
+        seq: index + 1, stepId: step.id, name: step.name, type: step.type, status: step.status,
+        expectedChange: expectsScreenChange(step), verdict: 'simulated', frames: 0, source: 'none',
+        note: 'Simulated runs record labelled placeholders, not pixels.', suggestion: '',
+      });
+      return;
+    }
     const picked = framesForStep(run, step, pool, resolve);
     let after = null;
     let decodeError = null;
@@ -357,22 +370,24 @@ export function analyzeRun(run, { resolve = (target) => resolveInside(DATA, targ
         type: step.type,
         status: step.status,
         expectedChange: expectsScreenChange(step),
-        verdict: run?.dryRun ? 'simulated' : 'missing',
+        verdict: 'missing',
         frames: 0,
         source: picked.source,
-        note: run?.dryRun ? 'Simulated runs record labelled placeholders, not pixels.' : 'No capture covers this step.',
+        note: 'No capture covers this step.',
       };
       entry.suggestion = suggestionFor(entry);
       breakdown.push(entry);
-      if (!run?.dryRun) missing++;
+      missing++;
       return;
     }
-    let before = previousFrame;
-    if (picked.before) {
+    const startedAt = toMs(step.startedAt);
+    let before = previousFrame && startedAt != null && previousFrame.mtimeMs < startedAt &&
+      startedAt - previousFrame.mtimeMs <= MAX_BASELINE_AGE_MS ? previousFrame : null;
+    if (picked.before && (!before || picked.before.mtimeMs > before.mtimeMs)) {
       try {
         before = signatureOfFile(picked.before.path);
       } catch {
-        before = previousFrame;
+        // Keep the previous usable baseline, if any.
       }
     }
     const expected = expectsScreenChange(step);
@@ -383,10 +398,10 @@ export function analyzeRun(run, { resolve = (target) => resolveInside(DATA, targ
       compared++;
     }
     let verdict;
-    if (!delta) verdict = expected ? 'missing_baseline' : 'observed';
+    if (expected && proxy) verdict = 'unclear';
+    else if (!delta) verdict = expected ? 'missing_baseline' : 'observed';
     else if (expected) {
-      if (delta.changedPct >= 1) verdict = step.status === 'failed' ? 'failed_with_change' : 'confirmed';
-      else if (proxy) verdict = step.status === 'passed' ? 'unclear' : 'no_change';
+      if (delta.changedPct >= 1) verdict = step.status === 'failed' ? 'failed_with_change' : step.status === 'passed' ? 'confirmed' : 'observed';
       else verdict = step.status === 'passed' ? 'mismatch' : 'no_change';
     } else verdict = 'observed';
 
@@ -435,12 +450,13 @@ export function analyzeRun(run, { resolve = (target) => resolveInside(DATA, targ
   for (const entry of breakdown) {
     if (entry.verdict !== 'missing' && entry.suggestion) suggestions.push(entry.suggestion);
   }
-  if (!withFrames && steps.length) {
+  if (!run?.dryRun && !withFrames && steps.length) {
     suggestions.push(
       'This run has no usable screenshots. Turn on the live monitor (it captures each foreground change) or add screenshot steps, then simulate again.'
     );
   }
-  if (mismatch === 0 && confirmed > 0 && failedWithChange === 0) {
+  const unresolved = breakdown.some((entry) => ['unclear', 'missing', 'missing_baseline', 'unreadable', 'no_change'].includes(entry.verdict));
+  if (mismatch === 0 && confirmed > 0 && failedWithChange === 0 && !unresolved) {
     suggestions.push(
       `Pixel evidence agrees with the run: ${confirmed} step(s) visibly changed the screen as recorded. The next integration step is to add explicit assertions only where the goal depends on content, not just change.`
     );
@@ -466,7 +482,7 @@ export function analyzeRun(run, { resolve = (target) => resolveInside(DATA, targ
       failedWithChange,
       observed,
       compared,
-      verdict: mismatch > 0 ? 'disagrees' : failedWithChange > 0 ? 'needs_review' : withFrames ? 'agrees' : 'no_evidence',
+      verdict: mismatch > 0 ? 'disagrees' : !withFrames ? 'no_evidence' : failedWithChange > 0 || unresolved || !confirmed ? 'needs_review' : 'agrees',
     },
     breakdown,
     suggestions: [...new Set(suggestions)].slice(0, 10),
