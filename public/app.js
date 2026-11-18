@@ -651,6 +651,19 @@ function renderHeader() {
   if (plat && ui.data) {
     plat.textContent = ui.data.platform.windows ? 'windows · powershell' : 'non-windows · simulated only';
   }
+  // A non-Windows console cannot drive this desktop at all, so it says so above
+  // every view instead of only when someone tries a live run.
+  const banner = $('#platform-banner');
+  if (banner && ui.data) {
+    const windows = ui.data.platform?.windows !== false;
+    banner.hidden = windows;
+    const detail = $('#platform-banner-detail');
+    if (detail && !windows) {
+      detail.textContent = `console ${ui.data.platform?.platform || 'non-Windows'} · ${
+        ui.data.platform?.shell || 'unknown shell'
+      } · pid ${ui.data.platform?.pid ?? '?'} · ${location.origin}`;
+    }
+  }
   const counts = ui.data?.counts;
   $('#badge-suggestions').textContent = counts?.suggestions ? String(counts.suggestions) : '';
   const missionBadge = $('#badge-missions');

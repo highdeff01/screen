@@ -347,7 +347,12 @@ function buildState() {
     ok: true,
     rev: d.rev,
     settings: d.settings,
-    platform: { windows: IS_WINDOWS, shell: 'PowerShell', pid: process.pid },
+    platform: {
+      windows: IS_WINDOWS,
+      shell: IS_WINDOWS ? 'PowerShell' : 'none',
+      platform: process.platform,
+      pid: process.pid,
+    },
     workflows: d.workflows.map(workflowView),
     runs: d.runs.slice(0, 80).map(summary),
     notes: d.notes.slice(0, 60).map(({ body, ...rest }) => ({

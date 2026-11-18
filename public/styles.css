@@ -91,6 +91,18 @@ a:hover { text-decoration: underline; }
 .mode-pill .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
 .mode-pill.live .dot { background: var(--warn); box-shadow: 0 0 0 4px rgba(251, 191, 36, 0.16); }
 .platform-tag { font-family: var(--mono); font-size: 11px; }
+
+/* A console that cannot drive this desktop says so above every view, not only
+   in a toast when a live run is refused. */
+.platform-banner {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+  padding: 8px 18px; font-size: 13px;
+  color: #ffe6a8; background: rgba(251, 191, 36, 0.12);
+  border-bottom: 1px solid rgba(251, 191, 36, 0.42);
+}
+.platform-banner[hidden] { display: none; }
+.platform-banner strong { color: #ffd166; }
+.platform-banner-detail { color: var(--muted); font-family: var(--mono); font-size: 11px; }
 .ai-status .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--dim); }
 .ai-status.ok .dot { background: var(--ok); box-shadow: 0 0 0 3px rgba(74, 222, 128, 0.15); }
 .ai-status.off .dot { background: var(--bad); }
