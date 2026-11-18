@@ -734,14 +734,11 @@ async function alreadyInFront(step, probe = null) {
   // A launch with arguments (e.g. notepad.exe <file>) must actually run.
   if (step.type === 'launchApp' && (step.params?.args || []).length) return '';
   // A launch is the flow asking for a window or tab, not for a window that
-  // already exists. Unless the step explicitly asks to reuse what is open, an
-  // app that is merely running must not stop the launch — otherwise Notepad
-  // keeps the operator’s old document and the next step types into it.
-  if (step.type === 'launchApp' && step.params?.reuse !== true) return '';
+  // already exists.
   // Reuse is opt-in: without it a launch opens a new instance instead of
   // adopting whatever window of that app happens to be open. Adopting silently
   // once typed a workflow's text into the operator's own Notepad document.
-  if (step.type === 'launchApp' && step.params?.reuseExisting !== true) return '';
+  if (step.type === 'launchApp' && step.params?.reuseExisting !== true && step.params?.reuse !== true) return '';
   const title = String(step.params?.title || '').trim();
   const target = String(step.params?.target || '').trim();
   const processName = String(step.params?.process || '').trim() || (/\.exe$/i.test(target) ? target.replace(/\.exe$/i, '') : '');
@@ -970,6 +967,34 @@ async function perceiveStep(step, run, workflow, getTool) {
         { live: true, runId: run.id, run, workflow, getTool }
       );
       pushLog(run, 'info', `Focus reinstated for “${guard}” before ${step.type}.`, step.id);
+    }
+    // Keystrokes must not land in whatever happens to be in front. If the guard
+    // window is not in front, bring it forward and read again; if it still is
+    // not, the runner skips the step rather than typing into the wrong app.
+    if (['type', 'key', 'clipboard'].includes(step.type)) {
+      const norm = (value) => String(value || '').toLowerCase().replace(/\s+/g, ' ').trim();
+      const inFront = (title) => norm(title).includes(norm(guard));
+      if (!inFront(state.foreground?.title)) {
+        try {
+          await executeStep(
+            { id: uid('chk'), type: 'focusWindow', name: `Focus ${guard} before typing`, params: { title: guard }, timeoutMs: 8000 },
+            { live: true, runId: run.id, run, workflow, getTool }
+          );
+        } catch (err) {
+          pushLog(run, 'warn', `Could not focus “${guard}” before ${step.type}: ${err.message}`, step.id);
+        }
+        const after = await readForegroundWindow().catch(() => null);
+        step.perception.foregroundAfterFocus = after?.title || null;
+        if (!inFront(after?.title)) {
+          step.perception.guardFailed = true;
+          pushLog(
+            run,
+            'warn',
+            `“${guard}” is not the window in front (“${after?.title || 'unknown'}”) after focusing it; ${step.type} would type into the wrong app.`,
+            step.id
+          );
+        }
+      }
     }
   } catch (err) {
     pushLog(run, 'warn', `Perception check failed: ${err.message}`, step.id);
@@ -1486,6 +1511,14 @@ async function executeRun(runId) {
         pushLog(run, 'warn', `Pre-step window check failed: ${err.message}`, step.id);
       }
       await perceiveStep(step, run, workflow, getTool);
+      if (step.perception?.guardFailed) {
+        step.status = 'skipped';
+        step.output = `Skipped: “${step.perception.guard}” is not the window in front (“${step.perception.foregroundAfterFocus || 'unknown'}”), so the keystrokes were not sent.`;
+        recordLedger(run, step);
+        pushLog(run, 'warn', step.output, step.id);
+        persist();
+        continue;
+      }
     }
     try {
       await presenterBeginStep(run, workflow, step);

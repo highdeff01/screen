@@ -1,21 +1,43 @@
 {
   "version": 1,
   "by": "sentinel",
-  "updatedAt": "2026-11-18T21:48:28.136Z",
-  "head": "26865adc0f1d",
+  "updatedAt": "2026-11-18T21:51:02.208Z",
+  "head": "001d26166688",
   "lastRun": {
-    "at": "2026-11-18T21:48:28.133Z",
+    "at": "2026-11-18T21:51:02.206Z",
     "ok": false,
     "tests": 441,
     "pass": 436,
     "fail": 1,
     "isolated": true,
     "failingTests": [
-      "a repair that opens another app is adopted by the presenter and verifier (25057.481ms)"
+      "the engine executes an AI replacement and records the repair (20437.5227ms)"
     ]
   },
-  "open": 1,
+  "open": 2,
   "items": [
+    {
+      "id": "sent_mwmno85a09a2dc",
+      "at": "2026-11-18T21:51:02.206Z",
+      "status": "queued",
+      "attempts": 1,
+      "fail": 1,
+      "pass": 436,
+      "tests": [
+        "the engine executes an AI replacement and records the repair (20437.5227ms)"
+      ],
+      "details": [
+        {
+          "name": "the engine executes an AI replacement and records the repair",
+          "file": "",
+          "line": null,
+          "message": ""
+        }
+      ],
+      "plan": "",
+      "planError": "",
+      "report": "must-check/2026-11-18T21-51-02-the-engine-executes-an-ai-replacement-an.md"
+    },
     {
       "id": "sent_mwmnkx9h7d8b57",
       "at": "2026-11-18T21:48:28.133Z",

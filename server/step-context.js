@@ -174,7 +174,7 @@ export function assessStep({ step = {}, screen = null, goal = '', history = [] }
     // happens to be on the desktop is not the same thing as the window this run
     // asked for, so only an explicit `reuse` (or a dialog the run is already
     // working through) keeps the launch from happening.
-    if (!wantsArgs && p.reuse === true && target && matchesTarget(fg, target)) {
+    if (!wantsArgs && (p.reuse === true || p.reuseExisting === true) && target && matchesTarget(fg, target)) {
       result.alreadySatisfied = true;
       result.skipReason = `Already open in front; the launch was skipped because reuse was requested.`;
       result.inProgress = fg.dialog;

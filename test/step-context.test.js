@@ -34,14 +34,44 @@ test('windows are classified with the actions a dialog offers', () => {
   assert.equal(classifyWindow({ title: 'Sale ads banner', process: 'chrome' }).advert, true);
 });
 
-test('a launch is skipped when the app is already in front with its dialog open', () => {
-  const assessment = assessStep({
+test('a launch continues a dialog the flow is already in, but not a plain open window', () => {
+  const dialog = assessStep({
     step: { type: 'launchApp', name: 'Open Notepad', params: { target: 'notepad.exe' } },
     screen: saveDialog,
   });
-  assert.equal(assessment.alreadySatisfied, true);
-  assert.equal(assessment.inProgress, true);
-  assert.match(assessment.skipReason, /Already open in front with the “Save As” dialog/);
+  assert.equal(dialog.alreadySatisfied, true);
+  assert.equal(dialog.inProgress, true);
+  assert.match(dialog.skipReason, /already running with “Save As” open/);
+
+  // An open document of the same app is not a reason to skip the launch: the
+  // flow asked for a window, and the new one is where its typing belongs.
+  const openDocument = assessStep({
+    step: { type: 'launchApp', name: 'Open Notepad', params: { target: 'notepad.exe' } },
+    screen: { foreground: { title: 'notes.txt - Notepad', process: 'notepad' }, windows: [] },
+  });
+  assert.equal(openDocument.alreadySatisfied, false);
+});
+
+test('an expectation is verified, never skipped for looking satisfied', () => {
+  const assessment = assessStep({
+    step: { type: 'expect', name: 'Window is present', params: { kind: 'window', value: 'Notepad' } },
+    screen: { foreground: { title: 'notes.txt - Notepad', process: 'notepad' }, windows: [] },
+  });
+  assert.equal(assessment.alreadySatisfied, false);
+  assert.equal(assessment.skipReason, '');
+});
+
+test('focus skips only for the exact window, not a title that contains it', () => {
+  const loose = assessStep({
+    step: { type: 'focusWindow', name: 'Focus Notepad', params: { title: 'Notepad' } },
+    screen: { foreground: { title: 'notes.txt - Notepad', process: 'notepad' }, windows: [] },
+  });
+  assert.equal(loose.alreadySatisfied, false);
+  const exact = assessStep({
+    step: { type: 'focusWindow', name: 'Focus Notepad', params: { title: 'notes.txt - Notepad' } },
+    screen: { foreground: { title: 'notes.txt - Notepad', process: 'notepad' }, windows: [] },
+  });
+  assert.equal(exact.alreadySatisfied, true);
 });
 
 test('clicking into an app while its dialog is open is retargeted at the dialog', () => {
