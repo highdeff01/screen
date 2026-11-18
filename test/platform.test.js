@@ -1,10 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import {
   adbKeyArgs,
   androidCharCode,
   appleKeyScript,
   captureCommand,
+  captureToolFor,
+  commandOnPath,
   detectBackend,
   keyChords,
   liveControl,
@@ -55,7 +60,7 @@ test('backend detection reports what a console can actually do', () => {
   assert.equal(macBare.available, false);
   assert.match(macBare.reason, /screencapture/);
 
-  const phone = detectBackend({ platform: 'win32', env: { PATH: '', SIGHTLINE_TARGET: 'android' } });
+  const phone = detectBackend({ platform: 'linux', env: { PATH: '', SIGHTLINE_TARGET: 'android' } });
   assert.equal(phone.id, 'android');
   assert.equal(phone.mobile, true);
   assert.equal(phone.available, false);
@@ -73,6 +78,62 @@ test('live control status carries the reason the UI banner shows', () => {
   const linuxBare = liveControl({ platform: 'linux', env: { PATH: '' } });
   assert.equal(linuxBare.available, false);
   assert.ok(linuxBare.reason.length > 20);
+});
+
+function fixture(t, tools) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'platform-test-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  for (const [name, body] of Object.entries(tools)) {
+    fs.writeFileSync(path.join(dir, name), body, { mode: 0o755 });
+  }
+  return dir;
+}
+
+test('Linux requires X11 display, capture and the input backend actually implemented', { skip: process.platform === 'win32' }, (t) => {
+  const dir = fixture(t, { grim: '', ydotool: '', xdotool: '', scrot: '' });
+  const env = { PATH: dir };
+  assert.equal(detectBackend({ platform: 'linux', env }).available, false);
+  assert.match(detectBackend({ platform: 'linux', env }).reason, /DISPLAY/);
+  assert.equal(captureToolFor('linux', env), 'scrot');
+  assert.equal(detectBackend({ platform: 'linux', env: { ...env, DISPLAY: ':1' } }).available, true);
+  fs.unlinkSync(path.join(dir, 'xdotool'));
+  assert.match(detectBackend({ platform: 'linux', env: { ...env, DISPLAY: ':1' } }).reason, /xdotool/);
+  fs.unlinkSync(path.join(dir, 'scrot'));
+  assert.equal(captureToolFor('linux', env), '');
+});
+
+test('PATH entries must be executable regular files', { skip: process.platform === 'win32' }, (t) => {
+  const dir = fixture(t, { scrot: '' });
+  fs.chmodSync(path.join(dir, 'scrot'), 0o644);
+  fs.mkdirSync(path.join(dir, 'xdotool'));
+  assert.equal(commandOnPath('scrot', { PATH: dir }), false);
+  assert.equal(commandOnPath('xdotool', { PATH: dir }), false);
+});
+
+test('macOS needs pointer and keyboard tools as well as capture', { skip: process.platform === 'win32' }, (t) => {
+  const dir = fixture(t, { screencapture: '', osascript: '' });
+  const env = { PATH: dir };
+  assert.match(detectBackend({ platform: 'darwin', env }).reason, /cliclick/);
+  fs.writeFileSync(path.join(dir, 'cliclick'), '', { mode: 0o755 });
+  assert.equal(detectBackend({ platform: 'darwin', env }).available, true);
+  fs.unlinkSync(path.join(dir, 'osascript'));
+  assert.match(detectBackend({ platform: 'darwin', env }).reason, /osascript/);
+});
+
+test('Android requires a uniquely selected authorized device', { skip: process.platform === 'win32' }, (t) => {
+  const dir = fixture(t, { adb: '#!/bin/sh\nprintf "%s\\n" "List of devices attached" "$FAKE_DEVICES"\n' });
+  const check = (devices, serial = '', platform = 'linux') => detectBackend({
+    platform, env: { PATH: dir, SIGHTLINE_TARGET: 'android', ANDROID_SERIAL: serial, FAKE_DEVICES: devices },
+  });
+  assert.equal(check('').available, false);
+  assert.equal(check('phone offline').available, false);
+  assert.equal(check('phone unauthorized').available, false);
+  assert.equal(check('phone device').available, true);
+  assert.equal(check('phone device\nother device').available, false);
+  assert.equal(check('phone device\nother device', 'phone').available, true);
+  assert.equal(check('phone device', 'other').available, false);
+  assert.equal(check('phone device', '', 'win32').available, false);
+  assert.equal(detectBackend({ platform: 'freebsd', env: { PATH: dir, FAKE_DEVICES: 'phone device' } }).available, false);
 });
 
 test('macOS capture command is a full-screen PNG', () => {
