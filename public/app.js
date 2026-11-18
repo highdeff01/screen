@@ -727,6 +727,7 @@ function render() {
   const pageY = sameRun ? window.scrollY : null;
   const listY = sameFilter ? document.querySelector('.runs-list')?.scrollTop ?? null : null;
   renderHeader();
+  renderSyncPill();
   const map = {
     builder: renderBuilder,
     runs: renderRuns,
@@ -744,6 +745,7 @@ function render() {
     links: renderElementLinks,
     command: renderCommandCenter,
     presentation: renderPresentation,
+    sync: renderSync,
   };
   $('#view').innerHTML = (map[ui.view] || renderBuilder)();
   if (pageY != null) window.scrollTo({ top: pageY, behavior: 'auto' });
@@ -6073,6 +6075,75 @@ async function runAction(name, ds, el) {
         if (ui.modal?.type === 'settings') renderModal();
       });
       break;
+    case 'sync-load':
+      ui.gitInfo = null;
+      await loadSync();
+      break;
+    case 'sync-pull':
+      await syncAction('/api/git/pull', { ffOnly: true });
+      break;
+    case 'sync-push':
+      await syncAction('/api/git/push', {});
+      break;
+    case 'sync-merge':
+      await syncAction('/api/git/merge', {});
+      break;
+    case 'sync-commit':
+      await syncAction('/api/git/conflicts/commit', {});
+      break;
+    case 'sync-ours':
+      await syncAction('/api/git/conflicts/resolve', { side: 'ours' });
+      break;
+    case 'sync-theirs':
+      await syncAction('/api/git/conflicts/resolve', { side: 'theirs' });
+      break;
+    case 'sync-ai':
+      await syncAction('/api/git/conflicts/ai', {});
+      break;
+    case 'sync-pr-fetch':
+      await syncAction('/api/git/prs/fetch', { number: Number(ds.id) });
+      break;
+    case 'note-add': {
+      const text = $('#note-text')?.value?.trim();
+      if (!text) return toast('Write the note first', 'error');
+      const res = await api('/api/handoff/notes', { method: 'POST', body: { text } });
+      if (!res.ok) return toast(res.error, 'error');
+      const box = $('#note-text');
+      if (box) box.value = '';
+      toast('Note saved for the next agent', 'ok');
+      await refresh();
+      render();
+      break;
+    }
+    case 'command-save': {
+      const name = $('#command-name')?.value?.trim();
+      const command = $('#command-body')?.value?.trim();
+      const res = await api('/api/commands', { method: 'POST', body: { name, command } });
+      if (!res.ok) return toast(res.error, 'error');
+      toast(`Command “${res.command.name}” saved`, 'ok');
+      await refresh();
+      render();
+      break;
+    }
+    case 'command-run': {
+      toast('Running…', 'ok');
+      const res = await api(`/api/commands/${encodeURIComponent(ds.id)}/run`, { method: 'POST', body: {} });
+      toast(
+        res.ok ? `${res.command?.name || 'Command'} finished${res.stdout ? `: ${String(res.stdout).slice(0, 120)}` : ''}` : res.error || 'Command failed',
+        res.ok ? 'ok' : 'error'
+      );
+      await refresh();
+      render();
+      break;
+    }
+    case 'command-rm': {
+      const res = await api(`/api/commands/${encodeURIComponent(ds.id)}`, { method: 'DELETE' });
+      if (!res.ok) return toast(res.error, 'error');
+      toast('Command removed', 'ok');
+      await refresh();
+      render();
+      break;
+    }
     case 'refresh':
       await refresh();
       break;
@@ -8107,17 +8178,33 @@ function coerceParams(draft) {
 }
 
 async function queueRun(id, mode) {
-  const res = await api(`/api/workflows/${encodeURIComponent(id)}/runs`, {
-    method: 'POST',
-    body: { mode, trigger: 'manual' },
-  });
-  if (!res.ok) return toast(res.error, 'error');
-  toast(mode === 'live' ? 'Live run queued — watch the desktop.' : 'Simulated run queued in the background.', 'ok');
-  ui.view = 'runs';
-  ui.selectedRun = res.run.id;
-  ui.runFilter = 'all';
-  await refresh();
-  await loadRun(res.run.id);
+  // A double click used to queue two runs and the second one could fail, which
+  // read as "the button does not work". One run per click, always.
+  if (ui.runStarting) return toast('A run is already being queued…', 'info');
+  ui.runStarting = true;
+  try {
+    const res = await api(`/api/workflows/${encodeURIComponent(id)}/runs`, {
+      method: 'POST',
+      body: { mode, trigger: 'manual' },
+    });
+    if (!res.ok) return toast(res.error || 'The run could not be queued', 'error');
+    const holdReason = ui.data?.settings?.presenceEnabled !== false && mode === 'live';
+    toast(
+      mode === 'live'
+        ? holdReason
+          ? 'Live run queued — it starts now and waits for the desktop to go quiet before it takes focus.'
+          : 'Live run queued — watch the desktop.'
+        : 'Simulated run queued in the background.',
+      'ok'
+    );
+    ui.view = 'runs';
+    ui.selectedRun = res.run.id;
+    ui.runFilter = 'all';
+    await refresh();
+    await loadRun(res.run.id);
+  } finally {
+    ui.runStarting = false;
+  }
 }
 
 /* ------------------------------------------------------------------ events */
@@ -8563,7 +8650,11 @@ async function boot() {
   const pollState = async () => {
     const focused = document.activeElement;
     const typing = focused && /INPUT|TEXTAREA|SELECT/.test(focused.tagName);
-    if (!ui.modal && !typing) {
+    // Every refresh rebuilds the view, so a poll that lands between mousedown and
+    // click swallows the click. Give the pointer and keyboard a moment first; this
+    // is why buttons used to work only some of the time.
+    const interacting = Date.now() - lastInteractionAt < 700;
+    if (!ui.modal && !typing && !interacting) {
       await refresh();
     }
     const counts = ui.data?.counts || {};
