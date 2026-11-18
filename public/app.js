@@ -5677,6 +5677,145 @@ function renderModal() {
   </div></div>`;
 }
 
+/* ------------------------------------------------------------------ sync */
+// A click is only lost when a re-render replaces the button under the pointer, so
+// the poll waits for the pointer and keyboard to go quiet before rebuilding.
+let lastInteractionAt = 0;
+document.addEventListener('pointerdown', () => { lastInteractionAt = Date.now(); }, true);
+document.addEventListener('keydown', () => { lastInteractionAt = Date.now(); }, true);
+
+function renderSyncPill() {
+  const pill = $('#sync-pill');
+  if (!pill) return;
+  const g = ui.data?.gitSync || {};
+  const parts = [];
+  if (g.status === 'conflict') parts.push('conflicts');
+  else if (g.status === 'diverged') parts.push('diverged');
+  if (Number(g.behind) > 0) parts.push(`${g.behind} behind`);
+  if (Number(g.ahead) > 0) parts.push(`${g.ahead} to push`);
+  if (['push-failed', 'fetch-failed', 'error'].includes(g.status)) parts.push('sync failed');
+  const notes = (ui.data?.handoff?.notes || []).length;
+  pill.hidden = !parts.length && !notes;
+  pill.textContent = parts.length ? `⇅ ${parts.join(' · ')}` : `⇅ ${notes} note${notes === 1 ? '' : 's'}`;
+  pill.title = parts.length ? `Repository needs attention: ${parts.join(', ')}` : 'Handoff notes from other agents';
+  pill.classList.toggle('warnbadge', parts.length > 0);
+}
+
+async function loadSync() {
+  const [info, prs] = await Promise.all([api('/api/git'), api('/api/git/prs')]);
+  ui.gitInfo = info.ok ? info : { ok: false, error: info.error || 'Could not read the repository', git: ui.data?.gitSync };
+  ui.gitPrs = prs.ok ? prs : { ok: false, error: prs.error || 'Could not list pull requests', prs: [] };
+  render();
+}
+
+async function syncAction(path, body) {
+  const res = await api(path, { method: 'POST', body: body || {} });
+  toast(res.message || res.error || 'Done', res.ok ? 'ok' : 'error');
+  ui.gitInfo = null;
+  await refresh();
+  await loadSync();
+}
+
+function renderSync() {
+  const info = ui.gitInfo;
+  if (!info) {
+    loadSync().catch(() => {});
+    return '<div class="empty"><strong>Reading the repository…</strong>Fetching the remote, pull requests and conflicts.</div>';
+  }
+  const g = info.git || ui.data?.gitSync || {};
+  const conflicts = info.conflicts || [];
+  const prs = ui.gitPrs?.prs || [];
+  const notes = ui.data?.handoff?.notes || [];
+  const commands = ui.data?.handoff?.commands || [];
+  const remote = info.remote ? `<a href="${esc(info.remote)}" target="_blank" rel="noreferrer">${esc(info.remote.replace('https://github.com/', ''))}</a>` : 'no GitHub remote';
+
+  return `
+  <div class="page-head">
+    <div>
+      <h1>Sync &amp; pull requests</h1>
+      <p>Take updates other apps pushed to this repository, send yours, and handle merges here. Auto-sync commits this console's own changes and fast-forwards when the remote moved; nothing is ever force-pushed or discarded.</p>
+    </div>
+    <div class="page-head-actions">
+      <button class="btn btn-sm btn-ghost" data-act="sync-load">Refresh</button>
+      <button class="btn btn-sm" data-act="sync-pull">Pull</button>
+      <button class="btn btn-sm" data-act="sync-push" ${Number(g.ahead) > 0 ? '' : 'disabled'}>Push</button>
+      <button class="btn btn-sm" data-act="sync-merge" ${Number(info.behind) > 0 || Number(info.ahead) > 0 ? '' : 'disabled'}>Merge origin</button>
+    </div>
+  </div>
+
+  <div class="stack">
+    <section class="card">
+      <div class="card-head"><h3>${esc(info.branch || g.branch || 'branch')} → ${remote}</h3><span class="badge ${conflicts.length ? 'warnbadge' : 'okbadge'}">${conflicts.length ? `${conflicts.length} conflict(s)` : esc(g.status || 'idle')}</span></div>
+      <div class="card-body detail-cols">
+        <div>
+          <p class="small">Local is <b>${Number(info.ahead ?? g.ahead) || 0}</b> commit(s) ahead and <b>${Number(info.behind ?? g.behind) || 0}</b> behind.</p>
+          <p class="small dim">Last sync: ${g.lastSyncAt ? fmtTime(g.lastSyncAt) : 'never'} · auto-sync ${g.enabled ? 'on' : 'off'} every ${Math.round(Number(g.intervalMs || 0) / 1000)}s · auto-pull ${ui.data?.settings?.autoPull === false ? 'off' : 'on'}</p>
+        </div>
+        <div>
+          ${g.lastError ? `<div class="hint-box small" style="color:var(--bad)">${esc(g.lastError)}</div>` : '<p class="small dim">No errors. Nothing to do means the folder matches the remote.</p>'}
+          ${info.note ? `<p class="small dim">${esc(info.note)}</p>` : ''}
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="card-head"><h3>Conflicts</h3><span class="dim small">${conflicts.length ? 'a human or the model picks a side' : 'none'}</span></div>
+      <div class="card-body">
+        ${conflicts.length
+          ? `<ul class="rule-list small">${conflicts.map((file) => `<li class="mono">${esc(file)}</li>`).join('')}</ul>
+             <div class="row wrap" style="gap:7px;margin-top:10px">
+               <button class="btn btn-sm" data-act="sync-ours">Keep mine</button>
+               <button class="btn btn-sm" data-act="sync-theirs">Take remote</button>
+               <button class="btn btn-sm btn-primary" data-act="sync-ai">Let AI merge</button>
+               <button class="btn btn-sm btn-ghost" data-act="sync-commit">Commit merge</button>
+             </div>
+             <p class="small dim" style="margin-top:8px">“Let AI merge” backs up every file to data/git-backups, merges the markers, and refuses any reply that still contains them. Nothing is committed until you press Commit merge.</p>`
+          : '<p class="muted small" style="margin:0">No conflicted files. Pull and merge can run without a decision.</p>'}
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="card-head"><h3>Pull requests</h3><span class="dim small">${ui.gitPrs?.ok ? `${prs.length} open` : 'unavailable'}</span></div>
+      <div class="card-body">
+        ${!ui.gitPrs?.ok
+          ? `<p class="small dim" style="margin:0">${esc(ui.gitPrs?.error || 'Reading pull requests…')}</p>`
+          : prs.length
+          ? `<div class="stack" style="gap:6px">${prs.map((pr) => `<div class="row wrap" style="gap:8px;align-items:center"><span class="badge">#${pr.number}</span><span class="mono small">${esc(pr.sha)}</span><span class="spacer"></span><a class="btn btn-sm btn-ghost" href="${esc(pr.url)}" target="_blank" rel="noreferrer">Open</a><button class="btn btn-sm" data-act="sync-pr-fetch" data-id="${pr.number}">Fetch as pr/${pr.number}</button></div>`).join('')}</div>`
+          : '<p class="muted small" style="margin:0">No open pull requests on this remote.</p>'}
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="card-head"><h3>Notes for the next agent</h3><span class="dim small">${notes.length} kept</span></div>
+      <div class="card-body">
+        <div class="row" style="gap:8px;align-items:flex-start"><textarea id="note-text" class="input" rows="2" placeholder="What the next agent or app needs to know: what changed, what to avoid, what to try." style="flex:1"></textarea><button class="btn btn-sm btn-primary" data-act="note-add">Leave note</button></div>
+        <div class="stack" style="gap:6px;margin-top:10px">
+          ${notes.length
+            ? notes.map((note) => `<div class="cc-note"><div class="row" style="gap:6px"><strong class="small">${esc(note.by)}</strong><span class="dim small">${fmtTime(note.at)}</span></div><p class="small" style="margin-top:3px">${esc(note.text)}</p></div>`).join('')
+            : '<p class="muted small">No notes yet. The CLI writes here too: <span class="mono">npm run sightline -- notes add \"…\"</span></p>'}
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="card-head"><h3>Custom commands</h3><span class="dim small">${commands.length} saved</span></div>
+      <div class="card-body">
+        <div class="row wrap" style="gap:8px;align-items:flex-start">
+          <input id="command-name" class="input" placeholder="name (e.g. pull-and-test)" style="max-width:220px" />
+          <input id="command-body" class="input mono" placeholder="command to run in this folder" style="flex:1;min-width:240px" />
+          <button class="btn btn-sm btn-primary" data-act="command-save">Save</button>
+        </div>
+        <p class="small dim" style="margin-top:6px">Commands run with this folder as the working directory and never run on their own. Same store as the CLI: <span class="mono">npm run sightline -- cmd add name -- \"…\"</span></p>
+        <div class="stack" style="gap:6px;margin-top:10px">
+          ${commands.length
+            ? commands.map((cmd) => `<div class="cc-note"><div class="row wrap" style="gap:6px;align-items:center"><strong class="small">${esc(cmd.name)}</strong><span class="mono small dim">${esc(cmd.command)}</span><span class="spacer"></span><button class="btn btn-sm" data-act="command-run" data-id="${esc(cmd.id)}">Run</button><button class="btn btn-sm btn-ghost" data-act="command-rm" data-id="${esc(cmd.id)}">Delete</button></div>${cmd.lastRun ? `<p class="small ${cmd.lastRun.ok ? 'dim' : ''}" style="margin-top:4px;${cmd.lastRun.ok ? '' : 'color:var(--bad)'}">${cmd.lastRun.ok ? 'ok' : `exit ${cmd.lastRun.code}`} · ${fmtTime(cmd.lastRun.at)}${cmd.lastRun.stdout ? ` · ${esc(String(cmd.lastRun.stdout).slice(0, 160))}` : ''}${cmd.lastRun.stderr ? ` · ${esc(String(cmd.lastRun.stderr).slice(0, 160))}` : ''}</p>` : ''}</div>`).join('')
+            : '<p class="muted small">No custom commands yet.</p>'}
+        </div>
+      </div>
+    </section>
+  </div>`;
+}
+
 /* ------------------------------------------------------------------ data loads */
 async function refresh(options = {}) {
   const res = await api('/api/state');
