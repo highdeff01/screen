@@ -24,7 +24,22 @@ import {
 import { executeStep, runPowerShell, STEP_TYPES, IS_WINDOWS, describe, findUiElement, readFocusedElement } from './automation.js';
 import { liveControl } from './platform.js';
 import { loopStatus, reviewPendingVerifications, startVerificationLoop, stopVerificationLoop } from './verification-loop.js';
-import { checkAndSync, gitSyncStatus, startAutoSync, stopAutoSync } from './git-sync.js';
+import {
+  aiResolveConflicts,
+  checkAndSync,
+  commitMerge,
+  fetchPullRequest,
+  gitSyncStatus,
+  listPullRequests,
+  mergeOrigin,
+  pullNow,
+  pushNow,
+  resolveConflicts,
+  startAutoSync,
+  stopAutoSync,
+  syncOverview,
+} from './git-sync.js';
+import { addNote, deleteCommand, listCommands, listNotes, runCommand, saveCommand } from './handoff.js';
 import { shareStatus, startShare, stopShare } from './share.js';
 import { escalateBacklog, escalateFailedRun, escalationStatus } from './auto-escalation.js';
 import { chatWithProjectMemory, getHistory, clearHistory, health, parseJsonLoose, chat, listModels, getMemoryStats, summarizeConversation } from './llm.js';
@@ -388,6 +403,7 @@ function buildState() {
     presenter: activePresenter(),
     live: monitorState(),
     observer: observerState(),
+    handoff: { notes: listNotes({ limit: 12 }), commands: listCommands().slice(0, 12) },
     liveSuggestions: latestMonitorSuggestions(),
     positionMemory: listPositionMemory(8),
     companion: companionState(),
@@ -512,6 +528,126 @@ route('GET', /^\/api\/git-sync$/, async (req, res) => {
 route('POST', /^\/api\/git-sync\/now$/, async (req, res) => {
   const status = await checkAndSync({ force: true });
   sendJson(res, 200, { ok: status.status !== 'error' && status.status !== 'push-failed', gitSync: status });
+});
+
+/* ---------------- Sync page: pull, push, merge, PRs, conflicts ---------------- */
+route('GET', /^\/api\/git$/, async (req, res) => {
+  try {
+    sendJson(res, 200, await syncOverview());
+  } catch (err) {
+    fail(res, 500, err.message);
+  }
+});
+
+route('POST', /^\/api\/git\/pull$/, async (req, res) => {
+  try {
+    const body = await readBody(req);
+    sendJson(res, 200, await pullNow({ ffOnly: body.ffOnly !== false }));
+  } catch (err) {
+    fail(res, 400, err.message);
+  }
+});
+
+route('POST', /^\/api\/git\/push$/, async (req, res) => {
+  try {
+    sendJson(res, 200, await pushNow());
+  } catch (err) {
+    fail(res, 400, err.message);
+  }
+});
+
+route('POST', /^\/api\/git\/merge$/, async (req, res) => {
+  try {
+    sendJson(res, 200, await mergeOrigin());
+  } catch (err) {
+    fail(res, 400, err.message);
+  }
+});
+
+route('GET', /^\/api\/git\/prs$/, async (req, res) => {
+  try {
+    sendJson(res, 200, await listPullRequests({ limit: 12 }));
+  } catch (err) {
+    fail(res, 500, err.message);
+  }
+});
+
+route('POST', /^\/api\/git\/prs\/fetch$/, async (req, res) => {
+  try {
+    const body = await readBody(req);
+    sendJson(res, 200, await fetchPullRequest(body.number));
+  } catch (err) {
+    fail(res, 400, err.message);
+  }
+});
+
+route('POST', /^\/api\/git\/conflicts\/resolve$/, async (req, res) => {
+  try {
+    const body = await readBody(req);
+    sendJson(res, 200, await resolveConflicts({ side: body.side, files: Array.isArray(body.files) ? body.files : null }));
+  } catch (err) {
+    fail(res, 400, err.message);
+  }
+});
+
+route('POST', /^\/api\/git\/conflicts\/ai$/, async (req, res) => {
+  try {
+    sendJson(res, 200, await aiResolveConflicts());
+  } catch (err) {
+    fail(res, 500, err.message);
+  }
+});
+
+route('POST', /^\/api\/git\/conflicts\/commit$/, async (req, res) => {
+  try {
+    sendJson(res, 200, await commitMerge());
+  } catch (err) {
+    fail(res, 400, err.message);
+  }
+});
+
+/* ---------------- Notes for other agents, custom commands ---------------- */
+route('GET', /^\/api\/handoff$/, async (req, res) => {
+  sendJson(res, 200, { ok: true, notes: listNotes({ limit: 50 }), commands: listCommands() });
+});
+
+route('POST', /^\/api\/handoff\/notes$/, async (req, res) => {
+  try {
+    const body = await readBody(req);
+    sendJson(res, 200, { ok: true, note: addNote(body) });
+  } catch (err) {
+    fail(res, 400, err.message);
+  }
+});
+
+route('GET', /^\/api\/commands$/, async (req, res) => {
+  sendJson(res, 200, { ok: true, commands: listCommands() });
+});
+
+route('POST', /^\/api\/commands$/, async (req, res) => {
+  try {
+    const body = await readBody(req);
+    sendJson(res, 200, { ok: true, command: saveCommand(body) });
+  } catch (err) {
+    fail(res, 400, err.message);
+  }
+});
+
+route('DELETE', /^\/api\/commands\/([^/]+)$/, async (req, res, [id]) => {
+  try {
+    sendJson(res, 200, { ok: true, command: deleteCommand(id) });
+  } catch (err) {
+    fail(res, 404, err.message);
+  }
+});
+
+route('POST', /^\/api\/commands\/([^/]+)\/run$/, async (req, res, [id]) => {
+  try {
+    const body = await readBody(req);
+    sendJson(res, 200, { ok: true, ...(await runCommand(id, { timeoutMs: body.timeoutMs })) });
+  } catch (err) {
+    fail(res, 400, err.message);
+  }
 });
 
 route('GET', /^\/api\/share$/, async (req, res) => {

@@ -17,7 +17,9 @@
  */
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { db, now, ROOT } from './store.js';
+import fs from 'node:fs';
+import path from 'node:path';
+import { DATA, db, now, ROOT } from './store.js';
 
 const COMMIT_FOOTER =
   '🤖 Generated with Codebuff\nCo-Authored-By: Codebuff <noreply@codebuff.com>';
@@ -202,6 +204,312 @@ export async function checkAndSync(deps = {}) {
   }
 }
 
+/* ---------------- Manual sync: pull, merge, PRs, conflicts ---------------- */
+
+/** owner/repo and the web URL for a remote, for `https://` and `git@` forms. */
+export function parseRemote(url) {
+  const text = String(url || '').trim().replace(/^git@([^:]+):/, 'https://$1/');
+  const match = text.match(/^[a-z]+:\/\/[^/]+\/([^/]+)\/([^/]+?)(?:\.git)?\/?$/i);
+  if (!match) return { owner: '', repo: '', webUrl: '' };
+  return { owner: match[1], repo: match[2], webUrl: `https://github.com/${match[1]}/${match[2]}` };
+}
+
+async function currentBranch(git) {
+  const branch = await git(['rev-parse', '--abbrev-ref', 'HEAD']);
+  return String(branch.stdout || '').trim() || 'main';
+}
+
+async function aheadBehind(git, branch) {
+  const counts = await git(['rev-list', '--left-right', '--count', `HEAD...origin/${branch}`]);
+  if (!counts.ok) return { ahead: 0, behind: 0 };
+  const [ahead, behind] = String(counts.stdout).split(/\s+/).map((value) => Number(value) || 0);
+  return { ahead, behind };
+}
+
+/** Files git left conflicted in the working tree. */
+export async function conflictFiles({ run } = {}) {
+  const git = run || runGit;
+  const result = await git(['diff', '--name-only', '--diff-filter=U']);
+  const files = String(result.stdout || '')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+  return { ok: result.ok, files, count: files.length };
+}
+
+/**
+ * Pull the remote into this folder. Fast-forward only by default, because a
+ * clean fast-forward is the one merge that cannot lose anyone's work; a
+ * diverged branch is reported so it can be merged deliberately from the Sync
+ * page (or by the operator).
+ */
+export async function pullNow({ ffOnly = true, run } = {}) {
+  const git = run || runGit;
+  const branch = await currentBranch(git);
+  state.branch = branch;
+  const fetched = await git(['fetch', 'origin', branch], 60000);
+  if (!fetched.ok) {
+    state.status = 'fetch-failed';
+    state.lastError = fetched.stderr || fetched.stdout || 'git fetch failed.';
+    return { ok: false, status: 'fetch-failed', message: state.lastError };
+  }
+  const { ahead, behind } = await aheadBehind(git, branch);
+  state.ahead = ahead;
+  state.behind = behind;
+  if (!behind) {
+    state.status = 'clean';
+    return { ok: true, status: 'up-to-date', behind: 0, ahead, message: `Already up to date with origin/${branch}.` };
+  }
+  if (ffOnly && ahead) {
+    state.status = 'diverged';
+    state.lastError = `Local and origin/${branch} both have commits; merge from the Sync page to combine them.`;
+    return { ok: false, status: 'diverged', behind, ahead, message: state.lastError };
+  }
+  const merge = await git(ffOnly ? ['merge', '--ff-only', `origin/${branch}`] : ['merge', '--no-edit', `origin/${branch}`], 60000);
+  if (!merge.ok) {
+    const conflicts = await conflictFiles({ run: git });
+    state.status = conflicts.count ? 'conflict' : 'merge-failed';
+    state.lastError = conflicts.count
+      ? `${conflicts.count} conflicted file(s): ${conflicts.files.slice(0, 4).join(', ')}.`
+      : merge.stderr || merge.stdout || 'git merge failed.';
+    return { ok: false, status: conflicts.count ? 'conflict' : 'merge-failed', conflicts: conflicts.files, message: state.lastError };
+  }
+  state.behind = 0;
+  state.lastSyncAt = now();
+  state.status = 'pulled';
+  state.lastError = '';
+  return {
+    ok: true,
+    status: 'pulled',
+    behind,
+    message: `Pulled ${behind} commit(s) from origin/${branch}.`,
+    files: String(merge.stdout || '').split('\n').filter((line) => line.includes('|')).length,
+  };
+}
+
+/** Push local commits. */
+export async function pushNow({ run } = {}) {
+  const git = run || runGit;
+  const branch = await currentBranch(git);
+  state.branch = branch;
+  const pushed = await git(['push', 'origin', branch], 120000);
+  if (!pushed.ok) {
+    state.status = 'push-failed';
+    state.lastError = pushed.stderr || pushed.stdout || 'git push failed.';
+    return { ok: false, status: 'push-failed', message: state.lastError };
+  }
+  state.ahead = 0;
+  state.lastSyncAt = now();
+  state.status = 'pushed';
+  state.lastError = '';
+  return { ok: true, status: 'pushed', message: `Pushed to origin/${branch}.` };
+}
+
+/** Merge the remote branch into the local one, reporting conflicts instead of guessing. */
+export async function mergeOrigin({ run } = {}) {
+  const git = run || runGit;
+  const branch = await currentBranch(git);
+  state.branch = branch;
+  const fetched = await git(['fetch', 'origin', branch], 60000);
+  if (!fetched.ok) {
+    state.status = 'fetch-failed';
+    state.lastError = fetched.stderr || fetched.stdout || 'git fetch failed.';
+    return { ok: false, status: 'fetch-failed', message: state.lastError };
+  }
+  const merge = await git(['merge', '--no-edit', `origin/${branch}`], 60000);
+  const conflicts = await conflictFiles({ run: git });
+  if (conflicts.count) {
+    state.status = 'conflict';
+    state.lastError = `${conflicts.count} conflicted file(s) need a decision.`;
+    return { ok: false, status: 'conflict', conflicts: conflicts.files, message: state.lastError };
+  }
+  if (!merge.ok) {
+    state.status = 'merge-failed';
+    state.lastError = merge.stderr || merge.stdout || 'git merge failed.';
+    return { ok: false, status: 'merge-failed', message: state.lastError };
+  }
+  const counts = await aheadBehind(git, branch);
+  state.ahead = counts.ahead;
+  state.behind = counts.behind;
+  state.status = 'merged';
+  state.lastError = '';
+  return { ok: true, status: 'merged', message: `Merged origin/${branch} into ${branch}. Push when the tests pass.` };
+}
+
+/**
+ * Open pull requests, read without the GitHub CLI: the refs GitHub publishes for
+ * every PR are visible with a plain `git ls-remote`.
+ */
+export async function listPullRequests({ run, limit = 10 } = {}) {
+  const git = run || runGit;
+  const remote = parseRemote((await git(['remote', 'get-url', 'origin'])).stdout);
+  if (!remote.owner) return { ok: false, status: 'no-remote', available: false, prs: [], message: 'No GitHub remote is configured.' };
+  const refs = await git(['ls-remote', 'origin', 'refs/pull/*/head'], 60000);
+  if (!refs.ok) return { ok: false, available: false, prs: [], message: refs.stderr || 'git ls-remote failed.' };
+  const prs = String(refs.stdout || '')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const [sha, ref] = line.split(/\s+/);
+      const number = Number((String(ref).match(/refs\/pull\/(\d+)\/head/) || [])[1]);
+      return number ? { number, sha: String(sha).slice(0, 12), url: `${remote.webUrl}/pull/${number}` } : null;
+    })
+    .filter(Boolean)
+    .sort((a, b) => b.number - a.number)
+    .slice(0, Math.max(1, Math.min(30, Number(limit) || 10)));
+  return { ok: true, available: true, remote: remote.webUrl, prs, message: prs.length ? `${prs.length} open pull request(s).` : 'No open pull requests.' };
+}
+
+/** Fetch one PR into a local branch so it can be run, reviewed or merged. */
+export async function fetchPullRequest(number, { run } = {}) {
+  const git = run || runGit;
+  const id = Math.max(1, Number(number) || 0);
+  if (!id) return { ok: false, message: 'A pull request number is required.' };
+  const branch = `pr/${id}`;
+  const fetched = await git(['fetch', 'origin', `refs/pull/${id}/head:${branch}`], 120000);
+  if (!fetched.ok) {
+    state.lastError = fetched.stderr || fetched.stdout || 'git fetch failed.';
+    return { ok: false, status: 'fetch-failed', message: state.lastError };
+  }
+  const log = await git(['log', '-1', '--pretty=%s', branch]);
+  return { ok: true, status: 'fetched', branch, subject: String(log.stdout || '').trim(), message: `Fetched pull request #${id} into ${branch}.` };
+}
+
+/** Resolve every conflicted file to one side, then stage it. */
+export async function resolveConflicts({ side = 'ours', files = null, run } = {}) {
+  const git = run || runGit;
+  const which = side === 'theirs' ? 'theirs' : 'ours';
+  const conflicts = files?.length ? { files, count: files.length } : await conflictFiles({ run: git });
+  if (!conflicts.count) return { ok: true, status: 'no-conflicts', resolved: [], message: 'There are no conflicted files.' };
+  const resolved = [];
+  const failed = [];
+  for (const file of conflicts.files) {
+    const checkout = await git(['checkout', `--${which}`, '--', file]);
+    const add = checkout.ok ? await git(['add', '--', file]) : { ok: false };
+    if (checkout.ok && add.ok) resolved.push(file);
+    else failed.push(file);
+  }
+  state.status = failed.length ? state.status : 'conflicts-resolved';
+  return {
+    ok: failed.length === 0,
+    status: failed.length ? 'partial' : 'resolved',
+    side: which,
+    resolved,
+    failed,
+    message: `${resolved.length} file(s) resolved with ${which}${failed.length ? `, ${failed.length} failed` : ''}. Review, then commit the merge.`,
+  };
+}
+
+/**
+ * Ask the local model to merge each conflicted file, keeping a backup first and
+ * refusing any reply that still contains conflict markers.
+ */
+export async function aiResolveConflicts({ run, chat: talk = null } = {}) {
+  const git = run || runGit;
+  const conflicts = await conflictFiles({ run: git });
+  if (!conflicts.count) return { ok: true, status: 'no-conflicts', resolved: [], message: 'There are no conflicted files.' };
+  let ask = talk;
+  if (!ask) {
+    const mod = await import('./llm.js');
+    ask = async (messages) => mod.chat(messages, { timeoutMs: 90000 });
+  }
+  const backups = [];
+  const resolved = [];
+  const skipped = [];
+  for (const file of conflicts.files) {
+    const absolute = path.join(ROOT, file);
+    let original = '';
+    try {
+      original = fs.readFileSync(absolute, 'utf8');
+    } catch (err) {
+      skipped.push({ file, reason: `unreadable: ${err.message}` });
+      continue;
+    }
+    const reply = await ask([
+      {
+        role: 'system',
+        content:
+          'Merge git conflict markers. Reply with the complete merged file content only: no prose, no code fences, and no conflict markers. Preserve both sides where they do not contradict.',
+      },
+      { role: 'user', content: `File: ${file}\n\n${original.slice(0, 12000)}` },
+    ]);
+    const merged = reply?.ok ? String(reply.content || '').trim() : '';
+    if (!merged || /^(<<<<<<<|=======|>>>>>>>)/m.test(merged)) {
+      skipped.push({ file, reason: reply?.ok ? 'the model returned conflict markers or an empty file' : reply?.error || 'the model is offline' });
+      continue;
+    }
+    fs.mkdirSync(path.join(DATA, 'git-backups'), { recursive: true });
+    const backup = path.join(DATA, 'git-backups', `${Date.now()}-${file.replace(/[\\/]/g, '_')}`);
+    fs.writeFileSync(backup, original);
+    fs.writeFileSync(absolute, `${merged}\n`);
+    const add = await git(['add', '--', file]);
+    if (!add.ok) {
+      skipped.push({ file, reason: add.stderr || 'git add failed' });
+      continue;
+    }
+    backups.push(path.relative(ROOT, backup).split(path.sep).join('/'));
+    resolved.push(file);
+  }
+  const remaining = await conflictFiles({ run: git });
+  return {
+    ok: resolved.length > 0 && remaining.count === 0,
+    status: remaining.count ? 'partial' : 'resolved',
+    resolved,
+    skipped,
+    backups,
+    remaining: remaining.files,
+    message: `${resolved.length} file(s) merged by the model${skipped.length ? `, ${skipped.length} left alone` : ''}${
+      backups.length ? `; originals in ${backups[0]}` : ''
+    }. Review the diff, then commit.`,
+  };
+}
+
+/** Commit a finished merge (only when no conflicts remain). */
+export async function commitMerge({ run } = {}) {
+  const git = run || runGit;
+  const conflicts = await conflictFiles({ run: git });
+  if (conflicts.count) return { ok: false, status: 'conflict', message: `${conflicts.count} file(s) are still conflicted.` };
+  const commit = await git(['commit', '--no-edit']);
+  if (!commit.ok && !/nothing to commit/i.test(`${commit.stdout}\n${commit.stderr}`)) {
+    return { ok: false, status: 'error', message: commit.stderr || commit.stdout || 'git commit failed.' };
+  }
+  const branch = await currentBranch(git);
+  const counts = await aheadBehind(git, branch);
+  state.ahead = counts.ahead;
+  state.behind = counts.behind;
+  state.status = 'merged';
+  state.lastError = '';
+  return { ok: true, status: 'merged', message: `Merge committed on ${branch}. ${counts.ahead} commit(s) ready to push.` };
+}
+
+/** Everything the Sync page needs in one read. */
+export async function syncOverview({ run } = {}) {
+  const git = run || runGit;
+  const remote = parseRemote((await git(['remote', 'get-url', 'origin'])).stdout);
+  const branch = await currentBranch(git);
+  const fetched = await git(['fetch', 'origin', branch], 60000);
+  const counts = fetched.ok ? await aheadBehind(git, branch) : { ahead: state.ahead, behind: state.behind };
+  if (fetched.ok) {
+    state.ahead = counts.ahead;
+    state.behind = counts.behind;
+    state.branch = branch;
+  }
+  const conflicts = await conflictFiles({ run: git });
+  if (conflicts.count) state.status = 'conflict';
+  return {
+    ok: true,
+    git: gitSyncStatus(),
+    branch,
+    remote: remote.webUrl,
+    ahead: counts.ahead,
+    behind: counts.behind,
+    conflicts: conflicts.files,
+    pulledAt: fetched.ok ? now() : null,
+    note: fetched.ok ? '' : fetched.stderr || 'git fetch failed',
+  };
+}
+
 /** Do not sync for a while (used when the console is editing its own files). */
 export function pauseAutoSync(ms = 60000) {
   state.pausedUntil = Date.now() + Math.max(0, Number(ms) || 0);
@@ -213,7 +521,7 @@ export function startAutoSync({ intervalMs } = {}) {
   state.intervalMs = Math.max(5000, Number(intervalMs) || fromSettings || 20000);
   if (state.timer) clearInterval(state.timer);
   state.timer = setInterval(() => {
-    checkAndSync().catch((err) => {
+    autoTick().catch((err) => {
       state.status = 'error';
       state.lastError = err.message;
     });
@@ -221,6 +529,27 @@ export function startAutoSync({ intervalMs } = {}) {
   state.timer.unref?.();
   return gitSyncStatus();
 }
+
+/**
+ * One automatic pass: commit and push what changed here, then take updates that
+ * other apps pushed to the same repository. The pull only ever fast-forwards, so
+ * an automatic pass can never discard local commits; a diverged branch waits for
+ * the Sync page.
+ */
+async function autoTick() {
+  const status = await checkAndSync();
+  if (db().settings.autoPull === false) return status;
+  if (status.busy || status.pending || status.status === 'conflict' || status.status === 'error') return status;
+  if (Number(status.behind || 0) <= 0) return status;
+  const pulled = await pullNow({ ffOnly: true });
+  if (!pulled.ok) {
+    state.status = pulled.status === 'diverged' ? 'diverged' : state.status;
+    state.lastError = pulled.message || state.lastError;
+  }
+  return gitSyncStatus();
+}
+
+export { autoTick };
 
 export function stopAutoSync() {
   if (state.timer) clearInterval(state.timer);
