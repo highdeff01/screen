@@ -16,7 +16,8 @@ after(() => {
     store.flush();
   } finally {
     process.chdir(root);
-    fs.rmSync(tempRoot, { recursive: true, force: true });
+    // Windows releases the temp folder's handles a moment after the last write.
+    fs.rmSync(tempRoot, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
   }
 });
 

@@ -16,15 +16,8 @@ after(() => {
     store.flush();
   } finally {
     process.chdir(root);
-    for (let attempt = 0; attempt < 10; attempt += 1) {
-      try {
-        fs.rmSync(tempRoot, { recursive: true, force: true });
-        break;
-      } catch (err) {
-        if (err.code !== 'EPERM' || attempt === 9) throw err;
-        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50 * (attempt + 1));
-      }
-    }
+    // Windows releases the temp folder's handles a moment after the last write.
+    fs.rmSync(tempRoot, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
   }
 });
 

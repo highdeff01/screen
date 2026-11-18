@@ -144,15 +144,7 @@ after(() => {
     process.chdir(root);
     // Windows can hold a handle on a file that was just renamed into place, so
     // removing the temp root right after flush occasionally returns EPERM.
-    for (let attempt = 0; attempt < 10; attempt += 1) {
-      try {
-        fs.rmSync(tempRoot, { recursive: true, force: true });
-        break;
-      } catch (err) {
-        if (err.code !== 'EPERM' || attempt === 9) throw err;
-        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50 * (attempt + 1));
-      }
-    }
+    fs.rmSync(tempRoot, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
   }
 });
 
