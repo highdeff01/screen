@@ -560,13 +560,6 @@ route('GET', /^\/api\/health$/, async (req, res) => {
 
 route('GET', /^\/api\/live\/preview$/, async (req, res) => sendJson(res, 200, { ok: true, preview: livePreview.state() }));
 route('POST', /^\/api\/live\/preview$/, async (req, res) => {
-  // Same-origin browsers or local non-browser clients only, like the loopback API.
-  if (req.headers.origin) {
-    try {
-      const origin = new URL(req.headers.origin);
-      if (!['http:', 'https:'].includes(origin.protocol) || origin.host !== req.headers.host) return fail(res, 403, 'Origin not allowed');
-    } catch { return fail(res, 403, 'Origin not allowed'); }
-  }
   let body;
   try { body = await readBody(req); } catch { return fail(res, 400, 'Invalid request body'); }
   if (!body || typeof body !== 'object' || !['start', 'stop', 'heartbeat'].includes(body.action)) return fail(res, 400, 'action must be start, stop or heartbeat');
@@ -2849,6 +2842,19 @@ route('POST', /^\/api\/control$/, async (req, res) => {
 });
 
 /* ---------------- Server ---------------- */
+function allowedApiOrigin(req) {
+  const value = req.headers.origin;
+  if (value === undefined) return true; // Local CLI clients need not send Origin.
+  // An Origin is a single scheme and authority, not a general URL or a list.
+  if (!/^https?:\/\/[^\s\/?#@\\,]+$/i.test(value) || value.endsWith(':')) return false;
+  try {
+    const origin = new URL(value);
+    return ['http:', 'https:'].includes(origin.protocol) && origin.host === req.headers.host?.toLowerCase();
+  } catch {
+    return false;
+  }
+}
+
 async function handleApi(req, res, url) {
   for (const r of routes) {
     if (r.method !== req.method) continue;
@@ -2869,6 +2875,9 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
   res.setHeader('Referrer-Policy', 'no-referrer');
   if (url.pathname.startsWith('/api/')) {
+    if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method) && !allowedApiOrigin(req)) {
+      return fail(res, 403, 'Origin not allowed');
+    }
     const handled = await handleApi(req, res, url);
     if (!handled) fail(res, 404, 'Not found');
     return;

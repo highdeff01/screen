@@ -31,7 +31,7 @@ test('observation review uses stored evidence and is read-only', { timeout: 3000
   fs.writeFileSync(dbFile, JSON.stringify({
     settings: { autoRecoverFailures: false, continuityAutoContinue: false, continuityEnabled: false, continuityFrameWatch: false, companionEnabled: false, agentTickMs: 600000 },
     workflows: [{ id: 'wf_one', name: 'One', status: 'ready', steps: [step] }, { id: 'wf_two', name: 'Two', status: 'ready', steps: [] }],
-    runs: [{ id: 'run_one', workflowId: 'wf_one', workflowName: 'One', status: 'completed', dryRun: true, steps: [step], evidence: [], log: [] }],
+    runs: [{ id: 'run_one', workflowId: 'wf_one', workflowName: 'One', status: 'completed', dryRun: true, steps: [step], evidence: [], log: [], ledger: [], position: null }],
     proposals: [
       { id: 'proposal_one', workflowId: 'wf_one', workflowName: 'One', status: 'pending', steps: [{ type: 'openUrl', name: 'Open', params: {} }] },
       { id: 'proposal_other', workflowId: 'wf_two', status: 'pending', steps: [step] },
@@ -78,11 +78,11 @@ test('observation review uses stored evidence and is read-only', { timeout: 3000
       await sleep(50);
     }
     assert.equal(simulation.status, 'completed');
-    await sleep(150);
-    const before = JSON.parse(fs.readFileSync(dbFile, 'utf8'));
     const beforeRun = (await request(base, '/api/runs/run_one')).body.run;
     const beforeProposal = (await request(base, '/api/proposals/proposal_one')).body.proposal;
     const beforeSimulation = (await request(base, `/api/simulations/${id}`)).body.simulation;
+    await sleep(150);
+    const before = JSON.parse(fs.readFileSync(dbFile, 'utf8'));
     const review = await request(base, `/api/observation-review?simulationId=${id}&proposalId=proposal_one`);
     assert.equal(review.status, 200);
     assert.equal(review.headers.get('cache-control'), 'no-store');
