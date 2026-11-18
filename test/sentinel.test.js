@@ -78,7 +78,7 @@ test('a failing run is queued, reported to must-check and left as a note', async
   assert.match(body, /boot renders state without waiting/);
   assert.ok(body.includes(failure.id), 'the report carries the queue id');
 
-  // A handoff note was left for the next agent.
+  // A handoff note was left for the next agent.f
   const handoff = await load('server/handoff.js');
   const notes = handoff.listNotes({ limit: 5 });
   assert.ok(notes.some((note) => note.by === 'sentinel' && /Auto-test failed/.test(note.text)));
@@ -122,8 +122,12 @@ test('a later passing run settles the failures still queued', async () => {
 });
 
 test('watching ignores machine state and test scratch folders', () => {
-  const ignored = ['data\\db.json', 'server\\server.log', 'test\\tmp-sentinel-x\\f.txt', 'data\\captures\\a.png'];
-  const watched = ['public\\app.js', 'server\\sentinel.js', 'package.json'];
+  // Windows path separators, spelled without literal backslashes so the source
+  // survives copy-through transports that collapse escape sequences.
+  const BS = String.fromCharCode(92);
+  const ignored = [`data${BS}db.json`, `server${BS}server.log`, `test${BS}tmp-sentinel-x${BS}f.txt`, `data${BS}captures${BS}a.png`];
+  const watched = [`public${BS}app.js`, `server${BS}sentinel.js`, `package.json`];
   for (const file of ignored) assert.ok(sentinel.__sentinelIgnored.test(file), `${file} should be ignored`);
   for (const file of watched) assert.ok(!sentinel.__sentinelIgnored.test(file), `${file} should be watched`);
 });
+
