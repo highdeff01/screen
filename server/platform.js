@@ -1,0 +1,372 @@
+/**
+ * Platform backends for live desktop and mobile control.
+ *
+ * Windows keeps its native PowerShell + Win32 path in automation.js. This module
+ * covers the rest: macOS (screencapture + System Events/cliclick), Linux
+ * (X11 tools) and Android (adb), and it is the single place that answers "can
+ * this console drive a screen, and with what?".
+ *
+ * Everything here is either a pure command builder (so it can be checked without
+ * that operating system) or a thin probe of what is installed.
+ */
+import { execFile } from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
+
+const HOST = process.platform;
+const IS_WINDOWS = HOST === 'win32';
+
+/** Run a command and never throw; returns { ok, stdout, stderr, code }. */
+export function runCommand(cmd, args = [], { timeoutMs = 20000, input = '' } = {}) {
+  return new Promise((resolve) => {
+    const child = execFile(
+      cmd,
+      args,
+      { timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024, windowsHide: true },
+      (error, stdout, stderr) => {
+        resolve({
+          ok: !error,
+          code: error?.code ?? 0,
+          stdout: Buffer.isBuffer(stdout) ? stdout : String(stdout || ''),
+          stderr: String(stderr || '').trim() || (error?.killed ? 'Command timed out.' : ''),
+        });
+      }
+    );
+    if (input) {
+      child.stdin?.end(input);
+    }
+  });
+}
+
+/** True when an executable is found on PATH (honours PATHEXT on Windows). */
+export function commandOnPath(name, env = process.env) {
+  if (!name) return false;
+  const exts = IS_WINDOWS
+    ? String(env.PATHEXT || '.EXE;.CMD;.BAT;.COM').split(';').filter(Boolean)
+    : [''];
+  const dirs = String(env.PATH || env.Path || '').split(path.delimiter).filter(Boolean);
+  for (const dir of dirs) {
+    for (const ext of exts) {
+      try {
+        const candidate = path.join(dir, name + ext);
+        if (fs.existsSync(candidate)) return true;
+      } catch {
+        // An unreadable PATH entry is simply not a hit.
+      }
+    }
+  }
+  return false;
+}
+
+const LINUX_CAPTURE = [
+  { tool: 'grim', args: (file) => [file] },
+  { tool: 'gnome-screenshot', args: (file) => ['-f', file] },
+  { tool: 'spectacle', args: (file) => ['-b', '-n', '-o', file] },
+  { tool: 'scrot', args: (file) => [file] },
+  { tool: 'import', args: (file) => ['-window', 'root', file] },
+];
+
+const LINUX_INPUT = [
+  { tool: 'xdotool', label: 'xdotool (X11)' },
+  { tool: 'ydotool', label: 'ydotool (Wayland)' },
+];
+
+function firstPresent(candidates, env) {
+  return candidates.find((entry) => commandOnPath(entry.tool, env)) || null;
+}
+
+/** A connected adb device, if any. Lets a phone be driven from any host. */
+export function androidDevice({ env = process.env } = {}) {
+  if (!commandOnPath('adb', env)) return null;
+  const serial = String(env.ANDROID_SERIAL || '').trim();
+  return { serial: serial || '', tool: 'adb' };
+}
+
+export const ANDROID_KEYCODES = {
+  enter: 66,
+  return: 66,
+  tab: 61,
+  esc: 111,
+  escape: 111,
+  space: 62,
+  backspace: 67,
+  bksp: 67,
+  delete: 112,
+  del: 112,
+  insert: 124,
+  home: 122,
+  end: 123,
+  pageup: 92,
+  pagedown: 93,
+  up: 19,
+  down: 20,
+  left: 21,
+  right: 22,
+  back: 4,
+  menu: 82,
+  win: 3,
+  meta: 3,
+  shift: 59,
+  ctrl: 113,
+  control: 113,
+  alt: 57,
+  f1: 131,
+  f2: 132,
+  f3: 133,
+  f4: 134,
+  f5: 135,
+  f6: 136,
+  f7: 137,
+  f8: 138,
+  f9: 139,
+  f10: 140,
+  f11: 141,
+  f12: 142,
+};
+
+export const MAC_KEYCODES = {
+  enter: 36,
+  return: 36,
+  tab: 48,
+  esc: 53,
+  escape: 53,
+  space: 49,
+  backspace: 51,
+  bksp: 51,
+  delete: 117,
+  del: 117,
+  insert: 114,
+  home: 115,
+  end: 119,
+  pageup: 116,
+  pagedown: 121,
+  up: 126,
+  down: 125,
+  left: 123,
+  right: 124,
+  f1: 122,
+  f2: 120,
+  f3: 99,
+  f4: 118,
+  f5: 96,
+  f6: 97,
+  f7: 98,
+  f8: 100,
+  f9: 101,
+  f10: 109,
+  f11: 103,
+  f12: 111,
+};
+
+/**
+ * Turn the step's key notation — SendKeys-style "ctrl+l", "^l", "ctrl+shift+t",
+ * "{ENTER}", or an array of them — into canonical chords: ['ctrl+l'].
+ */
+export function keyChords(input) {
+  const entries = (Array.isArray(input) ? input : [input])
+    .flatMap((entry) => String(entry ?? '').split(/\s*,\s*/))
+    .filter((entry) => entry.trim());
+  return entries.map(pieceToChord).filter(Boolean);
+}
+
+function pieceToChord(token) {
+  let text = String(token).trim().toLowerCase();
+  if (!text) return '';
+  const modifiers = [];
+  // SendKeys prefixes: ^ control, % alt, + shift.
+  while (/^[\^%+]/.test(text)) {
+    const mark = text[0];
+    if (mark === '^') modifiers.push('ctrl');
+    else if (mark === '%') modifiers.push('alt');
+    else modifiers.push('shift');
+    text = text.slice(1);
+  }
+  const parts = text.split('+').filter(Boolean);
+  const keyParts = [];
+  for (const part of parts) {
+    const clean = part.trim().replace(/^\{|\}$/g, '').toLowerCase();
+    if (!clean) continue;
+    if (['ctrl', 'control'].includes(clean)) modifiers.push('ctrl');
+    else if (clean === 'alt' || clean === 'option') modifiers.push('alt');
+    else if (clean === 'shift') modifiers.push('shift');
+    else if (['cmd', 'command', 'meta', 'win', 'super'].includes(clean)) modifiers.push('meta');
+    else keyParts.push(clean);
+  }
+  const key = keyParts.join('+') || modifiers.pop() || '';
+  if (!key) return modifiers.join('+');
+  return [...new Set(modifiers), key].join('+');
+}
+
+/** xdotool: "ctrl+l" → ["key", "--clearmodifiers", "ctrl+l"]. */
+export function xdotoolKeyArgs(chord) {
+  return ['key', '--clearmodifiers', chord];
+}
+
+/** Android: single key → keyevent; a chord → keycombination (API 31+). */
+export function adbKeyArgs(chord) {
+  const parts = String(chord).split('+');
+  const key = parts.pop();
+  const code = ANDROID_KEYCODES[key] ?? (/^[a-z0-9]$/.test(key) ? androidCharCode(key) : null);
+  if (code == null) throw new Error(`Android has no key code for "${key}".`);
+  if (!parts.length) return ['shell', 'input', 'keyevent', String(code)];
+  const modifiers = parts.map((mod) => {
+    const modifierCode = ANDROID_KEYCODES[mod];
+    if (modifierCode == null) throw new Error(`Android has no modifier "${mod}".`);
+    return String(modifierCode);
+  });
+  return ['shell', 'input', 'keycombination', ...modifiers, String(code)];
+}
+
+/** KEYCODE_A = 29 … KEYCODE_Z = 54, KEYCODE_0 = 7 … KEYCODE_9 = 16. */
+export function androidCharCode(char) {
+  const code = String(char).toLowerCase().charCodeAt(0);
+  if (code >= 97 && code <= 122) return 29 + (code - 97);
+  if (code >= 48 && code <= 57) return 7 + (code - 48);
+  return null;
+}
+
+/** AppleScript that presses one chord through System Events. */
+export function appleKeyScript(chord) {
+  const parts = String(chord).split('+');
+  const key = parts.pop();
+  const APPLE_MODIFIER = { ctrl: 'control', control: 'control', meta: 'command', cmd: 'command', alt: 'option', option: 'option', shift: 'shift' };
+  const using = parts.map((mod) => `${APPLE_MODIFIER[mod] || mod} down`).join(', ');
+  const code = MAC_KEYCODES[key];
+  if (code != null) {
+    return using
+      ? `tell application "System Events" to key code ${code} using {${using}}`
+      : `tell application "System Events" to key code ${code}`;
+  }
+  if (key.length > 1) throw new Error(`macOS has no key code for "${key}".`);
+  const escaped = key.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  return using
+    ? `tell application "System Events" to keystroke "${escaped}" using {${using}}`
+    : `tell application "System Events" to keystroke "${escaped}"`;
+}
+
+/** The tool that will take the screenshot, or '' when none is installed. */
+export function captureToolFor(backend, env = process.env) {
+  if (backend === 'darwin') return commandOnPath('screencapture', env) ? 'screencapture' : '';
+  if (backend === 'linux') return firstPresent(LINUX_CAPTURE, env)?.tool || '';
+  return '';
+}
+
+/** Full-screen capture command for a desktop backend. */
+export function captureCommand(backend, file) {
+  if (backend === 'darwin') return { cmd: 'screencapture', args: ['-x', file] };
+  if (backend === 'linux') {
+    const entry = LINUX_CAPTURE.find((candidate) => commandOnPath(candidate.tool));
+    if (!entry) throw new Error('No screenshot tool found. Install grim (Wayland) or imagemagick/gnome-screenshot (X11).');
+    return { cmd: entry.tool, args: entry.args(file) };
+  }
+  throw new Error(`No capture command for ${backend}.`);
+}
+
+/**
+ * The backend this console should use. `SIGHTLINE_TARGET=android` deliberately
+ * drives a phone from any host; otherwise the local desktop decides.
+ */
+export function detectBackend({ env = process.env, platform = HOST } = {}) {
+  const forced = String(env.SIGHTLINE_TARGET || '').trim().toLowerCase();
+  if (forced === 'android' || forced === 'mobile') {
+    const device = androidDevice({ env });
+    return device
+      ? {
+          id: 'android',
+          label: 'Android device',
+          available: true,
+          reason: '',
+          capture: 'adb screencap',
+          input: 'adb input',
+          mobile: true,
+          target: forced,
+        }
+      : {
+          id: 'android',
+          label: 'Android device',
+          available: false,
+          mobile: true,
+          target: forced,
+          reason:
+            'SIGHTLINE_TARGET=android needs adb on PATH with a device attached (check `adb devices`). Live runs are refused until one is available.',
+        };
+  }
+  if (platform === 'win32') {
+    return {
+      id: 'win32',
+      label: 'Windows',
+      available: true,
+      reason: '',
+      capture: 'PowerShell + System.Drawing',
+      input: 'PowerShell + Win32 SendInput',
+      mobile: false,
+      target: 'desktop',
+    };
+  }
+  if (platform === 'darwin') {
+    const capture = captureToolFor('darwin', env);
+    const input = commandOnPath('cliclick', env) ? 'cliclick' : 'System Events (AppleScript)';
+    return {
+      id: 'darwin',
+      label: 'macOS',
+      available: Boolean(capture),
+      reason: capture
+        ? ''
+        : 'macOS capture needs /usr/sbin/screencapture, which is missing; live runs are refused.',
+      capture: capture || 'missing',
+      input,
+      mobile: false,
+      target: 'desktop',
+    };
+  }
+  if (platform === 'linux') {
+    const capture = captureToolFor('linux', env);
+    const input = firstPresent(LINUX_INPUT, env);
+    const missing = [];
+    if (!capture) missing.push('a screenshot tool (grim, gnome-screenshot, spectacle, scrot or imagemagick import)');
+    if (!input) missing.push('an input tool (xdotool on X11, ydotool on Wayland)');
+    return {
+      id: 'linux',
+      label: 'Linux',
+      available: !missing.length,
+      reason: missing.length
+        ? `Linux live control needs ${missing.join(' and ')}; live runs are refused until they are installed.`
+        : '',
+      capture: capture || 'missing',
+      input: input ? input.label : 'missing',
+      mobile: false,
+      target: 'desktop',
+    };
+  }
+  // FreeBSD and friends: adb can still drive a phone, nothing else here can.
+  const device = androidDevice({ env });
+  return {
+    id: 'unknown',
+    label: platform,
+    available: Boolean(device),
+    mobile: Boolean(device),
+    target: device ? 'android' : 'desktop',
+    capture: device ? 'adb screencap' : 'none',
+    input: device ? 'adb input' : 'none',
+    reason: device
+      ? ''
+      : `Live control is not implemented for ${platform}. Set SIGHTLINE_TARGET=android with adb and a device attached, or run the console on Windows, macOS or Linux.`,
+  };
+}
+
+/** What the API and the UI banner report. */
+export function liveControl(options) {
+  const backend = detectBackend(options);
+  return {
+    available: backend.available,
+    reason: backend.reason,
+    backend: backend.id,
+    label: backend.label,
+    capture: backend.capture,
+    input: backend.input,
+    mobile: backend.mobile,
+    target: backend.target,
+  };
+}
+
+export { HOST, IS_WINDOWS, LINUX_CAPTURE, LINUX_INPUT };

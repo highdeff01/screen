@@ -175,6 +175,9 @@ export function summary(run) {
     total: steps.length,
     passed: steps.filter((s) => s.status === 'passed').length,
     failed: steps.filter((s) => s.status === 'failed').length,
+    // Steps whose silent checks have not settled yet: they read as passed in the
+    // run but must not be presented as finished until those checks answer.
+    awaitingChecks: (run.pendingVerification || []).length,
     evidenceCount: (run.evidence || []).length,
     retryCount: Number(run.retryCount || 0),
     errorCategory: run.errorCategory || null,

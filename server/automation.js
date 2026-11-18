@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { CAPTURES, DATA, NOTES, ROOT, TOOLS, db, now, persist, slug, uid, writeFileDurable } from './store.js';
 import { chat, parseJsonLoose } from './llm.js';
+import { executePortableStep, portableLiveScreenshot } from './portable.js';
 import { decidePreview, describeSurroundings } from './step-context.js';
 import {
   catalogEntry,
@@ -357,6 +358,9 @@ $tg.Dispose(); $thumb.Dispose(); $g.Dispose(); $src.Dispose()
  * whether a cached locate still describes what is on screen.
  */
 async function liveScreenshot(runId, options = {}) {
+  // macOS, Linux and Android capture through their own tools; the record shape
+  // is identical so vision checks and evidence keep working off Windows.
+  if (!IS_WINDOWS) return portableLiveScreenshot(runId, options);
   const file = path.join(CAPTURES, `${uid('cap')}.png`);
   const maxWidth = Math.max(0, Math.min(4096, Number(options.maxWidth) || 0));
   const quality = Math.max(30, Math.min(95, Number(options.quality) || 80));
@@ -2834,6 +2838,61 @@ export function playbackHistoryShots(run = null, { exclude = [], limit = 3 } = {
   return shots;
 }
 
+/**
+ * Map a point in a vision image back to absolute screen coordinates. The vision
+ * image is a resized crop of the screen, so the crop's origin and scale decide
+ * where the model's pixel actually is.
+ */
+function visionPointToScreen(shot, control) {
+  if (!control || control.visible === false) return null;
+  const x = Number(control.x);
+  const y = Number(control.y);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+  const vision = shot?.vision;
+  if (!vision || !vision.width || !vision.height || !vision.cropWidth || !vision.cropHeight) return null;
+  const screenX = Math.round(vision.cropX + x * (vision.cropWidth / vision.width));
+  const screenY = Math.round(vision.cropY + y * (vision.cropHeight / vision.height));
+  // A point outside the captured region is not a control this step can click.
+  if (screenX < vision.cropX || screenY < vision.cropY) return null;
+  if (screenX > vision.cropX + vision.cropWidth || screenY > vision.cropY + vision.cropHeight) return null;
+  return { x: screenX, y: screenY };
+}
+
+/**
+ * Show the player's controls the way a person would: raise the window, park the
+ * pointer over the picture and let hover controls fade in before looking again.
+ */
+async function revealPlayerControls(step, shot, ctx) {
+  const p = step.params || {};
+  const title = str(p.title, '');
+  if (title) {
+    try {
+      await executeStep(
+        { type: 'focusWindow', name: `Focus ${title} before looking for its controls`, params: { title }, timeoutMs: 10000 },
+        ctx
+      );
+    } catch {
+      // The window may already be in front; the picture is read either way.
+    }
+  }
+  const vision = shot?.vision;
+  if (vision?.cropWidth) {
+    try {
+      await executeStep(
+        {
+          type: 'move',
+          name: 'Hover over the player to reveal its controls',
+          params: { x: vision.cropX + Math.round(vision.cropWidth / 2), y: vision.cropY + Math.round(vision.cropHeight * 0.6) },
+        },
+        ctx
+      );
+    } catch {
+      // Hovering is best effort; the recapture below is what decides.
+    }
+  }
+  await new Promise((resolve) => setTimeout(resolve, 800));
+}
+
 export async function executeStep(step, ctx) {
   let p = step.params || {};
   const live = Boolean(ctx.live);
@@ -4245,7 +4304,8 @@ try {
     const system =
       'You are a strict video state checker. You are shown TWO live desktop screenshots taken in order, frame 1 then frame 2. ' +
       'Decide whether the video is actively playing, paused, or unknown. ' +
-      'Return JSON only: {"state":"playing|paused|unknown","playing":true|false,"progressed":true|false,"confidence":0-1,"observed":"what is visible in each frame"}. ' +
+      'Return JSON only: {"state":"playing|paused|unknown","playing":true|false,"progressed":true|false,"confidence":0-1,"playControl":{"visible":true|false,"x":0,"y":0},"observed":"what is visible in each frame"}. ' +
+      'In playControl give the pixel centre of the play/pause control in frame 2 when one is visible; set visible to false when the controls are hidden, cut off, or hidden behind another window. ' +
       'Use "playing" only when a watch page/player is visible, a pause control (not a large centre play button) is shown, there is no buffering spinner, progress is beyond 0:00, and the elapsed time or video frame advanced between frame 1 and frame 2. ' +
       'Use "paused" when the frames are effectively identical and a large play overlay or play control is visible. ' +
       'Use "unknown" for another app, a search grid, a blank/loading page, an ad, or anything ambiguous. Never guess.';
@@ -4297,15 +4357,66 @@ try {
       error.evidence = evidence;
       throw error;
     }
-    const res = await runPowerShell(buildScript(step), step.timeoutMs || 20000);
-    if (!res.ok) {
-      const error = new Error(res.stderr || res.stdout || 'Play click failed');
+    // Click the control that is actually on screen. A blind click at the step's
+    // stored coordinates lands on whatever happens to be there when the player
+    // has hidden its controls or another window is in front.
+    let target = visionPointToScreen(second, parsed?.playControl);
+    if (!target) {
+      await revealPlayerControls(step, second, ctx);
+      let retryShot = null;
+      try {
+        retryShot = await liveScreenshot(ctx.runId, visionShot);
+        evidence.push({ kind: 'screenshot', caption: 'Play control after revealing the player controls', ...retryShot });
+      } catch {
+        retryShot = null;
+      }
+      if (retryShot) {
+        const retry = await chat(
+          [
+            {
+              role: 'system',
+              content:
+                'You locate a video player control. Return JSON only: {"visible":true|false,"x":0,"y":0,"observed":"what you see"}. ' +
+                'x and y are the pixel centre of the play/pause control in this image. Use visible:false when no play control can be seen, and never guess coordinates.',
+            },
+            { role: 'user', content: `Expected media window: ${title}.` },
+          ],
+          {
+            images: [modelImage(retryShot)],
+            format: 'json',
+            kind: 'playback-state',
+            timeoutMs: 60000,
+            temperature: 0,
+            numCtx: 2048,
+          }
+        );
+        if (retry.ok) target = visionPointToScreen(retryShot, parseJsonLoose(retry.content));
+      }
+    }
+    if (!target) {
+      const error = new Error(
+        `The play control is not visible on screen, so no click was made at ${num(p.x)},${num(p.y)}. ` +
+          `Bring the player to the front (focusWindow) or exit full screen, then retry. Observed: ${String(
+            parsed?.observed || 'no play button found'
+          ).slice(0, 300)}`
+      );
       error.evidence = evidence;
       throw error;
     }
+    await executeStep(
+      {
+        type: 'click',
+        name: `Click play in ${title}`,
+        params: { x: target.x, y: target.y, button: str(p.button, 'left'), ...(title ? { foreground: title } : {}) },
+        timeoutMs: step.timeoutMs || 20000,
+      },
+      ctx
+    );
     await new Promise((resolve) => setTimeout(resolve, 1200));
     return {
-      output: `Paused player detected; clicked the play control. Verify playback next.`,
+      output: `Paused player detected; clicked the play control inside the player at ${target.x},${target.y}${
+        target.x !== num(p.x) || target.y !== num(p.y) ? ' (adjusted from the step\'s stored point to where the control actually is)' : ''
+      }. Verify playback next.`,
       evidence,
     };
   }
@@ -4593,7 +4704,8 @@ try {
   }
 
   if (!IS_WINDOWS) {
-    throw new Error('Live desktop control requires Windows (PowerShell + Win32 input).');
+    // Clicks, typing, keys, windows and apps run through the platform backend.
+    return executePortableStep(step, ctx);
   }
 
   const foregroundExpectation =

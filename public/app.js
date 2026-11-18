@@ -225,6 +225,17 @@ function statusPill(status, label) {
   return `<span class="pill ${esc(status)}">${esc(text)}</span>`;
 }
 
+/**
+ * A step that still owes a verification check is not finished, even though its
+ * action ran: show it as "checking" until the check answers.
+ */
+function stepDisplayStatus(run, step) {
+  const pending = (run?.pendingVerification || []).some((entry) => entry.stepId === step.id);
+  if (!pending) return step.status;
+  if (step.status === 'passed') return 'verifying';
+  return step.status;
+}
+
 function modeBadge(simulated) {
   return simulated ? '<span class="pill simulated">simulated</span>' : '<span class="pill live">live</span>';
 }
@@ -647,21 +658,23 @@ function renderHeader() {
       ? `Connected to ${ui.data?.settings.endpoint}. Local planner is used when the model is unreachable.`
       : `Cannot reach ${ui.data?.settings.endpoint || 'the AI endpoint'}. Build and run still work with the local planner.`;
   }
+  const platform = ui.data?.platform || {};
   const plat = $('#platform-tag');
   if (plat && ui.data) {
-    plat.textContent = ui.data.platform.windows ? 'windows · powershell' : 'non-windows · simulated only';
+    const label = String(platform.label || platform.platform || 'desktop').toLowerCase();
+    plat.textContent = platform.available ? `${label} · live` : `${label} · simulated only`;
+    plat.title = platform.available
+      ? `${platform.input || 'input'} · capture: ${platform.capture || 'unknown'}`
+      : String(platform.reason || 'no live backend');
   }
-  // A non-Windows console cannot drive this desktop at all, so it says so above
-  // every view instead of only when someone tries a live run.
+  // A console without a live backend cannot drive this screen at all, so it
+  // says so above every view instead of only when someone tries a live run.
   const banner = $('#platform-banner');
   if (banner && ui.data) {
-    const windows = ui.data.platform?.windows !== false;
-    banner.hidden = windows;
+    banner.hidden = platform.available !== false;
     const detail = $('#platform-banner-detail');
-    if (detail && !windows) {
-      detail.textContent = `console ${ui.data.platform?.platform || 'non-Windows'} · ${
-        ui.data.platform?.shell || 'unknown shell'
-      } · pid ${ui.data.platform?.pid ?? '?'} · ${location.origin}`;
+    if (detail && platform.available === false) {
+      detail.textContent = `${platform.reason || 'no live backend'} · pid ${platform.pid ?? '?'} · ${location.origin}`;
     }
   }
   const counts = ui.data?.counts;
@@ -898,7 +911,7 @@ function renderRunTray() {
     </div>
     <div class="tray-meter" title="${settled}/${total} steps settled"><i style="width:${pct}%"></i></div>
     <div class="tray-status">${statusPill(run.status, run.status)}<span class="small">${esc(control)}</span></div>
-    <div class="tray-step"><b>${esc(step || (active ? 'waiting for the next step' : 'run finished'))}</b><span class="dim small">${settled}/${total} steps · ${Number(run.passed || 0)} passed · ${Number(run.failed || 0)} failed · ${Number(run.evidenceCount || 0)} evidence</span></div>
+    <div class="tray-step"><b>${esc(step || (active ? 'waiting for the next step' : 'run finished'))}</b><span class="dim small">${settled}/${total} steps · ${Number(run.passed || 0)} passed${Number(run.awaitingChecks) > 0 ? ` (${Number(run.awaitingChecks)} still checking)` : ''} · ${Number(run.failed || 0)} failed · ${Number(run.evidenceCount || 0)} evidence</span></div>
     ${run.presence?.holding ? `<div class="dim small" title="The run is waiting so it does not take the desktop while you work.">waiting for the desktop · ${esc(run.presence.reason || 'the user is active')}${Number(run.presence.deferredMs) > 0 ? ` · held ${Math.round(Number(run.presence.deferredMs) / 1000)}s` : ''}</div>` : ''}
     ${ui.trayExpanded ? `<div class="tray-detail">
       ${next ? `<div><span class="dim">Next</span> ${esc(next)}</div>` : ''}
@@ -1755,7 +1768,8 @@ function renderRunDetail(run) {
         <ul class="timeline">
           ${full.steps
             .map((s, i) => {
-              const glyph = s.status === 'passed' ? '✓' : s.status === 'failed' ? '✕' : s.status === 'running' ? '◌' : s.status === 'skipped' ? '–' : '·';
+              const shown = stepDisplayStatus(full, s);
+              const glyph = shown === 'passed' ? '✓' : shown === 'failed' ? '✕' : shown === 'verifying' ? '◔' : shown === 'running' ? '◌' : shown === 'skipped' ? '–' : '·';
               const stepEvidence = (full.evidence || []).filter((e) => e.stepId === s.id);
               return `<li class="tl-item ${esc(s.status)}">
                 <span class="tl-marker">${glyph}</span>
@@ -1763,7 +1777,7 @@ function renderRunDetail(run) {
                   <div class="tl-top">
                     <span class="tl-name">${i + 1}. ${esc(s.name)}</span>
                     <span class="type-chip">${esc(s.type)}</span>
-                    ${statusPill(s.status)}
+                    ${statusPill(shown, shown === 'verifying' ? 'checking' : undefined)}
                     ${s.optional ? '<span class="badge">optional</span>' : ''}
                     <span class="tl-meta">${s.attempts > 1 ? `${s.attempts} attempts · ` : ''}${fmtDur(s.ms)}</span>
                   </div>
@@ -8166,10 +8180,10 @@ async function boot() {
     }
     const counts = ui.data?.counts || {};
     const busy = Number(counts.activeRuns || 0) + Number(counts.missionsActive || 0);
-    const delay = document.hidden ? 8000 : busy ? 1500 : 3000;
+    const delay = document.hidden ? 8000 : busy ? 500 : 2000;
     setTimeout(pollState, delay);
   };
-  setTimeout(pollState, 1800);
+  setTimeout(pollState, 400);
   setInterval(loadHealth, 60000);
   setInterval(async () => {
     if (!ui.data?.live?.running) return;
