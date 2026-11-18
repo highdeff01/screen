@@ -1864,8 +1864,8 @@ function renderRunDetail(run) {
           ${(full.agentReplans || []).length ? `<div class="hint-box" style="margin-top:8px;border-color:rgba(129,140,248,.35)"><strong>AI repair agent</strong>${full.agentReplans.map((replan) => `<div class="small" style="margin-top:6px"><b>${esc(replan.step)}</b> · ${esc(replan.method)}${replan.confidence != null ? ` · ${Math.round(Number(replan.confidence) * 100)}% confidence` : ''}${replan.diagnosis ? `<div class="dim" style="margin-top:2px">${esc(replan.diagnosis)}</div>` : ''}<div class="dim" style="margin-top:2px">${replan.replacesStep ? 'replaced the failed step' : 'ran prerequisites, then retried'}${(replan.steps || []).length ? ` · ${esc((replan.steps || []).join(' → '))}` : ''}${(replan.remaining || []).length ? ` · rewrote ${replan.remaining.length} remaining step(s)` : ''}</div></div>`).join('')}</div>` : ''}
           ${full.replannedAfterFailure ? `<div class="hint-box" style="margin-top:8px"><strong>AI replanned the remainder</strong><div class="small" style="margin-top:4px">${esc((full.supersededSteps || []).length)} failed action step(s) were superseded; later steps were rebuilt from the current screen.</div></div>` : ''}
         </div>
+          ${full.presence?.holding ? `<div class="hint-box" style="margin-top:8px;border-color:rgba(251,191,36,.4)"><strong>Waiting for your desktop to go quiet</strong><div class="small" style="margin-top:3px">${esc(full.presence.reason || 'the presence guard is holding this step')} · held ${Math.round((Number(full.presence.deferredMs) || 0) / 1000)}s so far — live steps start the moment you stop moving the mouse, or press <b>Run now anyway</b>.</div></div>` : ''}
         <div class="row wrap">
-          ${full.presence?.holding ? `<div class="hint-box" style="margin-top:8px;border-color:rgba(251,191,36,.4);width:100%"><strong>Waiting for your desktop to go quiet</strong><div class="small" style="margin-top:3px">${esc(full.presence.reason || 'the presence guard is holding this step')} · held ${Math.round(Number(full.presence.deferredMs) || 0) / 1000}s so far — Notepad and other live steps start the moment you stop moving the mouse, or press <b>Run now anyway</b>.</div></div>` : ''}
           <button class="btn btn-sm" data-act="retry-run" data-id="${full.id}" ${retryBusy ? 'disabled' : ''}>${retryBusy ? 'Re-planning…' : '↻ Re-plan & retry'}</button>
           ${['failed', 'needs_review', 'cancelled'].includes(full.status) ? `<button class="btn btn-sm btn-ghost" data-act="propose-run" data-id="${full.id}">🧭 Research repair proposal</button>` : ''}
           ${canCancel ? `<button class="btn btn-sm" data-act="run-control" data-id="${full.id}" data-cmd="pause" ${runPaused ? 'disabled' : ''}>Pause</button>` : ''}
@@ -7454,6 +7454,7 @@ async function runAction(name, ds, el) {
         resume: 'Run resumed.',
         skip: 'Skip requested; the active wait or next step will be skipped.',
         continue: 'Pause and skip flags cleared.',
+        bypass: 'Run now anyway: the presence hold is skipped and the step takes focus right away.',
       };
       toast(messages[cmd] || `Run ${cmd}`, 'ok');
       await loadRun(ds.id);
