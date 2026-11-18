@@ -1865,11 +1865,13 @@ function renderRunDetail(run) {
           ${full.replannedAfterFailure ? `<div class="hint-box" style="margin-top:8px"><strong>AI replanned the remainder</strong><div class="small" style="margin-top:4px">${esc((full.supersededSteps || []).length)} failed action step(s) were superseded; later steps were rebuilt from the current screen.</div></div>` : ''}
         </div>
         <div class="row wrap">
+          ${full.presence?.holding ? `<div class="hint-box" style="margin-top:8px;border-color:rgba(251,191,36,.4);width:100%"><strong>Waiting for your desktop to go quiet</strong><div class="small" style="margin-top:3px">${esc(full.presence.reason || 'the presence guard is holding this step')} · held ${Math.round(Number(full.presence.deferredMs) || 0) / 1000}s so far — Notepad and other live steps start the moment you stop moving the mouse, or press <b>Run now anyway</b>.</div></div>` : ''}
           <button class="btn btn-sm" data-act="retry-run" data-id="${full.id}" ${retryBusy ? 'disabled' : ''}>${retryBusy ? 'Re-planning…' : '↻ Re-plan & retry'}</button>
           ${['failed', 'needs_review', 'cancelled'].includes(full.status) ? `<button class="btn btn-sm btn-ghost" data-act="propose-run" data-id="${full.id}">🧭 Research repair proposal</button>` : ''}
           ${canCancel ? `<button class="btn btn-sm" data-act="run-control" data-id="${full.id}" data-cmd="pause" ${runPaused ? 'disabled' : ''}>Pause</button>` : ''}
           ${canCancel && runPaused ? `<button class="btn btn-sm btn-primary" data-act="run-control" data-id="${full.id}" data-cmd="resume">Resume</button>` : ''}
           ${canCancel ? `<button class="btn btn-sm" data-act="run-control" data-id="${full.id}" data-cmd="skip">Skip step</button>` : ''}
+          ${canCancel && full.presence?.holding ? `<button class="btn btn-sm btn-primary" data-act="run-control" data-id="${full.id}" data-cmd="bypass" title="Skip the presence wait and take focus right away">Run now anyway</button>` : ''}
           ${canCancel ? `<button class="btn btn-sm btn-ghost" data-act="run-control" data-id="${full.id}" data-cmd="continue">Continue</button>` : ''}
           ${canCancel ? `<button class="btn btn-sm btn-danger" data-act="cancel-run" data-id="${full.id}">Cancel</button>` : ''}
           <button class="btn btn-sm" data-act="capture-run" data-id="${full.id}">Capture now</button>
@@ -3479,7 +3481,7 @@ function renderPresentation() {
           </div>
           <div class="hint-box small">
             <b>Now:</b> ${esc(liveStep || (liveActive ? 'waiting for the next step' : 'run finished'))}${liveNext ? `<br><b>Next:</b> ${esc(liveNext)}` : ''}
-            ${liveRun.presence?.holding ? `<br><b>Hold:</b> ${esc(liveRun.presence.reason || 'waiting for the desktop')}${Number(liveRun.presence.deferredMs) > 0 ? ` · held ${Math.round(Number(liveRun.presence.deferredMs) / 1000)}s` : ''}` : ''}
+            ${liveRun.presence?.holding ? `<br><b style="color:var(--warn,#b58900)">Waiting for your desktop to go quiet</b> — ${esc(liveRun.presence.reason || 'waiting for the desktop')}${Number(liveRun.presence.deferredMs) > 0 ? ` · held ${Math.round(Number(liveRun.presence.deferredMs) / 1000)}s so far` : ''} — press <b>Run now anyway</b> to take focus immediately.` : ''}
             ${liveRun.position ? `<br><span class="dim">position ${Number(liveRun.position.stepNumber) || 0}/${Number(liveRun.position.total) || liveRun.total || 0} · ${esc(liveRun.position.phase || '')}</span>` : ''}
           </div>
           ${liveFacts.length ? `<div class="stack" style="gap:4px">${liveFacts.map((fact) => `<div class="cc-event"><span class="badge">${esc(fact.level || 'note')}</span><span class="small">${esc(fact.message || '')}</span></div>`).join('')}</div>` : ''}
@@ -3487,7 +3489,7 @@ function renderPresentation() {
           ${liveRun.followup ? `<div class="hint-box small"><b>Independent check:</b> ${liveRun.followup.ok ? 'passed' : 'failed'} — ${esc(liveRun.followup.summary || '')}</div>` : ''}
           ${renderSimulationCard(sim)}
           <div class="row wrap" style="gap:6px">
-            ${liveActive ? `<button class="btn btn-sm" data-act="run-control" data-id="${esc(liveRun.id)}" data-cmd="pause" ${liveRun.paused ? 'disabled' : ''}>Pause</button><button class="btn btn-sm" data-act="run-control" data-id="${esc(liveRun.id)}" data-cmd="skip">Skip step</button><button class="btn btn-sm" data-act="run-control" data-id="${esc(liveRun.id)}" data-cmd="continue" ${liveRun.paused ? '' : 'disabled'}>Resume</button><button class="btn btn-sm btn-danger" data-act="cancel-run" data-id="${esc(liveRun.id)}">Cancel</button>` : `<button class="btn btn-sm" data-act="run-workflow" data-id="${esc(wf.id)}" data-mode="${liveRun.dryRun ? 'dry' : 'live'}">Run again</button>`}
+            ${liveActive ? `<button class="btn btn-sm" data-act="run-control" data-id="${esc(liveRun.id)}" data-cmd="pause" ${liveRun.paused ? 'disabled' : ''}>Pause</button><button class="btn btn-sm" data-act="run-control" data-id="${esc(liveRun.id)}" data-cmd="skip">Skip step</button><button class="btn btn-sm" data-act="run-control" data-id="${esc(liveRun.id)}" data-cmd="continue" ${liveRun.paused ? '' : 'disabled'}>Resume</button>${liveRun.presence?.holding ? `<button class="btn btn-sm btn-primary" data-act="run-control" data-id="${esc(liveRun.id)}" data-cmd="bypass" title="Skip the presence wait and take focus right away">Run now anyway</button>` : ''}<button class="btn btn-sm btn-danger" data-act="cancel-run" data-id="${esc(liveRun.id)}">Cancel</button>` : `<button class="btn btn-sm" data-act="run-workflow" data-id="${esc(wf.id)}" data-mode="${liveRun.dryRun ? 'dry' : 'live'}">Run again</button>`}
             <button class="btn btn-sm btn-ghost" data-act="run-simulate" data-id="${esc(liveRun.id)}" ${ui.simBusy ? 'disabled' : ''}>Screenshot check</button>
             <button class="btn btn-sm btn-ghost" data-act="presentation-capture">Capture desktop now</button>
           </div>
