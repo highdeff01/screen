@@ -5813,6 +5813,131 @@ function renderSentinel() {
   </div>`;
 }
 
+/* ------------------------------------------------------------------ relay */
+function renderRelay() {
+  const relay = ui.data?.relay || {};
+  const links = relay.links || [];
+  const reviews = relay.reviews || [];
+  const exchanges = relay.exchanges || [];
+  const requests = ui.data?.inbox?.open || [];
+  const pipeline = ui.data?.pipeline || {};
+
+  return `
+  <div class="page-head">
+    <div>
+      <h1>Relay &amp; pipeline</h1>
+      <p>Direct connections to other apps' repositories: send files and folders through GitHub, take their updates back through a review gate, and answer questions any connected agent raises. The pipeline runs the queued work — repair plans, opinions, retries — with parallel workers and a checkpoint stream of what actually happened.</p>
+    </div>
+    <div class="page-head-actions">
+      <button class="btn btn-sm btn-ghost" data-act="relay-refresh">Refresh</button>
+      <button class="btn btn-sm" data-act="pipeline-run">Run queue now</button>
+    </div>
+  </div>
+
+  <div class="stack">
+    <section class="card">
+      <div class="card-head"><h3>Links</h3><span class="dim small">${links.length} connected</span></div>
+      <div class="card-body">
+        <div class="row wrap" style="gap:8px;align-items:flex-start">
+          <input id="relay-name" class="input" placeholder="name (e.g. screen-client)" style="max-width:180px" />
+          <input id="relay-remote" class="input mono" placeholder="https://github.com/you/other-app.git or owner/repo" style="flex:1;min-width:240px" />
+          <input id="relay-branch" class="input" placeholder="branch" value="main" style="max-width:110px" />
+          <button class="btn btn-sm btn-primary" data-act="relay-link-add">Link repo</button>
+        </div>
+        <div class="stack" style="gap:10px;margin-top:12px">
+          ${links.length ? links.map((link) => `
+          <div class="cc-note">
+            <div class="row wrap" style="gap:6px;align-items:center">
+              <strong class="small">${esc(link.name)}</strong>
+              <span class="mono small dim">${esc(link.remote.replace('https://github.com/', ''))} · ${esc(link.branch)}</span>
+              <span class="badge">${esc(link.direction)}</span>
+              ${link.clientInstalled ? '<span class="badge okbadge">client installed</span>' : ''}
+              <span class="spacer"></span>
+              <button class="btn btn-sm ${link.allowances?.force ? '' : 'btn-ghost'}" data-act="relay-toggle-allowance" data-id="${esc(link.id)}" data-key="force" title="Allow forced updates">force ${link.allowances?.force ? 'on' : 'off'}</button>
+              <button class="btn btn-sm ${link.allowances?.autoReview ? '' : 'btn-ghost'}" data-act="relay-toggle-allowance" data-id="${esc(link.id)}" data-key="autoReview" title="Route receives and risky pushes through review">review ${link.allowances?.autoReview ? 'on' : 'off'}</button>
+              <button class="btn btn-sm btn-ghost" data-act="relay-link-rm" data-id="${esc(link.id)}">Unlink</button>
+            </div>
+            <div class="row wrap" style="gap:8px;margin-top:8px;align-items:flex-start">
+              <input id="relay-paths-${esc(link.id)}" class="input mono" placeholder="paths to send, comma separated (e.g. public, server, must-check)" style="flex:1;min-width:220px" />
+              <input id="relay-msg-${esc(link.id)}" class="input" placeholder="message" style="max-width:200px" />
+              <button class="btn btn-sm btn-primary" data-act="relay-send" data-id="${esc(link.id)}">Send</button>
+              <button class="btn btn-sm" data-act="relay-send-force" data-id="${esc(link.id)}" title="Force the other side to match this folder (needs client + force)">Send (force)</button>
+              <button class="btn btn-sm" data-act="relay-receive" data-id="${esc(link.id)}">Take updates</button>
+            </div>
+            ${link.lastError ? `<p class="small" style="margin-top:6px;color:var(--bad)">${esc(link.lastError)}</p>` : ''}
+            ${link.lastSyncAt ? `<p class="small dim" style="margin-top:4px">Last touched ${fmtTime(link.lastSyncAt)}</p>` : ''}
+          </div>`).join('') : '<p class="muted small" style="margin:0">No links yet. A link can push to another repository, pull from it, or both.</p>'}
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="card-head"><h3>Reviews</h3><span class="dim small">${relay.openReviews ? `${relay.openReviews} open` : 'clear'}</span></div>
+      <div class="card-body">
+        ${reviews.length ? `<div class="stack" style="gap:10px">${reviews.map((review) => `
+          <div class="cc-note">
+            <div class="row wrap" style="gap:6px;align-items:center">
+              <span class="badge ${review.status === 'open' ? 'warnbadge' : ''}">${esc(review.status)}</span>
+              <strong class="small">${esc(review.kind)}</strong>
+              <span class="small dim">${esc(review.link)} · ${fmtTime(review.at)}</span>
+              <span class="spacer"></span>
+              <button class="btn btn-sm" data-act="relay-opinion" data-id="${esc(review.id)}">${review.opinion?.text ? 'Re-opinion' : 'AI opinion'}</button>
+              ${review.status === 'open' ? `
+              <button class="btn btn-sm btn-primary" data-act="relay-approve" data-id="${esc(review.id)}">Approve</button>
+              <button class="btn btn-sm btn-ghost" data-act="relay-deny" data-id="${esc(review.id)}">Deny</button>` : ''}
+            </div>
+            ${(review.files || []).length ? `<p class="small mono" style="margin-top:6px">${(review.files || []).slice(0, 6).map((f) => esc(f)).join('<br>')}${review.files.length > 6 ? ` <span class="dim">+${review.files.length - 6} more</span>` : ''}</p>` : ''}
+            ${review.opinion?.text ? `<div class="hint-box small" style="margin-top:8px;white-space:pre-wrap">${esc(review.opinion.text)}</div>` : ''}
+            ${review.opinion?.error ? `<p class="small dim" style="margin-top:6px">Opinion unavailable: ${esc(review.opinion.error)}</p>` : ''}
+          </div>`).join('')}</div>` : '<p class="muted small" style="margin:0">No reviews waiting. Receives and risky pushes land here when review is on for the link.</p>'}
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="card-head"><h3>Requests for you</h3><span class="dim small">${requests.length ? `${requests.length} open` : 'none'}</span></div>
+      <div class="card-body">
+        <p class="small dim" style="margin-top:0">Any connected agent can ask through the shared API: <span class="mono">POST /api/inbox</span>, then <span class="mono">GET /api/inbox/&lt;id&gt;/wait</span> until you answer. The CLI sees the same queue.</p>
+        ${requests.length ? `<div class="stack" style="gap:10px;margin-top:10px">${requests.map((request) => `
+          <div class="cc-note">
+            <div class="row wrap" style="gap:6px;align-items:center">
+              <strong class="small">${esc(request.from)}</strong>
+              <span class="small dim">${fmtTime(request.at)}${request.runId ? ` · run ${esc(request.runId)}` : ''}</span>
+            </div>
+            <p class="small" style="margin-top:4px">${esc(request.question)}</p>
+            ${request.context ? `<p class="small dim" style="margin-top:2px">${esc(request.context)}</p>` : ''}
+            ${request.choices?.length ? `<p class="small dim" style="margin-top:2px">Choices: ${request.choices.map((c) => esc(c)).join(' · ')}</p>` : ''}
+            <div class="row wrap" style="gap:8px;margin-top:8px">
+              <input id="inbox-answer-${esc(request.id)}" class="input" placeholder="your answer" style="flex:1;min-width:220px" />
+              <button class="btn btn-sm btn-primary" data-act="inbox-answer" data-id="${esc(request.id)}">Answer</button>
+              <button class="btn btn-sm btn-ghost" data-act="inbox-cancel" data-id="${esc(request.id)}">Cancel</button>
+            </div>
+          </div>`).join('')}</div>` : '<p class="muted small" style="margin-top:10px">No open requests.</p>'}
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="card-head"><h3>Pipeline</h3><span class="dim small">${pipeline.busy ? `${pipeline.busy} running` : 'idle'} · ${pipeline.queued?.length || 0} queued</span></div>
+      <div class="card-body">
+        <div class="row wrap" style="gap:8px;align-items:center">
+          <button class="btn btn-sm" data-act="pipeline-workers" data-delta="-1">− worker</button>
+          <span class="small">${pipeline.workers || 2} workers</span>
+          <button class="btn btn-sm" data-act="pipeline-workers" data-delta="1">+ worker</button>
+          <span class="dim small">handlers: ${(pipeline.handlers || []).map((h) => esc(h)).join(', ') || 'none'}</span>
+        </div>
+        ${(pipeline.queued || []).length ? `<div class="stack" style="gap:6px;margin-top:10px">${pipeline.queued.map((job) => `<div class="row wrap" style="gap:8px;align-items:center"><span class="badge">${esc(job.kind)}</span><span class="small dim">attempt ${job.attempts || 0} · priority ${job.priority}</span><span class="spacer"></span><span class="small dim mono">${esc(String(job.key).slice(0, 60))}</span></div>`).join('')}</div>` : '<p class="muted small" style="margin-top:10px">Queue is empty. Sentinel failures and relay reviews enqueue their own work.</p>'}
+        ${(pipeline.checkpoints || []).length ? `<div class="stack" style="gap:4px;margin-top:12px"><p class="small dim" style="margin:0">Checkpoint stream (what actually happened, newest first):</p>${pipeline.checkpoints.map((cp) => `<div class="row wrap" style="gap:6px"><span class="badge ${cp.ok ? 'okbadge' : 'warnbadge'}">${cp.ok ? 'ok' : 'fail'}</span><span class="small dim">${fmtTime(cp.at)}</span><span class="small">${esc(cp.summary)}</span></div>`).join('')}</div>` : ''}
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="card-head"><h3>Exchange stream</h3><span class="dim small">${exchanges.length ? `${exchanges.length} recorded` : 'empty'}</span></div>
+      <div class="card-body">
+        ${exchanges.length ? `<div class="stack" style="gap:6px">${exchanges.slice(0, 12).map((exchange) => `<div class="row wrap" style="gap:8px;align-items:center"><span class="badge">${exchange.direction === 'push' ? '→ sent' : '← received'}</span><strong class="small">${esc(exchange.link)}</strong><span class="small dim">${fmtTime(exchange.at)}${exchange.forced ? ' · forced' : ''}</span><span class="spacer"></span><span class="small dim">${(exchange.files || []).length} path(s)</span></div>`).join('')}</div>` : '<p class="muted small" style="margin:0">Nothing has moved through a link yet.</p>'}
+      </div>
+    </section>
+  </div>`;
+}
+
 function renderSync() {
   const info = ui.gitInfo;
   if (!info) {
@@ -6398,6 +6523,159 @@ async function runAction(name, ds, el) {
     case 'sentinel-push': {
       toast('Committing and pushing…');
       const res = await api('/api/sentinel/push-fix', { method: 'POST', body: { message: 'after sentinel auto-test' } });
+      toast(res.message || res.error || 'Done', res.ok ? 'ok' : 'error');
+      await refresh();
+      break;
+    }
+    case 'sentinel-opinion': {
+      const lens = ds.lens || 'skeptic';
+      toast(`Drafting a ${lens} second opinion…`);
+      const res = await api(`/api/opinions/sentinel-failure/${encodeURIComponent(ds.id)}`, { method: 'POST', body: { lens } });
+      if (!res.ok) return toast(res.error, 'error');
+      toast(res.opinion?.text ? 'Second opinion added.' : 'No opinion available right now.', res.opinion?.text ? 'ok' : 'error');
+      await refresh();
+      render();
+      break;
+    }
+    case 'relay-refresh':
+      await refresh();
+      render();
+      break;
+    case 'relay-link-add': {
+      const name = $('#relay-name')?.value?.trim();
+      const remote = $('#relay-remote')?.value?.trim();
+      const branch = $('#relay-branch')?.value?.trim() || 'main';
+      if (!name || !remote) return toast('A link needs a name and a remote', 'error');
+      const res = await api('/api/relay/links', { method: 'POST', body: { name, remote, branch } });
+      if (!res.ok) return toast(res.error, 'error');
+      toast(`Linked ${name}.`, 'ok');
+      await refresh();
+      render();
+      break;
+    }
+    case 'relay-link-rm': {
+      const res = await api(`/api/relay/links/${encodeURIComponent(ds.id)}`, { method: 'DELETE', body: {} });
+      if (!res.ok) return toast(res.error, 'error');
+      await refresh();
+      render();
+      break;
+    }
+    case 'relay-toggle-allowance': {
+      const link = (ui.data?.relay?.links || []).find((entry) => entry.id === ds.id);
+      if (!link) return;
+      const next = !(link.allowances || {})[ds.key];
+      const res = await api(`/api/relay/links/${encodeURIComponent(ds.id)}/settings`, { method: 'POST', body: { allowances: { [ds.key]: next } } });
+      if (!res.ok) return toast(res.error, 'error');
+      await refresh();
+      render();
+      break;
+    }
+    case 'relay-send':
+    case 'relay-send-force': {
+      const paths = $(`#relay-paths-${CSS.escape(ds.id)}`)?.value?.split(',').map((part) => part.trim()).filter(Boolean) || [];
+      const message = $(`#relay-msg-${CSS.escape(ds.id)}`)?.value?.trim() || '';
+      if (!paths.length) return toast('Name at least one file or folder to send', 'error');
+      toast('Staging and pushing…');
+      const res = await api(`/api/relay/links/${encodeURIComponent(ds.id)}/send`, { method: 'POST', body: { paths, message, force: name === 'relay-send-force' } });
+      toast(res.message || res.error || 'Done', res.ok ? 'ok' : 'error');
+      await refresh();
+      render();
+      break;
+    }
+    case 'relay-receive': {
+      const res = await api(`/api/relay/links/${encodeURIComponent(ds.id)}/receive`, { method: 'POST', body: {} });
+      toast(res.message || res.error || 'Done', res.ok ? 'ok' : 'error');
+      await refresh();
+      render();
+      break;
+    }
+    case 'relay-approve': {
+      const res = await api(`/api/relay/reviews/${encodeURIComponent(ds.id)}/approve`, { method: 'POST', body: {} });
+      toast(res.message || res.error || 'Done', res.ok ? 'ok' : 'error');
+      await refresh();
+      render();
+      break;
+    }
+    case 'relay-deny': {
+      const res = await api(`/api/relay/reviews/${encodeURIComponent(ds.id)}/deny`, { method: 'POST', body: { reason: 'Denied from the Relay page' } });
+      if (!res.ok) return toast(res.error, 'error');
+      await refresh();
+      render();
+      break;
+    }
+    case 'relay-opinion': {
+      toast('Asking the model…');
+      const res = await api(`/api/relay/reviews/${encodeURIComponent(ds.id)}/opinion`, { method: 'POST', body: {} });
+      if (!res.ok) return toast(res.error, 'error');
+      await refresh();
+      render();
+      break;
+    }
+    case 'inbox-answer': {
+      const text = $(`#inbox-answer-${CSS.escape(ds.id)}`)?.value?.trim();
+      if (!text) return toast('Write the answer first', 'error');
+      const res = await api(`/api/inbox/${encodeURIComponent(ds.id)}/answer`, { method: 'POST', body: { answer: text } });
+      if (!res.ok) return toast(res.error, 'error');
+      toast('Answer sent back to the asking agent.', 'ok');
+      await refresh();
+      render();
+      break;
+    }
+    case 'inbox-cancel': {
+      const res = await api(`/api/inbox/${encodeURIComponent(ds.id)}/cancel`, { method: 'POST', body: {} });
+      if (!res.ok) return toast(res.error, 'error');
+      await refresh();
+      render();
+      break;
+    }
+    case 'pipeline-run': {
+      await api('/api/pipeline/run-now', { method: 'POST', body: {} });
+      await refresh();
+      render();
+      break;
+    }
+    case 'pipeline-workers': {
+      const current = Number(ui.data?.pipeline?.workers || 2);
+      const next = Math.max(1, Math.min(8, current + Number(ds.delta || 1)));
+      const res = await api('/api/pipeline/settings', { method: 'POST', body: { workers: next } });
+      if (!res.ok) return toast(res.error, 'error');
+      await refresh();
+      render();
+      break;
+    }
+    case 'snapshot-create': {
+      const label = $('#snapshot-label')?.value?.trim() || '';
+      toast('Taking a snapshot…');
+      const res = await api('/api/snapshots', { method: 'POST', body: { label } });
+      toast(res.message || res.error || 'Done', res.ok ? 'ok' : 'error');
+      await refresh();
+      render();
+      break;
+    }
+    case 'snapshot-diff': {
+      const sel = $('#snapshot-diff-select');
+      const value = sel?.value || '';
+      const [a, b] = value.split('|');
+      if (!a || !b) return toast('Pick two snapshots to compare', 'error');
+      const res = await api('/api/snapshots/diff', { method: 'POST', body: { a, b } });
+      if (!res.ok) return toast(res.error, 'error');
+      openModal('snapshot-diff', { title: `Diff: ${res.from} → ${res.to}`, body: `<pre class="mono small" style="white-space:pre-wrap">${esc(res.patch || '(no differences)')}</pre>` });
+      break;
+    }
+    case 'snapshot-transfer': {
+      const sel = $('#snapshot-diff-select');
+      const value = sel?.value || '';
+      const [a, b] = value.split('|');
+      if (!a || !b) return toast('Pick two snapshots first', 'error');
+      toast('Applying three-way…');
+      const res = await api('/api/snapshots/transfer', { method: 'POST', body: { a, b } });
+      toast(res.message || res.error || 'Done', res.ok ? 'ok' : 'error');
+      await refresh();
+      break;
+    }
+    case 'snapshot-restore': {
+      const id = ds.id;
+      const res = await api(`/api/snapshots/${encodeURIComponent(id)}/restore`, { method: 'POST', body: {} });
       toast(res.message || res.error || 'Done', res.ok ? 'ok' : 'error');
       await refresh();
       break;
