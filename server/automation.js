@@ -824,8 +824,8 @@ Write-Output ('sent ${repeat}x ' + ${psQuote(shortcuts.join(', '))})`;
         ? `$catalogue = @(${knownExes.map((exe) => psQuote(exe)).join(', ')})
 foreach ($candidate in $catalogue) {
   if (Test-Path -LiteralPath $candidate) {
-    Start-Process -FilePath $candidate${argSuffix}
-    Show-SightlineFront $frontLeaf
+    $launched = Start-Process -FilePath $candidate${argSuffix} -PassThru
+    Show-SightlineFront $frontLeaf $launched.Id
     Write-Output ('launched ' + $candidate)
     exit 0
   }
@@ -843,16 +843,34 @@ $frontLeaf = ${psQuote(knownProcess)}
 $reuseExisting = ${p.reuseExisting === true || p.reuse === true ? 1 : 0}
 if (-not $frontLeaf) { $frontLeaf = $leaf }
 $setupPattern = '(?i)(setup|installer|installing|installation|uninstall|downloading|download|wizard|extracting|updating)'
-function Show-SightlineFront($processLeaf) {
+# Prefer the exact process this launch created: raising “whichever window has
+# that app's name” once brought the operator's own document to the front and
+# the run typed into it. Start-Process -PassThru gives the new process's Id;
+# the fronting waits for that process's window specifically and only falls
+# back to a name search when the launched process never shows one.
+function Show-SightlineFront($processLeaf, $preferPid) {
   if (-not $processLeaf) { return }
   $deadline = (Get-Date).AddSeconds(8)
   $front = $null
   while ((Get-Date) -lt $deadline) {
+    if ($preferPid) {
+      $own = @(Get-Process -Id $preferPid -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 })
+      if ($own.Count) { $front = $own[0]; break }
+    } else {
+      $hits = @(Get-Process | Where-Object { $_.MainWindowHandle -ne 0 -and $_.ProcessName -like ('*' + $processLeaf + '*') })
+      $front = $hits | Where-Object { $_.MainWindowTitle -notmatch $setupPattern } | Sort-Object Id -Descending | Select-Object -First 1
+      if (-not $front) { $front = $hits | Sort-Object Id -Descending | Select-Object -First 1 }
+      if ($front) { break }
+    }
+    Start-Sleep -Milliseconds 300
+  }
+  if (-not $front -and $preferPid) {
+    # Tab-hosted apps (Notepad on Windows 11) hang the new tab on an existing
+    # window's process, so the launched Id never shows its own window. Fall back
+    # to the name search; the app itself activated the new tab on launch.
     $hits = @(Get-Process | Where-Object { $_.MainWindowHandle -ne 0 -and $_.ProcessName -like ('*' + $processLeaf + '*') })
     $front = $hits | Where-Object { $_.MainWindowTitle -notmatch $setupPattern } | Sort-Object Id -Descending | Select-Object -First 1
     if (-not $front) { $front = $hits | Sort-Object Id -Descending | Select-Object -First 1 }
-    if ($front) { break }
-    Start-Sleep -Milliseconds 300
   }
   if (-not $front) { return }
   [void][SightlineInput]::ShowWindow($front.MainWindowHandle, 9)
@@ -888,15 +906,16 @@ if ($windowMatch) {
   exit 0
 }
 if (Test-Path -LiteralPath $target) {
-  Start-Process -FilePath $target${argSuffix}
-  Show-SightlineFront $frontLeaf
+  $launched = Start-Process -FilePath $target${argSuffix} -PassThru
+  Show-SightlineFront $frontLeaf $launched.Id
   Write-Output ('launched ' + $target)
   exit 0
 }
 $startApp = $null
 try { $startApp = Get-StartApps | Where-Object { $_.Name -like ('*' + $target + '*') } | Select-Object -First 1 } catch { }
 if ($startApp) {
-  Start-Process ('shell:AppsFolder\\' + $startApp.AppID)
+  $launched = Start-Process ('shell:AppsFolder\\' + $startApp.AppID) -PassThru
+  Show-SightlineFront $frontLeaf $launched.Id
   Write-Output ('launched ' + $startApp.Name)
   exit 0
 }
@@ -908,14 +927,14 @@ foreach ($root in @("$env:APPDATA\\Microsoft\\Windows\\Start Menu\\Programs", "$
   if ($shortcut) { break }
 }
 if ($shortcut) {
-  Start-Process -FilePath $shortcut.FullName${argSuffix}
-  Show-SightlineFront $frontLeaf
+  $launched = Start-Process -FilePath $shortcut.FullName${argSuffix} -PassThru
+  Show-SightlineFront $frontLeaf $launched.Id
   Write-Output ('launched shortcut ' + $shortcut.BaseName)
   exit 0
 }
 try {
-  Start-Process -FilePath $target${argSuffix}
-  Show-SightlineFront $frontLeaf
+  $launched = Start-Process -FilePath $target${argSuffix} -PassThru
+  Show-SightlineFront $frontLeaf $launched.Id
 } catch {
   throw ('Cannot launch "' + $target + '": it is not an executable, path or installed app. For a window title, use focusWindow. ' + $_.Exception.Message)
 }

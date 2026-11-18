@@ -955,7 +955,7 @@ async function detectHindrance(probe = null) {
 }
 
 /** Reinstate focus and record what was seen before an app-dependent step. */
-async function perceiveStep(step, run, workflow, getTool) {
+async function perceiveStep(step, run, workflow, getTool, probe = null) {
   const guard = String(step.params?.foreground || (step.type === 'focusWindow' ? step.params?.title : '') || '').trim();
   if (!guard) return;
   try {
@@ -971,7 +971,8 @@ async function perceiveStep(step, run, workflow, getTool) {
     // Keystrokes must not land in whatever happens to be in front. If the guard
     // window is not in front, bring it forward and read again; if it still is
     // not, the runner skips the step rather than typing into the wrong app.
-    if (['type', 'key', 'clipboard'].includes(step.type)) {
+    // Only a real run reads (and moves) the desktop; a test's probe owns that.
+    if (!probe && ['type', 'key', 'clipboard'].includes(step.type)) {
       const norm = (value) => String(value || '').toLowerCase().replace(/\s+/g, ' ').trim();
       const inFront = (title) => norm(title).includes(norm(guard));
       if (!inFront(state.foreground?.title)) {
@@ -1523,7 +1524,7 @@ async function executeRun(runId) {
           continue;
         }
       }
-      await perceiveStep(step, run, workflow, getTool);
+      await perceiveStep(step, run, workflow, getTool, probe);
       if (step.perception?.guardFailed) {
         step.status = 'skipped';
         step.output = `Skipped: “${step.perception.guard}” is not the window in front (“${step.perception.foregroundAfterFocus || 'unknown'}”), so the keystrokes were not sent.`;
@@ -1687,7 +1688,7 @@ async function executeRun(runId) {
           }
         }
       }
-      if (succeeded && step.type === 'launchApp') {
+      if (succeeded && step.type === 'launchApp' && !probe) {
         // A launch that only re-raised a window already on the desktop did not
         // open the window the flow asked for. Remembering that lets a later
         // typing step refuse to write into the operator’s existing document.
