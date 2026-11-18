@@ -52,7 +52,30 @@ function probe({ focused, textFound = false, output = 'done' }) {
   };
 }
 
-test('an unguarded type step that types identical text passes via corroboration', async () => {
+test('an unguarded type step with no window named is skipped, never typed anywhere', async () => {
+  const d = resetDb();
+  const workflow = {
+    id: 'wf_engine_screen_no_window',
+    name: 'Engine screen no window',
+    description: 'Type the same text.',
+    status: 'ready',
+    failurePolicy: { onFailure: 'stop', maxRetries: 0 },
+    steps: [{ id: 'stp_anywhere', type: 'type', name: 'Type the same text', params: { text: 'same text' }, timeoutMs: 8000 }],
+  };
+  d.workflows = [workflow];
+
+  const run = engine.createRun(workflow, {
+    dryRun: false,
+    probe: probe({ focused: { found: true, name: 'Text editor', value: 'same text', window: 'probe.txt - Notepad' }, textFound: true, output: 'typed' }),
+  });
+  const finished = await settle(run.id);
+  const step = finished.steps[0];
+  assert.equal(step.status, 'skipped');
+  assert.match(step.output, /no window was named or opened/);
+  assert.equal(finished.status, 'passed', 'a skipped step is not a failure, it is work the run refused to guess at');
+});
+
+test('a type step with a named window that types identical text passes via corroboration', async () => {
   const d = resetDb();
   const workflow = {
     id: 'wf_engine_screen_type',
@@ -61,7 +84,7 @@ test('an unguarded type step that types identical text passes via corroboration'
     status: 'ready',
     failurePolicy: { onFailure: 'stop', maxRetries: 0 },
     steps: [
-      { id: 'stp_same_text', type: 'type', name: 'Type the same text', params: { text: 'same text' }, timeoutMs: 8000 },
+      { id: 'stp_same_text', type: 'type', name: 'Type the same text', params: { text: 'same text', foreground: 'probe.txt - Notepad' }, timeoutMs: 8000 },
     ],
   };
   d.workflows = [workflow];
