@@ -89,6 +89,83 @@ test('a closed app gets an open prerequisite and a five-stage recovery pack', as
   store.flush();
 });
 
+test('the AI revision becomes a tested candidate that resumes after the passed steps', async () => {
+  const d = store.db();
+  d.settings.replanDesktop = false;
+  const workflow = {
+    id: 'wf_replan_notepad',
+    name: 'Notepad replan probe',
+    description: 'Open Notepad, type a note and check the window.',
+    status: 'ready',
+    failurePolicy: { onFailure: 'stop', maxRetries: 0 },
+    steps: [
+      { id: 'r1', type: 'launchApp', name: 'Open Notepad', params: { target: 'notepad.exe' }, timeoutMs: 8000 },
+      { id: 'r2', type: 'type', name: 'Type the note', params: { text: 'hello', foreground: 'Untitled - Notepad' }, timeoutMs: 8000 },
+      { id: 'r3', type: 'expect', name: 'Window is present', params: { kind: 'window', value: 'Notepad' }, timeoutMs: 5000 },
+    ],
+  };
+  const run = {
+    id: 'run_replan_notepad',
+    workflowId: workflow.id,
+    workflowName: workflow.name,
+    status: 'failed',
+    trigger: 'manual',
+    dryRun: false,
+    steps: [
+      { id: 'r1', type: 'launchApp', name: 'Open Notepad', params: { target: 'notepad.exe' }, status: 'passed' },
+      {
+        id: 'r2',
+        type: 'type',
+        name: 'Type the note',
+        params: { text: 'hello', foreground: 'Untitled - Notepad' },
+        status: 'failed',
+        error: 'Refusing to type: foreground window is another document',
+      },
+      { id: 'r3', type: 'expect', name: 'Window is present', params: { kind: 'window', value: 'Notepad' }, status: 'skipped' },
+    ],
+    evidence: [],
+    log: [],
+  };
+  d.workflows = [workflow];
+  d.runs = [run];
+  d.recoveryPacks = [];
+  let asked = '';
+  const outcome = await recovery.prepareRecovery(run, {
+    plan: async () => null,
+    desktop: {
+      foreground: { title: 'Untitled - Notepad', process: 'notepad' },
+      windows: [{ title: 'Untitled - Notepad', process: 'notepad' }],
+    },
+    ask: async ({ prompt }) => {
+      asked = prompt;
+      return JSON.stringify({
+        decision: 'rearrange',
+        note: 'open a fresh tab before typing so the note lands in a new document',
+        prep: [
+          { type: 'key', name: 'unsafe prep', params: { keys: ['ctrl+n'] } },
+          { type: 'focusWindow', name: 'Focus Notepad', params: { title: 'Notepad' } },
+        ],
+        steps: [
+          { type: 'type', name: 'Type the note again', params: { text: 'hello' } },
+          { type: 'expect', name: 'Window is present', params: { kind: 'window', value: 'Notepad' } },
+        ],
+      });
+    },
+  });
+
+  assert.ok(outcome?.pack);
+  const ai = (outcome.pack.candidates || []).find((candidate) => candidate.id === 'candidate_ai');
+  assert.ok(ai, 'the AI revision is one of the tested candidates');
+  assert.match(asked, /Refusing to type/, 'the model sees the real failure');
+  assert.equal(outcome.pack.aiRevision.decision, 'rearrange');
+  assert.equal(outcome.pack.aiRevision.prepCount, 1, 'only safe prep survives');
+  assert.equal(ai.steps[0].id, 'r1', 'the step that already passed is kept, not repeated');
+  assert.equal(ai.steps.some((step) => step.name === 'unsafe prep'), false);
+  const typing = ai.steps.find((step) => step.type === 'type' && step.name === 'Type the note again');
+  assert.ok(typing, 'the revised typing step is in the candidate');
+  assert.equal(typing.params.foreground, 'Untitled - Notepad', 'typing inherits the window of the failed step');
+});
+
 test('ensureOpenPrerequisites fixes a fresh plan that starts with focusWindow', () => {
   const steps = recovery.ensureOpenPrerequisites([
     { type: 'focusWindow', name: 'Focus Kiro', params: { title: 'Kiro' } },

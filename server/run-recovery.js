@@ -282,7 +282,10 @@ function consultControlPanel(workflow, goal, target) {
  * the caller starts a retry from the returned snapshot and incorporates the
  * chosen plan only after it passes.
  */
-export async function prepareRecovery(run, { plan = planSteps, maxDepth = null, force = false } = {}) {
+export async function prepareRecovery(
+  run,
+  { plan = planSteps, maxDepth = null, force = false, ask = null, desktop: desktopInput = undefined } = {}
+) {
   if (!run) return null;
   const previousPack = run.recoveryPackId ? findRecoveryPack(run.recoveryPackId) : null;
   // The original run already has a pack. A recovery retry that failed needs
@@ -408,8 +411,8 @@ export async function prepareRecovery(run, { plan = planSteps, maxDepth = null, 
     0,
     aiSteps.findIndex((step) => step.id === failedRuntime?.id || (step.name && step.name === failedRuntime?.name))
   );
-  let desktop = {};
-  if (!run.dryRun) {
+  let desktop = desktopInput === undefined ? {} : desktopInput || {};
+  if (desktopInput === undefined && !run.dryRun && d.settings.replanDesktop !== false) {
     try {
       desktop = await withTimeout(readScreenContext(), 8000, 'Desktop read');
     } catch (err) {
@@ -418,6 +421,7 @@ export async function prepareRecovery(run, { plan = planSteps, maxDepth = null, 
   }
   const revision = await withTimeout(
     revisePlan({
+      ...(typeof ask === 'function' ? { ask } : {}),
       workflow,
       goal,
       steps: aiSteps,
