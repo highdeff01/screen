@@ -95,6 +95,31 @@ export function retryReplaysFailure({ failedStep = null, firstNext = null, failu
   return !isTransientFailure(failure || { type: failedStep.type, name: failedStep.name, error: failedStep.error });
 }
 
+/**
+ * Small models sometimes answer with one textual step per entry, for example
+ * {"step":"type \"Type the note\" text=\"hello\" foreground=\"Untitled - Notepad\""}.
+ * Read that shape instead of discarding a revision that is otherwise complete.
+ */
+function expandStepEntries(raw) {
+  return (Array.isArray(raw) ? raw : []).map((entry) => {
+    if (!entry || typeof entry !== 'object') return entry;
+    const source = typeof entry.step === 'string' ? entry.step.trim() : '';
+    if (!source) return entry;
+    const head = source.match(/^([a-zA-Z][\w-]*)\s+/);
+    if (!head) return entry;
+    const rest = source.slice(head[0].length);
+    const nameMatch = rest.match(/^"([^"]*)"/);
+    const tail = nameMatch ? rest.slice(nameMatch[0].length) : rest;
+    const params = {};
+    for (const pair of tail.matchAll(/([\w.-]+)\s*=\s*"([^"]*)"/g)) params[pair[1]] = pair[2];
+    for (const pair of tail.matchAll(/([\w.-]+)\s*=\s*([^\s"]+)/g)) {
+      if (params[pair[1]] === undefined) params[pair[1]] = pair[2];
+    }
+    if (!Object.keys(params).length && !nameMatch) return entry;
+    return { type: head[1], ...(nameMatch ? { name: nameMatch[1] } : {}), params };
+  });
+}
+
 /** Playback is required only by the goal or by work that feeds it, not by a play step itself. */
 function planWantsPlayback(goal, steps = []) {
   if (MEDIA_WORDS.test(String(goal || ''))) return true;
@@ -149,7 +174,9 @@ export function buildRevisionPrompt({
     'You revise the plan of a Windows desktop automation workflow after one of its steps failed. ' +
     'You do not lower verification and you do not claim work happened. ' +
     'Return JSON only: {"decision":"continue|rearrange|rebuild","note":"one sentence explaining the change",' +
-    '"prep":[{step}],"steps":[{step}]}. No prose outside the JSON.';
+    '"prep":[],"steps":[]}. Every prep and steps entry is one step object such as ' +
+    '{"type":"launchApp","name":"Open Notepad","params":{"target":"notepad.exe"}} — never a string and never a nested "step" field. ' +
+    'No prose outside the JSON.';
 
   const plan = (steps || []).length
     ? steps.map((step, index) => `${stepLine(step, index)}${index === failedIndex ? '  <-- failed here' : ''}`).join('\n')
@@ -222,12 +249,12 @@ export function applyRevision(
     return false;
   };
 
-  const prep = normalizePlanSteps(parsed.prep, goal, {}, { align: false })
+  const prep = normalizePlanSteps(expandStepEntries(parsed.prep), goal, {}, { align: false })
     .filter((step) => PREP_TYPES.has(step.type))
     .filter(keepStep)
     .slice(0, MAX_PREP);
 
-  const revised = normalizePlanSteps(parsed.steps, goal, {}, { align: false })
+  const revised = normalizePlanSteps(expandStepEntries(parsed.steps), goal, {}, { align: false })
     .filter((step) => !FORBIDDEN_TYPES.has(step.type))
     .filter(keepStep)
     .map((step) => {

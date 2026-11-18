@@ -464,6 +464,7 @@ function buildState() {
     snapshots: snapshotStatus(),
     actionLog: actionLogStatus(),
     agentsWorking: agentActivity(),
+    firewall: firewallStatus(),
     share: shareStatus(),
     escalation: escalationStatus(),
     notes: d.notes.slice(0, 60).map(({ body, ...rest }) => ({

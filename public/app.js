@@ -6029,6 +6029,34 @@ function renderRelay() {
     </section>
 
     <section class="card">
+      <div class="card-head"><h3>Action firewall</h3><span class="dim small">${(() => { const fw = ui.data?.firewall || {}; return `${(fw.rules || []).length} rule(s) · mode: ${fw.mode || 'enforce'}`; })()}</span></div>
+      <div class="card-body">
+        <div class="row wrap" style="gap:8px;align-items:center">
+          <button class="btn btn-sm ${ui.data?.firewall?.mode === 'enforce' ? 'btn-primary' : 'btn-ghost'}" data-act="fw-mode" title="Enforce blocks/holds steps; log only records what the rules would do">mode: ${ui.data?.firewall?.mode || 'enforce'}</button>
+          <button class="btn btn-sm btn-ghost" data-act="fw-reset">Reset to defaults</button>
+        </div>
+        <p class="small dim" style="margin-top:6px">Every live step passes the gate before it acts. Defaults: nothing destructive, nothing closes a window with unsaved work, nothing types without a proven destination, installs are reviewed.</p>
+        <div class="stack" style="gap:6px;margin-top:10px">
+          ${(ui.data?.firewall?.rules || []).map((rule) => `<div class="row wrap" style="gap:8px;align-items:center"><span class="badge ${rule.verdict === 'deny' ? 'warnbadge' : rule.verdict === 'review' ? '' : 'okbadge'}">${esc(rule.verdict)}</span><strong class="small">${esc(rule.name)}</strong><span class="small dim mono">${esc((rule.match?.types || []).join(', ') || 'any type')} · ${esc(String(rule.match?.paramPattern || '').slice(0, 50))}</span><span class="spacer"></span><button class="btn btn-sm btn-ghost" data-act="fw-rule-rm" data-id="${esc(rule.id)}">Remove</button></div>`).join('')}
+        </div>
+        <div class="row wrap" style="gap:8px;margin-top:10px;align-items:flex-start">
+          <input id="fw-name" class="input" placeholder="rule name" style="max-width:170px" />
+          <input id="fw-pattern" class="input mono" placeholder="regex against step params" style="flex:1;min-width:200px" />
+          <input id="fw-types" class="input" placeholder="types (comma, empty=any)" style="max-width:180px" />
+          <select id="fw-verdict" class="input" style="max-width:110px"><option>review</option><option>deny</option><option>allow</option></select>
+          <button class="btn btn-sm btn-primary" data-act="fw-rule-add">Add rule</button>
+        </div>
+        <details style="margin-top:10px"><summary class="small dim">Test a step against the rules</summary>
+          <div class="row wrap" style="gap:8px;margin-top:8px">
+            <textarea id="fw-test-input" class="input mono" rows="2" placeholder='{"type":"runTool","params":{"toolName":"cleanup","command":"del /f old.log"}}' style="flex:1"></textarea>
+            <button class="btn btn-sm" data-act="fw-test">Test</button>
+          </div>
+          ${ui.firewallTestResult ? `<p class="small" style="margin-top:6px">Verdict: <b>${esc(ui.firewallTestResult.verdict)}</b>${ui.firewallTestResult.ruleName ? ` — ${esc(ui.firewallTestResult.ruleName)}` : ''}${ui.firewallTestResult.reason ? `<br><span class="dim">${esc(ui.firewallTestResult.reason)}</span>` : ''}</p>` : ''}
+        </details>
+      </div>
+    </section>
+
+    <section class="card">
       <div class="card-head"><h3>Exchange stream</h3><span class="dim small">${exchanges.length ? `${exchanges.length} recorded` : 'empty'}</span></div>
       <div class="card-body">
         ${exchanges.length ? `<div class="stack" style="gap:6px">${exchanges.slice(0, 12).map((exchange) => `<div class="row wrap" style="gap:8px;align-items:center"><span class="badge">${exchange.direction === 'push' ? '→ sent' : '← received'}</span><strong class="small">${esc(exchange.link)}</strong><span class="small dim">${fmtTime(exchange.at)}${exchange.forced ? ' · forced' : ''}</span><span class="spacer"></span><span class="small dim">${(exchange.files || []).length} path(s)</span></div>`).join('')}</div>` : '<p class="muted small" style="margin:0">Nothing has moved through a link yet.</p>'}
@@ -6386,7 +6414,9 @@ function renderDeepFocusCard(run) {
         ${focus.applyGate ? `<p class="small dim">Apply gate: snapshot ${esc(String(focus.applyGate.snapshot || '').slice(0, 8))} ${focus.applyGate.blocked ? '(blocked — nothing applied)' : 'ok'}</p>` : ''}
         ${focus.error ? `<p class="small" style="color:var(--bad)">${esc(focus.error)}</p>` : ''}
       </div>`}
-      ${actions.length ? `<div class="row wrap" style="gap:8px;margin-top:10px">${actions.join('')}</div>` : ''}
+              ${(focus.rounds || []).length ? '' : ''}
+        ${(focus.rounds || []).length ? '' : ''}
+        <div class="row wrap" style="gap:8px;margin-top:10px">${actions.join('')}<button class="btn btn-sm" data-act="df-presentation" data-id="${esc(run.id)}" title="Turn the focus rounds into a Presentation deck">Form presentation</button></div>
     </div>
   </section>`;
 }
@@ -6923,6 +6953,59 @@ async function runAction(name, ds, el) {
     case 'df-stop': {
       await api(`/api/deep-focus/${encodeURIComponent(ds.id)}/stop`, { method: 'POST', body: {} });
       await loadRun(ds.id);
+      break;
+    }
+    case 'df-presentation': {
+      toast('Forming the presentation from the focus rounds…');
+      const res = await api(`/api/deep-focus/${encodeURIComponent(ds.id)}/presentation`, { method: 'POST', body: {} });
+      if (!res.ok) return toast(res.error, 'error');
+      toast('Deck formed — open the Presentation page to view it.', 'ok');
+      break;
+    }
+    case 'fw-mode': {
+      const res = await api('/api/firewall/mode', { method: 'POST', body: { mode: ui.data?.firewall?.mode === 'enforce' ? 'log' : 'enforce' } });
+      if (!res.ok) return toast(res.error, 'error');
+      await refresh();
+      render();
+      break;
+    }
+    case 'fw-reset': {
+      const res = await api('/api/firewall/reset', { method: 'POST', body: {} });
+      if (!res.ok) return toast(res.error, 'error');
+      toast('Firewall rules reset to the built-in safeguards.', 'ok');
+      await refresh();
+      render();
+      break;
+    }
+    case 'fw-rule-add': {
+      const name = $('#fw-name')?.value?.trim();
+      const pattern = $('#fw-pattern')?.value?.trim();
+      const verdict = $('#fw-verdict')?.value || 'review';
+      const types = $('#fw-types')?.value?.split(',').map((t) => t.trim()).filter(Boolean) || [];
+      if (!name || !pattern) return toast('A rule needs a name and a pattern', 'error');
+      const res = await api('/api/firewall/rules', { method: 'POST', body: { name, pattern, verdict, types } });
+      if (!res.ok) return toast(res.error, 'error');
+      toast(`Rule “${name}” added.`, 'ok');
+      await refresh();
+      render();
+      break;
+    }
+    case 'fw-rule-rm': {
+      const res = await api(`/api/firewall/rules/${encodeURIComponent(ds.id)}`, { method: 'DELETE', body: {} });
+      if (!res.ok) return toast(res.error, 'error');
+      await refresh();
+      render();
+      break;
+    }
+    case 'fw-test': {
+      const raw = $('#fw-test-input')?.value?.trim();
+      if (!raw) return toast('Paste a step JSON first', 'error');
+      let step;
+      try { step = JSON.parse(raw); } catch { return toast('That is not valid JSON', 'error'); }
+      const res = await api('/api/firewall/test', { method: 'POST', body: { step } });
+      if (!res.ok) return toast(res.error, 'error');
+      ui.firewallTestResult = res.verdict;
+      render();
       break;
     }
     case 'note-add': {

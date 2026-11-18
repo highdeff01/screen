@@ -166,6 +166,33 @@ test('an unusable reply keeps what the model actually said', async () => {
   assert.match(result.error, /could not turn that into a plan/);
 });
 
+test('a step the model wrote as one DSL string is still understood', () => {
+  const revision = applyRevision(
+    {
+      decision: 'rearrange',
+      note: 'from a small model',
+      prep: [{ step: 'launchApp "Open Notepad" target="Notepad" name="Open Notepad"' }],
+      steps: [
+        { step: 'wait "Wait for Notepad" ms="1200"' },
+        { step: 'type "Type the note" text="hello" foreground="Untitled - Notepad"' },
+      ],
+    },
+    { steps: plan(), failedIndex: 2, goal: 'type a note' }
+  );
+  assert.deepEqual(revision.steps.slice(2).map((step) => step.type), ['launchApp', 'wait', 'type']);
+  assert.equal(revision.steps[2].name, 'Open Notepad');
+  assert.equal(revision.steps[2].params.target, 'Notepad');
+  assert.equal(revision.steps[4].params.text, 'hello');
+  assert.equal(revision.steps[4].params.foreground, 'Untitled - Notepad');
+  assert.equal(revision.prepCount, 1);
+});
+
+test('the prompt shows the exact step object instead of a placeholder', () => {
+  const { system } = buildRevisionPrompt({ goal: 'type a note', steps: plan(), failedIndex: 2, failure: { error: 'x' } });
+  assert.match(system, /\{"type":"launchApp"/);
+  assert.doesNotMatch(system, /\[\{step\}\]/);
+});
+
 test('a play step nothing in the goal or plan requires is dropped', () => {
   const revision = applyRevision(
     {
