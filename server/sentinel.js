@@ -238,17 +238,45 @@ function linkDependencies(dir) {
 }
 
 /**
+ * A run that could not delete its worktree (a locked file, a killed process)
+ * leaves a folder behind. Anything older than ten minutes is reclaimed here so
+ * the next run starts clean instead of accumulating copies of the project.
+ */
+function pruneStaleWorktrees(base) {
+  try {
+    if (!fs.existsSync(base)) return;
+    const cutoff = Date.now() - 10 * 60 * 1000;
+    for (const name of fs.readdirSync(base)) {
+      if (!name.startsWith('sentinel-')) continue;
+      const stamp = Number(name.split('-')[1]);
+      if (Number.isFinite(stamp) && stamp > cutoff) continue;
+      try {
+        fs.rmSync(path.join(base, name), { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+      } catch { /* still held; the next run tries again */ }
+    }
+    execFile('git', ['worktree', 'prune'], { cwd: ROOT, windowsHide: true }, () => {});
+  } catch { /* a missing or unreadable folder means there is nothing to prune */ }
+}
+
+/**
  * Create a throwaway worktree at HEAD (with this folder's uncommitted changes
  * laid over it) or at one exact commit. Always returns a cleanup function.
  */
 export async function prepareWorktree({ commit = '', run } = {}) {
   const git = run || ((args) => runGit(args, ROOT));
   const base = path.join(DATA, 'worktrees');
+  pruneStaleWorktrees(base);
   const dir = path.join(base, `sentinel-${Date.now()}-${process.pid}`);
   const cleanup = async () => {
-    await runGit(['worktree', 'remove', '--force', dir], ROOT, 60000);
+    // A test that just finished can still hold a handle on its scratch files for
+    // a moment on Windows, so removal is retried before it is left to the prune.
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      const removed = await runGit(['worktree', 'remove', '--force', dir], ROOT, 60000);
+      if (removed.ok) break;
+      await new Promise((resolve) => setTimeout(resolve, 250 * (attempt + 1)));
+    }
     try {
-      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 12, retryDelay: 200 });
     } catch { /* a locked file is retried by the prune below */ }
     await runGit(['worktree', 'prune'], ROOT, 30000);
   };
@@ -405,6 +433,11 @@ export async function verifyCommit(sha, deps = {}) {
   const settings = sentinelSettings();
   const commit = String(sha || '').trim();
   if (!commit) return { ok: false, fail: null, failingTests: [], isolated: false, error: 'a commit is required' };
+  // One suite at a time on this machine: two concurrent runs compete for ports
+  // and make each other flaky. The caller retries on the next tick.
+  if (state.busy) {
+    return { ok: false, deferred: true, fail: null, failingTests: [], isolated: false, error: 'a test run is already in progress' };
+  }
   const worktree = deps.worktree === false ? { ok: false, cleanup: async () => {} } : await prepareWorktree({ commit });
   if (!worktree.ok) return { ok: false, fail: null, failingTests: [], isolated: false, commit, error: worktree.error };
   try {

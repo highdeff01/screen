@@ -139,6 +139,22 @@ test('a verifier that throws holds main instead of pushing', async () => {
   assert.deepEqual(mainPushes(git.calls), []);
 });
 
+test('a suite that is already running defers the promotion', async () => {
+  const git = fakeGit();
+  let verifications = 0;
+  const verify = async () => {
+    verifications += 1;
+    return { ok: false, deferred: true };
+  };
+  await sync.checkAndSync({ run: git.run, verify });
+  const first = await sync.checkAndSync({ run: git.run, verify });
+  assert.equal(first.status, 'verifying');
+  assert.deepEqual(mainPushes(git.calls), []);
+  const second = await sync.checkAndSync({ run: git.run, verify });
+  assert.equal(second.status, 'verifying');
+  assert.equal(verifications, 2, 'a deferred verdict is not cached');
+});
+
 test('a failed staging push stops before verification', async () => {
   const git = fakeGit({ pushOk: false });
   let verifications = 0;

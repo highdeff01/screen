@@ -124,11 +124,13 @@ async function verifyHead(sha, deps = {}) {
   const verdict = {
     sha,
     ok: Boolean(result?.ok),
+    deferred: Boolean(result?.deferred),
     at: now(),
     fail: result?.fail ?? null,
     tests: Array.isArray(result?.failingTests) ? result.failingTests : [],
     message: result?.message || '',
   };
+  if (verdict.deferred) return verdict;
   if (!verdict.ok) verdict.retryAt = Date.now() + 300000;
   state.verified = verdict;
   state.verifiedSha = sha;
@@ -254,6 +256,11 @@ export async function checkAndSync(deps = {}) {
     const gate = settings.autoSyncGated !== false && !deps.force && Boolean(deps.verify || !deps.run);
     if (gate) {
       const verdict = await verifyHead(head, deps);
+      if (verdict.deferred) {
+        state.status = 'verifying';
+        state.lastError = `${autoBranch} has ${head.slice(0, 7)}; the suite is running, so ${branch} waits for the next check.`;
+        return gitSyncStatus();
+      }
       if (!verdict.ok) {
         state.status = 'held';
         state.held = { sha: head, at: now(), ok: false, fail: verdict.fail ?? null, tests: verdict.tests || [] };
