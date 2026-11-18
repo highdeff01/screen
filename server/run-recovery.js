@@ -6,6 +6,8 @@ import { shadowTestPlan } from './shadow-test.js';
 import { buildWorkflowResearch, compactResearch } from './research.js';
 import { listShortcuts } from './shortcuts.js';
 import { firstAppStep, opensTargetBefore, launchAndWaitSteps } from './app-launch-hints.js';
+import { revisePlan } from './replan.js';
+import { readScreenContext } from './automation.js';
 
 const MAX_PACKS = 80;
 const MAX_PLAN_STEPS = 40;
@@ -394,6 +396,74 @@ export async function prepareRecovery(run, { plan = planSteps, maxDepth = null, 
     }
   }
 
+  // The operator-level question after a failure: continue from where it stopped,
+  // or should the plan gain, lose or reorder steps — and does the machine need
+  // basic prep first? The model sees the live desktop, the rules and the other
+  // workflows, and answers with a plan that starts after the passed steps.
+  const aiSteps = cloneSteps((run.steps?.length ? run.steps : workflow.steps) || []).map((step) => ({
+    ...step,
+    params: step.params || {},
+  }));
+  const aiFailedIndex = Math.max(
+    0,
+    aiSteps.findIndex((step) => step.id === failedRuntime?.id || (step.name && step.name === failedRuntime?.name))
+  );
+  let desktop = {};
+  if (!run.dryRun) {
+    try {
+      desktop = await withTimeout(readScreenContext(), 8000, 'Desktop read');
+    } catch (err) {
+      log(pack, 'warn', 'plan', `Reading the desktop for the revision failed: ${err.message}`);
+    }
+  }
+  const revision = await withTimeout(
+    revisePlan({
+      workflow,
+      goal,
+      steps: aiSteps,
+      failedIndex: aiFailedIndex,
+      failure: {
+        type: failedRuntime?.type || '',
+        name: failedRuntime?.name || '',
+        error: failedRuntime?.error || '',
+      },
+      desktop,
+      suggestions: (d.suggestions || []).filter((entry) => !entry.dismissed).slice(0, 6),
+      lessons: (d.agentLessons || [])
+        .filter((entry) => !entry.workflowId || entry.workflowId === workflow.id)
+        .slice(0, 6),
+      workflows: (d.workflows || []).filter((entry) => entry.id !== workflow.id).slice(0, 8),
+    }),
+    60000,
+    'AI plan revision'
+  ).catch((err) => ({ error: err.message }));
+  if (revision?.error) {
+    log(pack, 'warn', 'plan', `AI plan revision unavailable: ${revision.error}`);
+  } else if (revision?.steps?.length) {
+    pack.aiRevision = {
+      decision: revision.decision,
+      note: revision.note,
+      prepCount: revision.prepCount,
+      resumeFrom: revision.resumeFrom,
+      at: now(),
+    };
+    log(
+      pack,
+      'info',
+      'plan',
+      `AI revision: ${revision.decision} with ${revision.prepCount} prep step(s), resuming after ${revision.resumeFrom} passed step(s). ${revision.note}`
+    );
+    candidates.push(
+      candidateTest({
+        id: 'candidate_ai',
+        label: `AI revision: ${revision.decision}${revision.prepCount ? ` +${revision.prepCount} prep` : ''}`,
+        source: 'ai-replan',
+        reason: revision.note || `The model chose to ${revision.decision} the plan.`,
+        steps: ensureOpenPrerequisites(revision.steps),
+      })
+    );
+  }
+
   addStage(
     pack,
     'plan',
@@ -434,7 +504,11 @@ export async function prepareRecovery(run, { plan = planSteps, maxDepth = null, 
   const environmentFailure = looksLikeEnvironmentFailure(run, target);
   const targeted = candidates.find((candidate) => candidate.id === 'candidate_targeted' && candidate.test.ok);
   const fresh = candidates.find((candidate) => candidate.id === 'candidate_fresh' && candidate.test.ok);
-  const selected = (environmentFailure && targeted) || fresh || candidates.find((candidate) => candidate.test.ok) || null;
+  const aiCandidate = candidates.find((candidate) => candidate.id === 'candidate_ai' && candidate.test.ok);
+  // The operator asked for a replan: a passing AI revision outranks the fresh
+  // rebuild unless the failure was a missing window, which the targeted repair
+  // handles with fewer moving parts.
+  const selected = (environmentFailure && targeted) || aiCandidate || fresh || candidates.find((candidate) => candidate.test.ok) || null;
   pack.selectedCandidateId = selected?.id || null;
   addStage(
     pack,
