@@ -1,0 +1,27 @@
+name: CI
+
+# GitHub-side half of the Sentinel: when changes land on the repository
+# (pushed by the console's auto-sync, the CLI, or anyone else), GitHub runs the
+# same suite the console runs locally and reports failures back on the commit.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      # The project has no runtime dependencies; the suite runs on the stdlib.
+      - name: Install
+        run: npm install --no-audit --no-fund
+      - name: Test
+        run: npm test
