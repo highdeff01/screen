@@ -1,19 +1,51 @@
 {
   "version": 1,
   "by": "sentinel",
-  "updatedAt": "2026-11-18T22:21:42.881Z",
-  "head": "61332a15d8a6",
+  "updatedAt": "2026-11-18T22:23:10.224Z",
+  "head": "31ddce945244",
   "lastRun": {
-    "at": "2026-11-18T22:21:42.881Z",
-    "ok": true,
+    "at": "2026-11-18T22:23:10.221Z",
+    "ok": false,
     "tests": 451,
-    "pass": 447,
-    "fail": 0,
-    "isolated": true,
-    "failingTests": []
+    "pass": 445,
+    "fail": 2,
+    "isolated": false,
+    "failingTests": [
+      "an unguarded type step that types identical text passes via corroboration (2812.9357ms)",
+      "repairs that fail are reported and safe later steps still run (8329.5244ms)"
+    ]
   },
-  "open": 7,
+  "open": 8,
   "items": [
+    {
+      "id": "sent_mwmotjt94aa0d4",
+      "at": "2026-11-18T22:23:10.221Z",
+      "status": "queued",
+      "attempts": 1,
+      "fail": 2,
+      "pass": 445,
+      "tests": [
+        "an unguarded type step that types identical text passes via corroboration (2812.9357ms)",
+        "repairs that fail are reported and safe later steps still run (8329.5244ms)"
+      ],
+      "details": [
+        {
+          "name": "an unguarded type step that types identical text passes via corroboration",
+          "file": "",
+          "line": null,
+          "message": ""
+        },
+        {
+          "name": "repairs that fail are reported and safe later steps still run",
+          "file": "",
+          "line": null,
+          "message": ""
+        }
+      ],
+      "plan": "",
+      "planError": "",
+      "report": "must-check/2026-11-18T22-23-10-an-unguarded-type-step-that-types-identi.md"
+    },
     {
       "id": "sent_mwmobumc45c119",
       "at": "2026-11-18T22:09:24.421Z",

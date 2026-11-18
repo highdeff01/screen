@@ -1013,6 +1013,9 @@ async function detectHindrance(probe = null) {
 async function perceiveStep(step, run, workflow, getTool, probe = null) {
   const guard = String(step.params?.foreground || (step.type === 'focusWindow' ? step.params?.title : '') || '').trim();
   if (!guard) return;
+  // A probe without a foreground reader is a desktop-free run: there is no real
+  // desktop to perceive, and reading it would touch the machine running tests.
+  if (probe && typeof probe.readForegroundWindow !== 'function') return;
   try {
     const state = await inspectWindowState({ title: guard });
     step.perception = { guard, state: state.state, foreground: state.foreground?.title || null, at: now() };
