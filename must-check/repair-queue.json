@@ -1,23 +1,67 @@
 {
   "version": 1,
   "by": "sentinel",
-  "updatedAt": "2026-11-18T21:18:46.352Z",
-  "head": "ba19aaf51fdf",
+  "updatedAt": "2026-11-18T21:29:34.563Z",
+  "head": "4cf6886b21fb",
   "lastRun": {
-    "at": "2026-11-18T21:18:46.350Z",
+    "at": "2026-11-18T21:29:34.561Z",
     "ok": false,
-    "tests": 439,
-    "pass": 432,
-    "fail": 3,
+    "tests": 441,
+    "pass": 433,
+    "fail": 4,
     "isolated": true,
     "failingTests": [
-      "chat() reaches the console provider through the local gateway (363.3868ms)",
-      "three real failing runs pause the shared budget and reset re-enables the scheduler (5180.1077ms)",
-      "C:\\Users\\Dan\\.config\\freebuff-desktop\\local-projects\\40af3ced-48bf-4a9d-a8b7-cb42815bab8f\\data\\worktrees\\sentinel-1795036674162-29060\\test\\presentation-live.test.js (237.4682ms)"
+      "a repair that opens another app is adopted by the presenter and verifier (25018.997ms)",
+      "the engine rewrites the remainder after an irreparable action and still passes (20068.7027ms)",
+      "C:\\Users\\Dan\\.config\\freebuff-desktop\\local-projects\\40af3ced-48bf-4a9d-a8b7-cb42815bab8f\\data\\worktrees\\sentinel-1795037308185-15988\\test\\agent-replan.test.js (210.425ms)",
+      "cancellation during retry backoff prevents another attempt (15002.8738ms)"
     ]
   },
-  "open": 1,
+  "open": 2,
   "items": [
+    {
+      "id": "sent_mwmmwmldaf3f27",
+      "at": "2026-11-18T21:29:34.561Z",
+      "status": "queued",
+      "attempts": 1,
+      "fail": 4,
+      "pass": 433,
+      "tests": [
+        "a repair that opens another app is adopted by the presenter and verifier (25018.997ms)",
+        "the engine rewrites the remainder after an irreparable action and still passes (20068.7027ms)",
+        "C:\\Users\\Dan\\.config\\freebuff-desktop\\local-projects\\40af3ced-48bf-4a9d-a8b7-cb42815bab8f\\data\\worktrees\\sentinel-1795037308185-15988\\test\\agent-replan.test.js (210.425ms)",
+        "cancellation during retry backoff prevents another attempt (15002.8738ms)"
+      ],
+      "details": [
+        {
+          "name": "a repair that opens another app is adopted by the presenter and verifier",
+          "file": "",
+          "line": null,
+          "message": ""
+        },
+        {
+          "name": "the engine rewrites the remainder after an irreparable action and still passes",
+          "file": "",
+          "line": null,
+          "message": ""
+        },
+        {
+          "name": "C:\\Users\\Dan\\.config\\freebuff-desktop\\local-projects\\40af3ced-48bf-4a9d-a8b7-cb42815bab8f\\data\\worktrees\\sentinel-1795037308185-15988\\test\\agent-replan.test.js",
+          "file": "",
+          "line": null,
+          "message": ""
+        },
+        {
+          "name": "cancellation during retry backoff prevents another attempt",
+          "file": "",
+          "line": null,
+          "message": ""
+        }
+      ],
+      "plan": "",
+      "planError": "",
+      "report": "must-check/2026-11-18T21-29-34-a-repair-that-opens-another-app-is-adopt.md"
+    },
     {
       "id": "sent_mwmmiqfi02e373",
       "at": "2026-11-18T21:18:46.350Z",
