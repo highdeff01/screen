@@ -1,36 +1,36 @@
 {
   "version": 1,
   "by": "sentinel",
-  "updatedAt": "2026-11-18T22:23:10.224Z",
-  "head": "31ddce945244",
+  "updatedAt": "2026-11-18T22:24:12.012Z",
+  "head": "b6998aebfc4e",
   "lastRun": {
-    "at": "2026-11-18T22:23:10.221Z",
+    "at": "2026-11-18T22:24:11.996Z",
     "ok": false,
-    "tests": 451,
-    "pass": 445,
+    "tests": 452,
+    "pass": 446,
     "fail": 2,
-    "isolated": false,
+    "isolated": true,
     "failingTests": [
-      "an unguarded type step that types identical text passes via corroboration (2812.9357ms)",
-      "repairs that fail are reported and safe later steps still run (8329.5244ms)"
+      "a type step with a named window that types identical text passes via corroboration (16066.3101ms)",
+      "repairs that fail are reported and safe later steps still run (6695.5407ms)"
     ]
   },
   "open": 8,
   "items": [
     {
-      "id": "sent_mwmotjt94aa0d4",
-      "at": "2026-11-18T22:23:10.221Z",
+      "id": "sent_mwmouvh834c257",
+      "at": "2026-11-18T22:24:11.996Z",
       "status": "queued",
       "attempts": 1,
       "fail": 2,
-      "pass": 445,
+      "pass": 446,
       "tests": [
-        "an unguarded type step that types identical text passes via corroboration (2812.9357ms)",
-        "repairs that fail are reported and safe later steps still run (8329.5244ms)"
+        "a type step with a named window that types identical text passes via corroboration (16066.3101ms)",
+        "repairs that fail are reported and safe later steps still run (6695.5407ms)"
       ],
       "details": [
         {
-          "name": "an unguarded type step that types identical text passes via corroboration",
+          "name": "a type step with a named window that types identical text passes via corroboration",
           "file": "",
           "line": null,
           "message": ""
@@ -44,7 +44,7 @@
       ],
       "plan": "",
       "planError": "",
-      "report": "must-check/2026-11-18T22-23-10-an-unguarded-type-step-that-types-identi.md"
+      "report": "must-check/2026-11-18T22-24-11-a-type-step-with-a-named-window-that-typ.md"
     },
     {
       "id": "sent_mwmobumc45c119",

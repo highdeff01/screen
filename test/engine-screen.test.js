@@ -95,9 +95,9 @@ test('a type step with a named window that types identical text passes via corro
   });
   const finished = await settle(run.id);
   const step = finished.steps[0];
-  // The screen-change corroboration passes, but an unguarded type step cannot
-  // prove Notepad received it, so the goal named in the description is withheld.
-  assert.equal(finished.status, 'needs_review');
+  // The screen-change corroboration passes, and because the step names the
+  // window it types into, the app the goal names is proven as well.
+  assert.equal(finished.status, 'passed');
   assert.equal(step.status, 'passed');
   assert.equal(step.verification?.changedPct, 0);
   assert.match(step.verification?.corroborated || '', /already present in the window|field already contains/);
