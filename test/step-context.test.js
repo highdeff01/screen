@@ -8,6 +8,7 @@ import {
   describeSurroundings,
   expectationFor,
   launchProducedNewWindow,
+  looksLikeSavedDocument,
   reviewPrevious,
   userTiming,
 } from '../server/step-context.js';
@@ -62,6 +63,13 @@ test('a launch that leaves an existing document in front did not open a window',
   assert.equal(launchProducedNewWindow({ windows: ['knack convo.txt - Notepad'], after: 'Untitled - Notepad' }), true);
   assert.equal(launchProducedNewWindow({ windows: [], after: 'Untitled - Notepad' }), true);
   assert.equal(launchProducedNewWindow({ windows: ['x'], after: '' }), false);
+});
+
+test('only a title that names a saved file counts as an operator document', () => {
+  assert.equal(looksLikeSavedDocument('knack convo.txt - Notepad'), true);
+  assert.equal(looksLikeSavedDocument('Untitled - Notepad'), false);
+  assert.equal(looksLikeSavedDocument('*sIGHTLINE screen agent{enter}aUTOMA - Notepad'), false);
+  assert.equal(looksLikeSavedDocument(''), false);
 });
 
 test('an expectation is verified, never skipped for looking satisfied', () => {

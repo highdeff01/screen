@@ -16,7 +16,7 @@ import {
   silentCheck,
   resolveCheckFile,
 } from './automation.js';
-import { assessStep, launchProducedNewWindow, reviewPrevious } from './step-context.js';
+import { assessStep, launchProducedNewWindow, looksLikeSavedDocument, reviewPrevious } from './step-context.js';
 import { classifyPresence, holdDecision, learnHold, completionFor, isFocusStealing, silentChecksFor } from './presence.js';
 import { beginRunObservation, endRunObservation } from './app-observer.js';
 import { expectsScreenChange, windowChecksFor, resumePlan, corroboratesNoChange, lookupWindowFor, screenChangeVerdict } from './step-effects.js';
@@ -1517,7 +1517,7 @@ async function executeRun(runId) {
         const adopted = [...(run.steps || [])].reverse().find((entry) => entry.launch?.adopted);
         if (adopted) {
           step.status = 'skipped';
-          step.output = `Skipped: “${adopted.launch.target}” was already showing “${adopted.launch.after}”, so the launch did not open a new window; ${step.type} would have landed in the existing document.`;
+          step.output = `Skipped: “${adopted.launch.target}” was already showing the saved document “${adopted.launch.after}”, so the launch opened no new window; ${step.type} would have landed in that file.`;
           recordLedger(run, step);
           pushLog(run, 'warn', step.output, step.id);
           persist();
@@ -1699,13 +1699,17 @@ async function executeRun(runId) {
           target,
           before: windowsBefore.slice(0, 8),
           after,
-          adopted: windowsBefore.length > 0 && !launchProducedNewWindow({ windows: windowsBefore, after }),
+          adopted:
+            windowsBefore.length > 0 &&
+            !launchProducedNewWindow({ windows: windowsBefore, after }) &&
+            looksLikeSavedDocument(after),
         };
         if (step.launch.adopted) {
           pushLog(
             run,
             'warn',
-            `“${target}” was already showing “${after}”; the launch did not open a new window, so typing will not use the existing document.`,
+            `“${target}” was already showing the saved document “${after}”; the launch opened no new window, so typing will not touch that file.`,
+
             step.id
           );
         }

@@ -105,6 +105,15 @@ export function launchProducedNewWindow({ windows = [], after = '' } = {}) {
   return !(windows || []).map(norm).filter(Boolean).includes(target);
 }
 
+/**
+ * Does this window title name a document saved on disk? A tab titled
+ * “notes.txt - Notepad” holds the operator’s file; “Untitled - Notepad” is a
+ * scratch tab a launch may legitimately have just opened.
+ */
+export function looksLikeSavedDocument(title) {
+  return /\.[a-z0-9]{2,5}\b/i.test(String(title || ''));
+}
+
 /** The state a successful step should leave behind, in one sentence. */
 export function expectationFor(step = {}) {
   const p = step.params || {};
