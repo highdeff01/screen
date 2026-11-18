@@ -8,7 +8,7 @@
     "start": "node server/index.js",
     "sightline": "node bin/sightline.mjs",
     "dev": "node --watch server/index.js",
-    "test": "node --test --test-concurrency=2 test/"
+    "test": "node --test --test-concurrency=2 \"test/*.test.js\""
   },
   "bin": {
     "sightline": "bin/sightline.mjs"
