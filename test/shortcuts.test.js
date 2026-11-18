@@ -186,6 +186,69 @@ test('captures real app context and invalidates a habit when the app version cha
   assert.equal(shortcuts.eligibleShortcuts(8, { process: 'Kiro' }).length, 0, 're-approval still requires a replay');
 });
 
+test('an app update requires re-approval and an independent replay after the update', () => {
+  reset();
+  const first = { id: 'run_v1', status: 'passed', steps: [contextualStep()] };
+  shortcuts.queueShortcutCandidates(mission(), first, review);
+  const { habit } = shortcuts.decideShortcut(pending()[0].id, 'approve');
+  shortcuts.recordShortcutReplayOutcome(habit.id, { id: 'replay_v1', status: 'passed' });
+
+  // Older stores can have a versioned habit without an app observation.
+  store.db().shortcutApps = {};
+  const update = { id: 'run_v2', status: 'passed', steps: [contextualStep({ version: '2.0.0' })] };
+  shortcuts.recordShortcutOutcomes(mission(), update);
+  shortcuts.queueShortcutCandidates(mission(), update, review);
+  let current = shortcuts.getShortcutHabit(habit.id);
+  assert.equal(current.reviewReason, 'app-update');
+  assert.equal(current.replayStatus, 'pending', 'the run that detected the update cannot validate it');
+  assert.equal(pending()[0].runId, update.id, 're-approval records the update observation run');
+  shortcuts.recordShortcutReplayOutcome(habit.id, { id: 'old_inflight_replay', status: 'passed' });
+  assert.equal(shortcuts.getShortcutHabit(habit.id).replayStatus, 'pending');
+
+  shortcuts.decideShortcut(pending()[0].id, 'approve');
+  shortcuts.recordShortcutReplayOutcome(habit.id, { id: 'old_inflight_replay', status: 'passed', createdAt: '2020-01-01T00:00:00.000Z' });
+  assert.equal(shortcuts.getShortcutHabit(habit.id).replayStatus, 'pending', 'a replay started before re-approval cannot validate it');
+  shortcuts.recordShortcutOutcomes(mission(), update);
+  current = shortcuts.getShortcutHabit(habit.id);
+  assert.equal(current.replayStatus, 'pending', 'reprocessing the approval run is not a replay');
+  shortcuts.recordShortcutOutcomes(mission(), { ...update, id: 'run_v2_independent' });
+  assert.equal(shortcuts.getShortcutHabit(habit.id).replayStatus, 'passed');
+  assert.equal(shortcuts.eligibleShortcuts(8, { process: 'Kiro' }).length, 1);
+});
+
+test('app observations are persisted even for already learned shortcuts', () => {
+  reset();
+  shortcuts.queueShortcutCandidates(mission(), passedRun(), review);
+  shortcuts.decideShortcut(pending()[0].id, 'approve');
+  const d = store.db();
+  const before = d.rev;
+  shortcuts.queueShortcutCandidates(mission(), passedRun('run_observe'), review);
+  assert.ok(d.rev > before);
+  assert.ok(d.shortcutApps.kiro);
+});
+
+test('only live successful runs can validate replay and repeated failures are counted', () => {
+  reset();
+  shortcuts.queueShortcutCandidates(mission(), { ...passedRun(), dryRun: true }, review);
+  assert.equal(pending().length, 0);
+  shortcuts.queueShortcutCandidates(mission(), passedRun(), review);
+  const { habit } = shortcuts.decideShortcut(pending()[0].id, 'approve');
+  shortcuts.recordShortcutOutcomes(mission(), { ...passedRun('run_simulated'), dryRun: true });
+  shortcuts.recordShortcutReplayOutcome(habit.id, { id: 'dry_replay', dryRun: true, status: 'passed' });
+  assert.equal(shortcuts.getShortcutHabit(habit.id).replayStatus, 'pending');
+  shortcuts.recordShortcutOutcomes(mission(), { ...passedRun('run_failed_later'), status: 'failed' });
+  assert.equal(shortcuts.getShortcutHabit(habit.id).replayStatus, 'pending');
+
+  shortcuts.recordShortcutOutcomes(mission(), {
+    id: 'run_repeated', status: 'failed',
+    steps: [keyStep('Send question', '{ENTER}'), keyStep('Send question', '{ENTER}', 'failed')],
+  });
+  const current = shortcuts.getShortcutHabit(habit.id);
+  assert.equal(current.failures, 1);
+  assert.equal(current.replayStatus, 'failed');
+  assert.equal(shortcuts.eligibleShortcuts(8, { app: 'Kiro' }).length, 0);
+});
+
 test('legacy auto-promoted habits are returned to review, once', () => {
   reset();
   store.db().shortcutHabits = [

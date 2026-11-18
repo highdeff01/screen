@@ -210,10 +210,12 @@ function observeApp(d, spec) {
     version: spec.appVersion || previous?.version || '',
     at: now(),
   };
-  if (!previous?.version || !spec.appVersion || previous.version === spec.appVersion) return false;
+  if (!spec.appVersion) return false;
   let changed = false;
   for (const habit of d.shortcutHabits) {
-    if (habit.approved && habit.appKey === spec.appKey) {
+    if (habit.approved && habit.appKey === spec.appKey &&
+        ((previous?.version && previous.version !== spec.appVersion) ||
+         (habit.appVersion && habit.appVersion !== spec.appVersion))) {
       changed = demoteHabitForAppUpdate(d, habit, spec.appVersion) || changed;
     }
   }
@@ -290,7 +292,7 @@ export function ensureShortcutStore() {
 }
 
 export function queueShortcutCandidates(mission, run, review) {
-  if (mission?.mode !== 'live' || run?.status !== 'passed' || !review?.summary) return;
+  if (mission?.mode !== 'live' || run?.dryRun || run?.status !== 'passed' || !review?.summary) return;
   const d = ensureShortcutStore();
   const blocked = new Set(d.shortcutBlocks.map((entry) => entry.fingerprint));
   const evidencePath = (run.evidence || []).filter((item) => item.path).slice(-1)[0]?.path || null;
@@ -301,9 +303,9 @@ export function queueShortcutCandidates(mission, run, review) {
     const spec = shortcutSpec(step, mission);
     if (!spec || UNSAFE.test(spec.keys) || blocked.has(spec.fingerprint)) continue;
     const appChanged = observeApp(d, spec);
-    if (appChanged) changed = true;
+    changed = true; // Persist the observation even when the shortcut is already learned.
     const learned = d.shortcutHabits.find((habit) => habit.approved && habit.fingerprint === spec.fingerprint);
-    if (learned && !appChanged) continue;
+    if (learned && !appChanged && learned.reviewReason !== 'app-update') continue;
 
     const existing = d.shortcutCandidates.find((candidate) => candidate.fingerprint === spec.fingerprint);
     if (existing) {
@@ -312,6 +314,9 @@ export function queueShortcutCandidates(mission, run, review) {
         existing.lastSeenAt = now();
         existing.steps = [...new Set([...(existing.steps || []), step.id].filter(Boolean))].slice(-8);
         existing.appVersion = spec.appVersion || existing.appVersion;
+        if (appChanged || existing.source === 'app-update' || learned?.reviewReason === 'app-update') {
+          existing.runId = run.id;
+        }
         changed = true;
       }
       continue;
@@ -344,22 +349,39 @@ export function queueShortcutCandidates(mission, run, review) {
   }
 }
 
+function predatesApproval(run, habit) {
+  const created = Date.parse(run?.createdAt || '');
+  const approved = Date.parse(habit?.approvedAt || '');
+  return Number.isFinite(created) && Number.isFinite(approved) && created < approved;
+}
+
 export function recordShortcutOutcomes(mission, run) {
-  if (mission?.mode !== 'live' || !run) return;
+  if (mission?.mode !== 'live' || !run || run.dryRun) return;
   const d = ensureShortcutStore();
   let changed = false;
+  // A run may execute the same shortcut more than once. A failure must not be
+  // hidden by an earlier successful occurrence of the same fingerprint.
+  const outcomes = new Map();
   for (const step of run.steps || []) {
     if (!['passed', 'failed'].includes(step.status)) continue;
     const spec = shortcutSpec(step, mission);
     if (!spec) continue;
-    const appChanged = observeApp(d, spec);
-    if (appChanged) changed = true;
+    const prior = outcomes.get(spec.fingerprint);
+    if (!prior || step.status === 'failed') outcomes.set(spec.fingerprint, step);
+  }
+  for (const step of outcomes.values()) {
+    if (!['passed', 'failed'].includes(step.status)) continue;
+    const spec = shortcutSpec(step, mission);
+    if (!spec) continue;
+    observeApp(d, spec);
+    changed = true; // The observed app/version is useful even without a matching habit.
     const habit = d.shortcutHabits.find((entry) => entry.approved && entry.fingerprint === spec.fingerprint);
     if (!habit || habit.lastRunId === run.id) continue;
     if (step.status === 'passed') {
       habit.successes = Math.max(0, Number(habit.successes || 0)) + 1;
       habit.lastAt = now();
-      if (habit.replayStatus !== 'passed' && habit.approvedRunId && habit.approvedRunId !== run.id) {
+      if (run.status === 'passed' && habit.reviewReason !== 'app-update' && !predatesApproval(run, habit) &&
+          habit.replayStatus !== 'passed' && habit.approvedRunId && habit.approvedRunId !== run.id) {
         habit.replayStatus = 'passed';
         habit.replayPasses = Math.max(0, Number(habit.replayPasses || 0)) + 1;
         habit.lastReplayAt = now();
@@ -397,6 +419,8 @@ export function recordShortcutReplayOutcome(id, run) {
   const d = ensureShortcutStore();
   const habit = d.shortcutHabits.find((entry) => entry.id === id);
   if (!habit) return null;
+  // An in-flight replay cannot validate a version that now needs re-approval.
+  if (habit.reviewReason === 'app-update' || run?.dryRun || predatesApproval(run, habit)) return habit;
   habit.replayStatus = run?.status === 'passed' ? 'passed' : 'failed';
   habit.lastReplayAt = now();
   habit.lastReplayRunId = run?.id || null;
@@ -575,6 +599,7 @@ export function decideShortcut(id, decision, by = 'operator') {
       habit.windowClass = candidate.windowClass;
       habit.preconditions = candidate.preconditions;
       habit.appVersion = candidate.appVersion;
+      habit.approvedRunId = candidate.runId || null;
       habit.reviewReason = null;
       habit.replayStatus = 'pending';
       habit.enabled = true;

@@ -6319,21 +6319,38 @@ async function runAction(name, ds, el) {
       ui.sim = { runId, record: start.simulation };
       render();
       const simulationId = start.simulation.id;
-      const poll = async (attempt = 0) => {
+      const poll = async (attempt = 0, errors = 0) => {
         if (ui.sim?.record?.id !== simulationId) return;
         const res = await api(`/api/simulations/${encodeURIComponent(simulationId)}`);
-        if (res.ok) ui.sim = { runId, record: res.simulation };
-        if (res.ok && res.simulation.status === 'running' && attempt < 40) {
+        if (!res.ok) {
+          if (errors < 2) {
+            setTimeout(() => poll(attempt, errors + 1), 3000);
+            return;
+          }
+          ui.simBusy = false;
           render();
-          setTimeout(() => poll(attempt + 1), 1200);
+          toast(`Could not check screenshot analysis: ${res.error || 'connection error'}. Try again.`, 'error');
+          return;
+        }
+        ui.sim = { runId, record: res.simulation };
+        if (res.simulation.status === 'running') {
+          render();
+          if (attempt === 40) toast('Screenshot check is still running; continuing to wait.');
+          if (attempt < 150) {
+            setTimeout(() => poll(attempt + 1), attempt < 40 ? 1200 : 5000);
+            return;
+          }
+          ui.simBusy = false;
+          render();
+          toast('Screenshot check is still running. You can start another check or refresh later.', 'error');
           return;
         }
         ui.simBusy = false;
         render();
-        if (res.ok && res.simulation.status === 'completed') {
+        if (res.simulation.status === 'completed') {
           const verdict = res.simulation.summary?.verdict || 'completed';
           toast(`Screenshot check: ${verdict}`, verdict === 'disagrees' ? 'error' : 'ok');
-        } else if (res.ok) {
+        } else {
           toast(res.simulation.error || 'Screenshot check did not finish', 'error');
         }
       };

@@ -121,6 +121,110 @@ test('disabling the system scan clears previously collected system awareness', a
   store.flush();
 });
 
+test('background scans reconcile learned runs through failure and retry without relearning habits', async () => {
+  const d = store.db();
+  d.companion = undefined;
+  d.settings.companionEnabled = true;
+  d.settings.companionLearning = true;
+  d.settings.companionSystemScan = false;
+  const run = {
+    id: 'run_background', workflowId: 'wf_background', workflowName: 'Background',
+    status: 'running', steps: [{ type: 'launchApp', params: { target: 'Notepad' }, ms: 10 }],
+  };
+  d.runs = [run];
+  await companion.scanCompanion({ system: false });
+  const c = companion.ensureCompanion();
+  const habits = structuredClone(c.habits);
+  assert.deepEqual(c.learnedRunIds, [run.id]);
+  assert.equal(c.continuations.length, 0);
+
+  run.status = 'failed';
+  run.lastError = 'Failed after the first scan';
+  await companion.scanCompanion({ system: false });
+  assert.equal(c.continuations.length, 1);
+  const continuation = c.continuations[0];
+  assert.equal(continuation.runId, run.id);
+  assert.equal(continuation.status, 'needs_attention');
+  assert.equal(continuation.reason, run.lastError);
+  assert.deepEqual(c.habits, habits);
+  assert.equal(d.runs.length, 1, 'reconciliation must not queue a retry');
+
+  const retry = { id: 'run_background_retry', status: 'running', steps: [] };
+  d.runs.unshift(retry);
+  run.recovery = { status: 'retrying', retryRunId: retry.id };
+  await companion.scanCompanion({ system: false });
+  assert.equal(continuation.status, 'retrying');
+  assert.equal(continuation.retryRunId, retry.id);
+  retry.status = 'failed';
+  await companion.scanCompanion({ system: false });
+  assert.equal(continuation.status, 'needs_attention');
+
+  const nextRetry = { id: 'run_background_retry_2', status: 'running', steps: [] };
+  d.runs.unshift(nextRetry);
+  run.recovery.retryRunId = nextRetry.id;
+  await companion.scanCompanion({ system: false });
+  assert.equal(continuation.retryRunId, nextRetry.id);
+  assert.equal(continuation.status, 'retrying');
+  nextRetry.status = 'passed';
+  await companion.scanCompanion({ system: false });
+  await companion.scanCompanion({ system: false });
+  assert.equal(continuation.status, 'completed');
+  assert.equal(c.continuations.filter((entry) => entry.runId === run.id).length, 1);
+  assert.deepEqual(c.habits, habits);
+  assert.equal(d.runs.length, 3, 'scans must not initiate actions');
+  store.flush();
+});
+
+test('direct learning reconciles an already learned run without changing habits', () => {
+  const d = store.db();
+  d.companion = undefined;
+  d.settings.companionEnabled = true;
+  d.settings.companionLearning = true;
+  const run = {
+    id: 'run_direct_status', workflowName: 'Direct learning', status: 'running',
+    steps: [{ type: 'type', params: { text: 'Hello' }, ms: 12 }],
+  };
+  d.runs = [run];
+  companion.learnRun(run);
+  const c = companion.ensureCompanion();
+  const habits = structuredClone(c.habits);
+  run.status = 'failed';
+  companion.learnRun(run);
+  assert.equal(c.continuations[0].status, 'needs_attention');
+  run.status = 'passed';
+  companion.learnRun(run);
+  assert.equal(c.continuations[0].status, 'completed');
+  const checkedAt = c.continuations[0].checkedAt;
+  companion.learnRun(run);
+  assert.equal(c.continuations.length, 1);
+  assert.equal(c.continuations[0].checkedAt, checkedAt);
+  assert.deepEqual(c.learnedRunIds, [run.id]);
+  assert.deepEqual(c.habits, habits);
+  store.flush();
+});
+
+test('paused learning and shadow runs do not create continuations', async () => {
+  const d = store.db();
+  d.companion = undefined;
+  d.settings.companionEnabled = true;
+  d.settings.companionLearning = true;
+  d.settings.companionSystemScan = false;
+  const run = { id: 'run_paused', status: 'running', steps: [] };
+  d.runs = [run];
+  companion.learnRun(run);
+  run.status = 'failed';
+  d.settings.companionLearning = false;
+  companion.learnRun(run);
+  await companion.scanCompanion({ system: false });
+  assert.equal(companion.ensureCompanion().continuations.length, 0);
+  d.settings.companionLearning = true;
+  run.shadow = true;
+  companion.learnRun(run);
+  await companion.scanCompanion({ system: false });
+  assert.equal(companion.ensureCompanion().continuations.length, 0);
+  store.flush();
+});
+
 test('a continuation marked retrying without a retry run is downgraded to needs attention', async () => {
   const d = store.db();
   d.companion = undefined;
