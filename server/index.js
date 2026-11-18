@@ -58,6 +58,9 @@ import { addSecondOpinion, lensList } from './second-opinion.js';
 import { actionLogStatus, applyFix, dismissItem, implementSuggestion, listActionLog, recordAction, triageItem } from './action-log.js';
 import { agentActivity, heartbeat, heartbeatDone, sendContinuation, startAgentWatch } from './agent-awareness.js';
 import { applyReshaped, configureDeepFocus, deepFocusStatus, startDeepFocus, stopDeepFocus } from './deep-focus.js';
+import { addAnnotation, annotationsForRun, listAnnotations, pinFindings, removeAnnotation } from './annotations.js';
+import { presentationFromDeepFocus, deepFocusMarkdown } from './presentations-deep.js';
+import { addFirewallRule, firewallCheck, firewallStatus, firewallTest, removeFirewallRule, resetFirewallRules, setFirewallMode } from './firewall.js';
 
 /**
  * Apply the deep-focus reshaped steps: keep everything the run passed, replace
@@ -1024,6 +1027,139 @@ route('POST', /^\/api\/action-log\/([^/]+)\/dismiss$/, async (req, res, [id]) =>
     sendJson(res, 200, { ok: true, item: dismissItem(id) });
   } catch (err) {
     fail(res, err.message === 'Item not found' ? 404 : 400, err.message);
+  }
+});
+
+/* ---------------- Deep focus: re-think a finished run, live ---------------- */
+route('GET', /^\/api\/deep-focus\/([^/]+)$/, async (req, res, [id]) => {
+  try {
+    sendJson(res, 200, { ok: true, deepFocus: deepFocusStatus(id) });
+  } catch (err) {
+    fail(res, err.message === 'Run not found' ? 404 : 400, err.message);
+  }
+});
+
+route('POST', /^\/api\/deep-focus\/([^/]+)\/start$/, async (req, res, [id]) => {
+  try {
+    const body = await readBody(req);
+    sendJson(res, 200, { ok: true, deepFocus: startDeepFocus(id, { rounds: body.rounds, reason: body.reason }) });
+  } catch (err) {
+    fail(res, err.message === 'Run not found' ? 404 : 400, err.message);
+  }
+});
+
+route('POST', /^\/api\/deep-focus\/([^/]+)\/apply$/, async (req, res, [id]) => {
+  try {
+    sendJson(res, 200, await applyReshaped(id));
+  } catch (err) {
+    fail(res, err.message === 'Run not found' ? 404 : 400, err.message);
+  }
+});
+
+route('POST', /^\/api\/deep-focus\/([^/]+)\/stop$/, async (req, res, [id]) => {
+  try {
+    sendJson(res, 200, { ok: true, deepFocus: stopDeepFocus(id) });
+  } catch (err) {
+    fail(res, err.message === 'Run not found' ? 404 : 400, err.message);
+  }
+});
+
+route('POST', /^\/api\/deep-focus\/([^/]+)\/presentation$/, async (req, res, [id]) => {
+  try {
+    sendJson(res, 200, { ok: true, deck: await presentationFromDeepFocus(id) });
+  } catch (err) {
+    fail(res, err.message === 'Run not found' ? 404 : 400, err.message);
+  }
+});
+
+route('GET', /^\/api\/deep-focus\/([^/]+)\/notes\.md$/, async (req, res, [id]) => {
+  try {
+    res.setHeader('content-type', 'text/markdown; charset=utf-8');
+    res.end(deepFocusMarkdown(id));
+  } catch (err) {
+    fail(res, err.message === 'Run not found' ? 404 : 400, err.message);
+  }
+});
+
+/* ---------------- Annotations: the drawing layer over frames --------------- */
+route('GET', /^\/api\/annotations$/, async (req, res, _params, url) => {
+  try {
+    const pick = (key) => url.searchParams.get(key);
+    const ref = { captureId: pick('captureId'), runId: pick('runId'), roundIndex: pick('roundIndex'), surface: pick('surface') };
+    const items = pick('runId') ? annotationsForRun(pick('runId')) : listAnnotations(ref);
+    sendJson(res, 200, { ok: true, annotations: items });
+  } catch (err) {
+    fail(res, 400, err.message);
+  }
+});
+
+route('POST', /^\/api\/annotations$/, async (req, res) => {
+  try {
+    const body = await readBody(req);
+    sendJson(res, 200, { ok: true, annotation: addAnnotation(body) });
+  } catch (err) {
+    fail(res, 400, err.message);
+  }
+});
+
+route('POST', /^\/api\/annotations\/pin$/, async (req, res) => {
+  try {
+    const body = await readBody(req);
+    sendJson(res, 200, { ok: true, added: pinFindings(body.ref || {}, body.findings, { by: body.by || 'ai' }) });
+  } catch (err) {
+    fail(res, 400, err.message);
+  }
+});
+
+route('DELETE', /^\/api\/annotations\/([^/]+)$/, async (req, res, [id]) => {
+  try {
+    sendJson(res, 200, { ok: true, annotation: removeAnnotation(id) });
+  } catch (err) {
+    fail(res, err.message === 'Annotation not found' ? 404 : 400, err.message);
+  }
+});
+
+/* ---------------- Firewall: verdicts before any step acts ------------------ */
+route('GET', /^\/api\/firewall$/, async (req, res) => {
+  sendJson(res, 200, { ok: true, firewall: firewallStatus() });
+});
+
+route('POST', /^\/api\/firewall\/mode$/, async (req, res) => {
+  try {
+    const body = await readBody(req);
+    sendJson(res, 200, { ok: true, firewall: setFirewallMode(body.mode) });
+  } catch (err) {
+    fail(res, 400, err.message);
+  }
+});
+
+route('POST', /^\/api\/firewall\/rules$/, async (req, res) => {
+  try {
+    const body = await readBody(req);
+    sendJson(res, 200, { ok: true, rule: addFirewallRule(body) });
+  } catch (err) {
+    fail(res, 400, err.message);
+  }
+});
+
+route('DELETE', /^\/api\/firewall\/rules\/([^/]+)$/, async (req, res, [id]) => {
+  try {
+    sendJson(res, 200, { ok: true, rule: removeFirewallRule(id) });
+  } catch (err) {
+    fail(res, err.message === 'Rule not found' ? 404 : 400, err.message);
+  }
+});
+
+route('POST', /^\/api\/firewall\/reset$/, async (req, res) => {
+  sendJson(res, 200, { ok: true, firewall: resetFirewallRules() });
+});
+
+route('POST', /^\/api\/firewall\/test$/, async (req, res) => {
+  try {
+    const body = await readBody(req);
+    sendJson(res, 200, { ok: true, verdict: firewallTest(body.step || {}, body.run || null) });
+  } catch (err) {
+    fail(res, 400, err.message);
   }
 });
 
