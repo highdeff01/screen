@@ -2757,7 +2757,10 @@ route('PATCH', /^\/api\/settings$/, async (req, res) => {
     s.autoEscalateMinFailures = Math.max(1, Math.min(10, Number(body.autoEscalateMinFailures) || 2));
   }
   if (body.autoEscalateDailyCap !== undefined) {
-    s.autoEscalateDailyCap = Math.max(0, Math.min(25, Number(body.autoEscalateDailyCap) || 3));
+    // Zero is a real value here ("do not auto-start any mission"), so it must not
+    // fall back to the default the way a `|| 3` would.
+    const cap = Number(body.autoEscalateDailyCap);
+    s.autoEscalateDailyCap = Number.isFinite(cap) ? Math.max(0, Math.min(25, cap)) : 3;
   }
   if (body.autoProposeFailures !== undefined) s.autoProposeFailures = Boolean(body.autoProposeFailures);
   if (body.autoRecoverFailures !== undefined) s.autoRecoverFailures = Boolean(body.autoRecoverFailures);

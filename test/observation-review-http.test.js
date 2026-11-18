@@ -81,8 +81,15 @@ test('observation review uses stored evidence and is read-only', { timeout: 3000
     const beforeRun = (await request(base, '/api/runs/run_one')).body.run;
     const beforeProposal = (await request(base, '/api/proposals/proposal_one')).body.proposal;
     const beforeSimulation = (await request(base, `/api/simulations/${id}`)).body.simulation;
-    await sleep(150);
-    const before = JSON.parse(fs.readFileSync(dbFile, 'utf8'));
+    // The store flushes db.json on a short debounce, so wait until the finished
+    // simulation is on disk before using the file as the "before" snapshot;
+    // otherwise a late flush looks like the review mutated the record.
+    let before = null;
+    for (let attempt = 0; attempt < 60; attempt += 1) {
+      before = JSON.parse(fs.readFileSync(dbFile, 'utf8'));
+      if ((before.simulations || []).find((entry) => entry.id === id)?.status === 'completed') break;
+      await sleep(50);
+    }
     const review = await request(base, `/api/observation-review?simulationId=${id}&proposalId=proposal_one`);
     assert.equal(review.status, 200);
     assert.equal(review.headers.get('cache-control'), 'no-store');

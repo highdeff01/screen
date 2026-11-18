@@ -137,8 +137,10 @@ export function escalationCandidates() {
   const missions = db().missions || [];
   const seen = new Set();
   const candidates = [];
+  const workflowIds = new Set((db().workflows || []).map((workflow) => workflow.id));
   for (const run of db().runs) {
     if (run.status !== 'failed') continue;
+    if (!workflowIds.has(run.workflowId)) continue;
     if (BLOCKED_TRIGGERS.includes(run.trigger)) continue;
     if (run.forwardedMissionId && missions.some((mission) => mission.id === run.forwardedMissionId)) continue;
     if (seen.has(run.workflowId)) continue;
