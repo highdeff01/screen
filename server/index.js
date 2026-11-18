@@ -55,7 +55,8 @@ import { answerRequest, ask, cancelRequest, listInbox, waitRequest } from './inb
 import { drain, enqueue, pipelineStatus, pipelineSettings, registerHandler, runNow as pipelineRunNow, startPipeline, stopPipeline } from './pipeline.js';
 import { createSnapshot, diffSnapshots, restoreSnapshot, snapshotStatus, transferBetween } from './snapshots.js';
 import { addSecondOpinion, lensList } from './second-opinion.js';
-import { actionLogStatus, applyFix, dismissItem, listActionLog, recordAction, triageItem } from './action-log.js';
+import { actionLogStatus, applyFix, dismissItem, implementSuggestion, listActionLog, recordAction, triageItem } from './action-log.js';
+import { agentActivity, heartbeat, heartbeatDone, sendContinuation, startAgentWatch } from './agent-awareness.js';
 import {
   dismissFailure,
   planFailure,
@@ -429,6 +430,7 @@ function buildState() {
     pipeline: pipelineStatus(),
     snapshots: snapshotStatus(),
     actionLog: actionLogStatus(),
+    agentsWorking: agentActivity(),
     share: shareStatus(),
     escalation: escalationStatus(),
     notes: d.notes.slice(0, 60).map(({ body, ...rest }) => ({
@@ -944,6 +946,46 @@ route('POST', /^\/api\/action-log\/([^/]+)\/fix$/, async (req, res, [id]) => {
     sendJson(res, 200, { ok: true, item: applyFix(id, body) });
   } catch (err) {
     fail(res, err.message === 'Item not found' ? 404 : 400, err.message);
+  }
+});
+
+route('POST', /^\/api\/action-log\/([^/]+)\/implement$/, async (req, res, [id]) => {
+  try {
+    sendJson(res, 200, await implementSuggestion(id));
+  } catch (err) {
+    fail(res, err.message === 'Item not found' ? 404 : 500, err.message);
+  }
+});
+
+/* ---------------- Agent awareness: who is working on the app right now ------ */
+route('GET', /^\/api\/agents\/active$/, async (req, res) => {
+  sendJson(res, 200, { ok: true, activity: agentActivity() });
+});
+
+route('POST', /^\/api\/agents\/heartbeat$/, async (req, res) => {
+  try {
+    const body = await readBody(req);
+    sendJson(res, 200, { ok: true, activity: heartbeat(body) });
+  } catch (err) {
+    fail(res, 400, err.message);
+  }
+});
+
+route('POST', /^\/api\/agents\/done$/, async (req, res) => {
+  try {
+    const body = await readBody(req);
+    sendJson(res, 200, { ok: true, left: heartbeatDone(String(body.name || '')) });
+  } catch (err) {
+    fail(res, 400, err.message);
+  }
+});
+
+route('POST', /^\/api\/agents\/continuation$/, async (req, res) => {
+  try {
+    const body = await readBody(req);
+    sendJson(res, 200, { ok: true, ...(await Promise.resolve(sendContinuation(body))) });
+  } catch (err) {
+    fail(res, 400, err.message);
   }
 });
 
@@ -3696,6 +3738,8 @@ server.listen(PORT, HOST, () => {
     return item?.suggestion ? 'Suggestion drafted' : 'No suggestion available';
   });
   startPipeline();
+  // Know when AIs are working on the app; drives safeguards and continuations.
+  startAgentWatch();
   startAmbient();
   // Front the model provider with the local Respan Gateway when it is enabled.
   if (db().settings.gatewayEnabled) ensureGateway().catch((err) => console.warn(`[gateway] ${err.message}`));
@@ -3723,3 +3767,18 @@ function shutdown() {
 }
 process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);
+// A crash is a message too: report it with the stack into the synced
+// must-check folder and keep the console alive if the failure is contained.
+process.on('uncaughtException', (err) => {
+  console.error('[crash] uncaught exception:', err);
+  try {
+    recordAction({ kind: 'crash', action: 'server-uncaught', error: err.stack || err.message, forceReport: true });
+    sendContinuation({ from: 'console', reason: 'the console crashed', detail: String(err.message || err).slice(0, 400), tags: ['crash'] });
+  } catch { /* never crash inside the crash handler */ }
+});
+process.on('unhandledRejection', (err) => {
+  console.error('[crash] unhandled rejection:', err);
+  try {
+    recordAction({ kind: 'crash', action: 'server-rejection', error: err?.stack || String(err), forceReport: true });
+  } catch { /* never crash inside the crash handler */ }
+});

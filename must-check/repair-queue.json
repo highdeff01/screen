@@ -1,38 +1,40 @@
 {
   "version": 1,
   "by": "sentinel",
-  "updatedAt": "2026-11-18T22:09:40.711Z",
-  "head": "ef5067f30671",
+  "updatedAt": "2026-11-18T22:16:59.788Z",
+  "head": "5d7f29a4a173",
   "lastRun": {
-    "at": "2026-11-18T22:09:40.710Z",
-    "ok": false,
-    "tests": 447,
-    "pass": 440,
-    "fail": 3,
+    "at": "2026-11-18T22:16:59.788Z",
+    "ok": true,
+    "tests": 446,
+    "pass": 442,
+    "fail": 0,
     "isolated": true,
-    "failingTests": [
-      "a repair that opens another app is adopted by the presenter and verifier (25112.3574ms)",
-      "three real failing runs pause the shared budget and reset re-enables the scheduler (5090.2904ms)",
-      "C:\\Users\\Dan\\.config\\freebuff-desktop\\local-projects\\40af3ced-48bf-4a9d-a8b7-cb42815bab8f\\data\\worktrees\\sentinel-1795039707738-26396\\test\\presentation-live.test.js (254.9055ms)"
-    ]
+    "failingTests": []
   },
   "open": 7,
   "items": [
     {
-      "id": "sent_mwmoc76ue0951c",
-      "at": "2026-11-18T22:09:40.710Z",
+      "id": "sent_mwmobumc45c119",
+      "at": "2026-11-18T22:09:24.421Z",
       "status": "queued",
       "attempts": 1,
       "fail": 3,
-      "pass": 440,
+      "pass": 439,
       "tests": [
-        "a repair that opens another app is adopted by the presenter and verifier (25112.3574ms)",
-        "three real failing runs pause the shared budget and reset re-enables the scheduler (5090.2904ms)",
-        "C:\\Users\\Dan\\.config\\freebuff-desktop\\local-projects\\40af3ced-48bf-4a9d-a8b7-cb42815bab8f\\data\\worktrees\\sentinel-1795039707738-26396\\test\\presentation-live.test.js (254.9055ms)"
+        "the engine rewrites the remainder after an irreparable action and still passes (20108.2717ms)",
+        "C:\\Users\\Dan\\.config\\freebuff-desktop\\local-projects\\40af3ced-48bf-4a9d-a8b7-cb42815bab8f\\data\\worktrees\\sentinel-1795039684552-33992\\test\\agent-replan.test.js (352.9763ms)",
+        "three real failing runs pause the shared budget and reset re-enables the scheduler (14063.1746ms)"
       ],
       "details": [
         {
-          "name": "a repair that opens another app is adopted by the presenter and verifier",
+          "name": "the engine rewrites the remainder after an irreparable action and still passes",
+          "file": "",
+          "line": null,
+          "message": ""
+        },
+        {
+          "name": "C:\\Users\\Dan\\.config\\freebuff-desktop\\local-projects\\40af3ced-48bf-4a9d-a8b7-cb42815bab8f\\data\\worktrees\\sentinel-1795039684552-33992\\test\\agent-replan.test.js",
           "file": "",
           "line": null,
           "message": ""
@@ -42,30 +44,26 @@
           "file": "",
           "line": null,
           "message": ""
-        },
-        {
-          "name": "C:\\Users\\Dan\\.config\\freebuff-desktop\\local-projects\\40af3ced-48bf-4a9d-a8b7-cb42815bab8f\\data\\worktrees\\sentinel-1795039707738-26396\\test\\presentation-live.test.js",
-          "file": "",
-          "line": null,
-          "message": ""
         }
       ],
       "plan": "",
       "planError": "",
-      "report": "must-check/2026-11-18T22-09-40-a-repair-that-opens-another-app-is-adopt.md"
+      "report": "must-check/2026-11-18T22-09-24-the-engine-rewrites-the-remainder-after-.md"
     },
     {
-      "id": "sent_mwmo93b730e4a3",
-      "at": "2026-11-18T22:07:15.715Z",
+      "id": "sent_mwmo8qn91c4a44",
+      "at": "2026-11-18T22:06:59.301Z",
       "status": "queued",
       "attempts": 1,
-      "fail": 4,
-      "pass": 438,
+      "fail": 6,
+      "pass": 437,
       "tests": [
-        "a repair that opens another app is adopted by the presenter and verifier (25019.9641ms)",
-        "the engine rewrites the remainder after an irreparable action and still passes (20002.0182ms)",
-        "three real failing runs pause the shared budget and reset re-enables the scheduler (5074.8279ms)",
-        "C:\\Users\\Dan\\.config\\freebuff-desktop\\local-projects\\40af3ced-48bf-4a9d-a8b7-cb42815bab8f\\data\\worktrees\\sentinel-1795039547845-26396\\test\\presentation-live.test.js (185.6874ms)"
+        "a repair that opens another app is adopted by the presenter and verifier (25027.789ms)",
+        "the engine rewrites the remainder after an irreparable action and still passes (20039.7296ms)",
+        "C:\\Users\\Dan\\.config\\freebuff-desktop\\local-projects\\40af3ced-48bf-4a9d-a8b7-cb42815bab8f\\data\\worktrees\\sentinel-1795039532783-33992\\test\\agent-replan.test.js (243.5733ms)",
+        "three real failing runs pause the shared budget and reset re-enables the scheduler (5110.6753ms)",
+        "C:\\Users\\Dan\\.config\\freebuff-desktop\\local-projects\\40af3ced-48bf-4a9d-a8b7-cb42815bab8f\\data\\worktrees\\sentinel-1795039532783-33992\\test\\presentation-live.test.js (158.3911ms)",
+        "cancellation during retry backoff prevents another attempt (15032.1358ms)"
       ],
       "details": [
         {
@@ -81,13 +79,25 @@
           "message": ""
         },
         {
+          "name": "C:\\Users\\Dan\\.config\\freebuff-desktop\\local-projects\\40af3ced-48bf-4a9d-a8b7-cb42815bab8f\\data\\worktrees\\sentinel-1795039532783-33992\\test\\agent-replan.test.js",
+          "file": "",
+          "line": null,
+          "message": ""
+        },
+        {
           "name": "three real failing runs pause the shared budget and reset re-enables the scheduler",
           "file": "",
           "line": null,
           "message": ""
         },
         {
-          "name": "C:\\Users\\Dan\\.config\\freebuff-desktop\\local-projects\\40af3ced-48bf-4a9d-a8b7-cb42815bab8f\\data\\worktrees\\sentinel-1795039547845-26396\\test\\presentation-live.test.js",
+          "name": "C:\\Users\\Dan\\.config\\freebuff-desktop\\local-projects\\40af3ced-48bf-4a9d-a8b7-cb42815bab8f\\data\\worktrees\\sentinel-1795039532783-33992\\test\\presentation-live.test.js",
+          "file": "",
+          "line": null,
+          "message": ""
+        },
+        {
+          "name": "cancellation during retry backoff prevents another attempt",
           "file": "",
           "line": null,
           "message": ""
@@ -95,7 +105,7 @@
       ],
       "plan": "",
       "planError": "",
-      "report": "must-check/2026-11-18T22-07-15-a-repair-that-opens-another-app-is-adopt.md"
+      "report": "must-check/2026-11-18T22-06-59-a-repair-that-opens-another-app-is-adopt.md"
     },
     {
       "id": "sent_mwmo4rvsd0b0ef",

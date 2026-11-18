@@ -18,6 +18,8 @@ import {
 } from './automation.js';
 import { assessStep, launchProducedNewWindow, looksLikeSavedDocument, reviewPrevious } from './step-context.js';
 import { classifyPresence, holdDecision, learnHold, completionFor, isFocusStealing, silentChecksFor } from './presence.js';
+import { recordAction } from './action-log.js';
+import { sendContinuation } from './agent-awareness.js';
 import { beginRunObservation, endRunObservation } from './app-observer.js';
 import { expectsScreenChange, windowChecksFor, resumePlan, corroboratesNoChange, lookupWindowFor, screenChangeVerdict } from './step-effects.js';
 
@@ -408,6 +410,7 @@ async function pump() {
       run.log.push({ at: now(), level: 'error', message: `Engine error: ${err.message}` });
       if (run.shadow) delete run.workflowSnapshot;
       persist();
+      reportRunFailure(run, `engine crash: ${err.message}`, err.stack || err.message);
     }
   } finally {
     busy = false;
@@ -650,6 +653,51 @@ async function applyStepContext(step, run, workflow, probe = null) {
  * The desktop must be quiet for `presenceHoldMs` (learned per workstation); a
  * run that has waited past `presenceMaxDeferMs` continues anyway and says so.
  */
+/** Remember the window this run opened or focused, so typing has a guard. */
+const WINDOW_OUTPUT = /(?:front|already focused|focused existing|focused window)\s+(\S[^:]*?)\s*::\s*(.+)/;
+function rememberWindow(run, step) {
+  if (!['launchApp', 'focusWindow'].includes(step.type) || step.status !== 'passed') return;
+  const match = WINDOW_OUTPUT.exec(String(step.output || ''));
+  if (match) run.lastWindow = { process: match[1].trim(), title: match[2].trim(), at: now(), by: step.id };
+}
+
+/**
+ * Typing needs a destination. A step without a foreground guard inherits the
+ * window this run last opened or focused — “type anywhere that looks like a
+ * text area” is exactly how text ended up in the wrong place.
+ */
+function deriveTypingGuard(step, run) {
+  if (!['type', 'key', 'clipboard'].includes(step.type)) return;
+  if (String(step.params?.foreground || '').trim()) return;
+  const window = run.lastWindow;
+  if (!window?.title) return;
+  step.params = { ...(step.params || {}), foreground: window.title };
+  pushLog(run, 'info', `No window named for “${step.name}”; it inherits “${window.title}”, the window this run opened.`, step.id);
+}
+
+/** Report a failed or crashed run to the action log and the working agents. */
+function reportRunFailure(run, summary, error = '') {
+  try {
+    const item = recordAction({
+      kind: 'run',
+      action: `run-failed:${run.workflowName || run.workflowId || 'unknown'}`,
+      error: String(error || summary || 'the run failed').slice(0, 2000),
+      detail: { runId: run.id, status: run.status, failing: (run.steps || []).filter((s) => s.status === 'failed').map((s) => s.name).slice(0, 5) },
+      forceReport: true,
+    });
+    sendContinuation({
+      from: 'engine',
+      reason: `${run.workflowName || 'run'} ended ${run.status}`,
+      detail: `${summary} (run ${run.id}); fix, then re-run`,
+      tags: ['run-failed'],
+    });
+    return item;
+  } catch (err) {
+    console.warn(`[engine] failure report failed: ${err.message}`);
+    return null;
+  }
+}
+
 async function awaitUserSettle(step, run, probe = null) {
   // A probe without presence belongs to a desktop-free test run.
   if (probe && typeof probe.readPresence !== 'function') return;
@@ -1524,6 +1572,7 @@ async function executeRun(runId) {
           continue;
         }
       }
+      deriveTypingGuard(step, run);
       await perceiveStep(step, run, workflow, getTool, probe);
       if (step.perception?.guardFailed) {
         step.status = 'skipped';
@@ -1799,6 +1848,7 @@ async function executeRun(runId) {
         pushLog(run, 'warn', `Presenter verification failed: ${err.message}`, step.id);
       }
       step.status = 'passed';
+      rememberWindow(run, step);
     } else {
       step.status = 'failed';
       step.error = lastError || 'Step failed';
@@ -1954,6 +2004,12 @@ async function executeRun(runId) {
     run.status = policy === 'continue' || onlyOptional ? 'needs_review' : 'failed';
   } else {
     run.status = 'passed';
+  }
+  // A failed run is a message, not just a record: the action log reports it
+  // (with logs) and the working agents get a continuation addressed to them.
+  if (['failed', 'needs_review'].includes(run.status)) {
+    const failing = (run.steps || []).filter((s) => s.status === 'failed')[0];
+    reportRunFailure(run, failing?.error || run.errorSummary || `${failedCount} step(s) failed`, failing?.error || '');
   }
   if (run.followup && run.followup.ok === false && run.status === 'passed') {
     run.status = 'needs_review';
