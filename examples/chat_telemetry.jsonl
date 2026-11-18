@@ -1,0 +1,4 @@
+{"at": "2026-11-18T10:29:33", "t": 1795026573.71, "kind": "stream", "model": "qwen3.5:2b", "ms": 7973.1, "ttft_ms": 7966.4, "chunks": 100, "max_gap_ms": 0.3, "chars": 650, "prompt_chars": 3453}
+{"at": "2026-11-18T10:29:34", "t": 1795026574.039, "kind": "answer", "model": "qwen3.5:2b", "ms": 7973.1, "ttft_ms": 7966.4, "chars": 650, "context_chars": 626}
+{"at": "2026-11-18T10:29:34", "t": 1795026574.563, "kind": "memory", "model": "qwen3.5:2b", "ms": 378.4, "ttft_ms": 377.9, "chunks": 65, "max_gap_ms": 0.0, "chars": 371, "prompt_chars": 1407}
+{"at": "2026-11-18T10:29:34", "t": 1795026574.901, "kind": "autonote", "model": "qwen3.5:2b", "ms": 716.9, "ttft_ms": 716.6, "chunks": 62, "max_gap_ms": 0.0, "chars": 387, "prompt_chars": 889}

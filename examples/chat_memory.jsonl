@@ -1,0 +1,3 @@
+{"ts": 1795026573.886, "event": "turn", "n": 5, "user": "what is a diamond", "chars": 650, "topics": ["across", "adornment", "almost", "ancient", "applications", "arranged", "beyond", "bonding"]}
+{"ts": 1795026574.038, "event": "ext", "intent": "repeat", "chars": 650, "sentences": 2}
+{"ts": 1795026574.039, "event": "answer", "intent": "repeat", "layers": 1, "fast": false, "chars": 650}
