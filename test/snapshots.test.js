@@ -42,6 +42,8 @@ test('snapshots refuse to run without a repository', async () => {
   await git(['config', 'user.email', 'test@example.com']);
   await git(['config', 'user.name', 'Test']);
   await git(['commit', '--allow-empty', '-m', 'base']);
+  // Mirror the project's own ignore rules so machine state never rides a snapshot.
+  fs.writeFileSync(path.join(process.cwd(), '.gitignore'), 'data/\n*.log\ntest/tmp-*/\n');
 });
 
 test('a snapshot captures the folder without touching any branch', async () => {

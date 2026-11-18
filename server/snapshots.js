@@ -124,7 +124,15 @@ export async function transferBetween(aId, bId, deps = {}) {
   if (!diff.ok) return { ok: false, status: 'diff-failed', message: diff.stderr || 'git diff failed' };
   fs.mkdirSync(path.dirname(patchFile), { recursive: true });
   fs.writeFileSync(patchFile, diff.stdout);
-  const apply = await run(['apply', '--3way', '--whitespace=nowarn', patchFile], { timeoutMs: 60000 });
+  // A three-way apply merges against the index, so stage the current tree into
+  // a temporary index first — the real index is never touched.
+  const index = tempIndex();
+  try { fs.rmSync(index, { force: true }); } catch { /* nothing to remove */ }
+  await run(['add', '-A', '--'], { env: { GIT_INDEX_FILE: index } });
+  const apply = await run(['apply', '--3way', '--whitespace=nowarn', patchFile], { env: { GIT_INDEX_FILE: index }, timeoutMs: 60000 });
+  try {
+    fs.rmSync(index, { force: true });
+  } catch { /* best effort */ }
   if (apply.ok) {
     return { ok: true, status: 'applied', message: `Changes from “${a.label}” to “${b.label}” applied to the working tree. Review, test, then commit.` };
   }
