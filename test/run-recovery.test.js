@@ -49,6 +49,44 @@ function fixture() {
   return { workflow, run };
 }
 
+function notepadFixture(runId, error, message = 'hello') {
+  const workflow = {
+    id: 'wf_replan_rules',
+    name: 'Notepad replan rules probe',
+    description: 'Type a note in Notepad and check the window.',
+    status: 'ready',
+    failurePolicy: { onFailure: 'stop', maxRetries: 0 },
+    steps: [
+      { id: 'r1', type: 'launchApp', name: 'Open Notepad', params: { target: 'notepad.exe' }, timeoutMs: 8000 },
+      { id: 'r2', type: 'type', name: 'Type the note', params: { text: 'hello', foreground: 'Untitled - Notepad' }, timeoutMs: 8000 },
+      { id: 'r3', type: 'expect', name: 'Window is present', params: { kind: 'window', value: 'Notepad' }, timeoutMs: 5000 },
+    ],
+  };
+  const run = {
+    id: runId,
+    workflowId: workflow.id,
+    workflowName: workflow.name,
+    status: 'failed',
+    trigger: 'manual',
+    dryRun: false,
+    steps: [
+      { id: 'r1', type: 'launchApp', name: 'Open Notepad', params: { target: 'notepad.exe' }, status: 'passed' },
+      {
+        id: 'r2',
+        type: 'type',
+        name: 'Type the note',
+        params: { text: message, foreground: 'Untitled - Notepad' },
+        status: 'failed',
+        error,
+      },
+      { id: 'r3', type: 'expect', name: 'Window is present', params: { kind: 'window', value: 'Notepad' }, status: 'skipped' },
+    ],
+    evidence: [],
+    log: [],
+  };
+  return { workflow, run };
+}
+
 test('a closed app gets an open prerequisite and a five-stage recovery pack', async () => {
   const { workflow, run } = fixture();
   const d = store.db();
@@ -296,5 +334,82 @@ test('a revision that cannot reach the model skips the next desktop capture', as
 
   d.settings.replanAi = false;
   d.settings.replanDesktop = false;
+  store.flush();
+});
+
+test('an AI continue that replays the failed step is refused instead of queued', async () => {
+  const d = store.db();
+  d.settings.replanAi = true;
+  d.settings.replanMedia = true;
+  const { workflow, run } = notepadFixture('run_ai_continue', 'Refusing to type: foreground window is another document');
+  d.workflows = [workflow];
+  d.runs = [run];
+  d.recoveryPacks = [];
+  let asked = 0;
+  const outcome = await recovery.prepareRecovery(run, {
+    plan: async () => null,
+    desktop: {},
+    ask: async () => {
+      asked += 1;
+      return JSON.stringify({ decision: 'continue', note: 'the plan is right', steps: [] });
+    },
+  });
+  assert.equal(asked, 1);
+  assert.ok(outcome?.pack);
+  assert.equal(outcome.pack.aiRevision.blocked, true);
+  assert.equal((outcome.pack.candidates || []).some((candidate) => candidate.id === 'candidate_ai'), false);
+  assert.equal(outcome.retryWorkflow, null, 'a guaranteed repeat is never offered as a retry');
+  assert.equal(outcome.pack.status, 'needs_review');
+  assert.ok(outcome.pack.logs.some((entry) => /returned the failed step unchanged/.test(entry.message)));
+  store.flush();
+});
+
+test('the same replay is allowed when the failure looks transient', async () => {
+  const d = store.db();
+  d.settings.replanAi = true;
+  const { workflow, run } = notepadFixture('run_ai_transient', 'Typing timed out after 15000ms');
+  d.workflows = [workflow];
+  d.runs = [run];
+  d.recoveryPacks = [];
+  const outcome = await recovery.prepareRecovery(run, {
+    plan: async () => null,
+    desktop: {},
+    ask: async () => JSON.stringify({ decision: 'continue', note: 'the plan is right', steps: [] }),
+  });
+  assert.ok(outcome?.pack);
+  assert.equal(outcome.pack.aiRevision.transient, true);
+  assert.equal(outcome.pack.aiRevision.blocked, false);
+  assert.ok((outcome.pack.candidates || []).some((candidate) => candidate.id === 'candidate_ai'));
+  assert.equal(outcome.pack.selectedCandidateId, 'candidate_ai');
+  store.flush();
+});
+
+test('a revision cannot add video steps when the operator turned them off', async () => {
+  const d = store.db();
+  d.settings.replanAi = true;
+  d.settings.replanMedia = false;
+  const { workflow, run } = notepadFixture('run_ai_media_off', 'Refusing to type: foreground window is another document');
+  d.workflows = [workflow];
+  d.runs = [run];
+  d.recoveryPacks = [];
+  const outcome = await recovery.prepareRecovery(run, {
+    plan: async () => null,
+    desktop: {},
+    ask: async () =>
+      JSON.stringify({
+        decision: 'rearrange',
+        note: 'press play before checking',
+        steps: [
+          { type: 'playMedia', name: 'Press play', params: { x: 10, y: 20, title: 'YouTube' } },
+          { type: 'focusWindow', name: 'Focus Notepad', params: { title: 'Notepad' } },
+          { type: 'expect', name: 'Window is present', params: { kind: 'window', value: 'Notepad' } },
+        ],
+      }),
+  });
+  const ai = (outcome.pack.candidates || []).find((candidate) => candidate.id === 'candidate_ai');
+  assert.ok(ai, 'the revision is still a candidate');
+  assert.equal(ai.steps.some((step) => step.type === 'playMedia'), false, 'no playback step is planned');
+  assert.equal(outcome.pack.aiRevision.droppedPlayback, 1);
+  d.settings.replanMedia = true;
   store.flush();
 });

@@ -108,6 +108,7 @@ import { listProposals, findProposal, proposalView, createProposal, approvePropo
 import { visualTesterStatus, testScreenshot, rememberVisualTest } from './visual-tester.js';
 import { stepMarks, normalizeMarks } from './research.js';
 import { resumeRecoveryPlan } from './step-effects.js';
+import { retryReplaysFailure } from './replan.js';
 import { listPresentations, getPresentation, findRelatedPresentations, generatePresentation, auditPresentation, reapplyPresentation, proposalFromPresentation, reviewPresentation, setPresentationControl, compactPresentations, exportPresentation } from './presentations.js';
 import { presentationGraph } from './presentation-index.js';
 import { ensurePresentationAgent, watchPresentationDecks } from './presentation-watch.js';
@@ -1245,6 +1246,7 @@ route('POST', /^\/api\/companion\/continuations\/([^/]+)$/, async (req, res, [id
       source: 'companion',
       dryRun: body.dryRun === undefined ? run.dryRun : Boolean(body.dryRun),
     });
+    if (!retry) return fail(res, 409, RECOVERY_REPEAT);
     sendJson(res, 200, { ok: true, run: summary(retry), pack, companion: companionState() });
   } catch (err) {
     fail(res, 400, err.message);
@@ -1350,6 +1352,7 @@ route('POST', /^\/api\/continuity\/continuations\/([^/]+)$/, async (req, res, [i
       source: 'continuity',
       dryRun: body.dryRun === undefined ? run.dryRun : Boolean(body.dryRun),
     });
+    if (!retry) return fail(res, 409, RECOVERY_REPEAT);
     sendJson(res, 200, { ok: true, run: summary(retry), pack, continuity: continuityState() });
   } catch (err) {
     fail(res, 400, err.message);
@@ -2407,35 +2410,22 @@ route('POST', /^\/api\/runs\/([^/]+)\/replan-retry$/, async (req, res, [id]) => 
     if (['queued', 'running'].includes(original.status)) {
       return fail(res, 409, 'This run is still running; replan it after it finishes.');
     }
-    const outcome = await prepareRecovery(original, { force: true });
-    if (!outcome?.pack) return fail(res, 409, 'Recovery planning did not produce a pack, so nothing was retried.');
-    const pack = outcome.pack;
-    const candidates = (pack.candidates || []).map(recoveryCandidateView);
-    if (!outcome.selected || !outcome.retryWorkflow) {
-      persist();
-      return sendJson(res, 200, {
-        ok: true,
-        retried: false,
-        requiresApproval: true,
-        runId: original.id,
-        packId: pack.id,
-        packStatus: pack.status,
-        candidates,
-        reason: 'No candidate plan passed the shadow test, so no retry was started.',
-      });
+    if (replanning.has(original.id) || original.replan?.status === 'planning') {
+      return fail(res, 409, 'Re-planning this run is already in progress.');
     }
     const dryRun = body.dryRun === undefined ? Boolean(db().settings.dryRun) : Boolean(body.dryRun);
-    const retry = queueRecoveryRetry(original, pack, outcome.retryWorkflow, { source: 'operator', dryRun });
-    sendJson(res, 200, {
+    const replan = startReplanRetry(original, { dryRun });
+    // Planning reads the desktop, runs the planner and the model and shadow-tests
+    // every candidate, which can take most of a minute. The request is answered
+    // now and `run.replan` reports the outcome when it lands.
+    sendJson(res, 202, {
       ok: true,
-      retried: true,
+      planning: true,
+      retried: false,
       runId: original.id,
-      packId: pack.id,
-      packStatus: pack.status,
-      candidateId: pack.selectedCandidateId || null,
-      aiRevision: pack.aiRevision || null,
-      candidates,
-      run: summary(retry),
+      packId: original.recoveryPackId || replan?.packId || null,
+      replan,
+      reason: 'Re-planning in the background. Follow the run to see the tested plan and its retry.',
     });
   } catch (err) {
     fail(res, 400, err.message);
@@ -2593,6 +2583,7 @@ route('POST', /^\/api\/recovery-packs\/([^/]+)\/retry$/, async (req, res, [id]) 
     if (!original) return fail(res, 404, 'Original run for this recovery pack no longer exists');
     const dryRun = body.dryRun === undefined ? Boolean(db().settings.dryRun) : Boolean(body.dryRun);
     const run = queueRecoveryRetry(original, pack, snapshot, { source: 'operator', dryRun });
+    if (!run) return fail(res, 409, RECOVERY_REPEAT);
     sendJson(res, 200, { ok: true, pack, run: summary(run) });
   } catch (err) {
     fail(res, 400, err.message);
@@ -3387,6 +3378,8 @@ route('PATCH', /^\/api\/settings$/, async (req, res) => {
   if (body.recoveryMaxAttempts !== undefined) {
     s.recoveryMaxAttempts = Math.max(1, Math.min(4, Number(body.recoveryMaxAttempts) || 2));
   }
+  // Whether an AI revision may plan video and playback work at all.
+  if (body.replanMedia !== undefined) s.replanMedia = Boolean(body.replanMedia);
   if (body.presenceEnabled !== undefined) s.presenceEnabled = Boolean(body.presenceEnabled);
   if (body.presenceHoldMs !== undefined) {
     s.presenceHoldMs = Math.max(1000, Math.min(60000, Number(body.presenceHoldMs) || 10000));
@@ -3625,12 +3618,83 @@ function recoveryCandidateView(candidate) {
   };
 }
 
+const RECOVERY_REPEAT =
+  'The recovery plan starts with the step that just failed, unchanged, so it would fail the same way. The retry was not queued.';
+
+// Runs whose recovery pack is being built in the background right now.
+const replanning = new Set();
+
+/**
+ * Build a recovery pack in the background and queue its retry only when a tested
+ * candidate differs from what just failed. The caller is answered immediately;
+ * the run carries `replan` so the console can follow the planning.
+ */
+function startReplanRetry(run, { dryRun = run.dryRun } = {}) {
+  replanning.add(run.id);
+  run.replan = { status: 'planning', startedAt: now(), packId: run.recoveryPackId || null, retryRunId: null, reason: '' };
+  persist();
+  const finish = (patch) => {
+    run.replan = { ...(run.replan || {}), ...patch, packId: run.recoveryPackId || patch.packId || null, at: now() };
+    replanning.delete(run.id);
+    persist();
+  };
+  (async () => {
+    const outcome = await prepareRecovery(run, { force: true });
+    const pack = outcome?.pack || null;
+    if (!pack) {
+      finish({ status: 'needs_review', reason: 'Recovery planning did not produce a pack, so nothing was retried.' });
+      return;
+    }
+    if (!outcome.selected || !outcome.retryWorkflow) {
+      finish({
+        status: 'needs_review',
+        packId: pack.id,
+        reason: pack.aiRevision?.blocked
+          ? 'The AI would have replayed the step that just failed, and no other candidate passed its test. The workflow was not changed.'
+          : 'No candidate plan passed the shadow test, so no retry was started.',
+      });
+      return;
+    }
+    const retry = queueRecoveryRetry(run, pack, outcome.retryWorkflow, { source: 'operator', dryRun });
+    if (!retry) {
+      finish({ status: 'needs_review', packId: pack.id, reason: RECOVERY_REPEAT });
+      return;
+    }
+    finish({ status: 'queued', packId: pack.id, retryRunId: retry.id });
+  })().catch((err) => {
+    try {
+      const pack = run.recoveryPackId ? findRecoveryPack(run.recoveryPackId) : null;
+      if (pack) {
+        pack.logs = Array.isArray(pack.logs) ? pack.logs : [];
+        pack.logs.unshift({ at: now(), level: 'error', stage: 'plan', message: `Background replan failed: ${err.message}` });
+        pack.status = 'needs_review';
+        pack.updatedAt = now();
+      }
+      run.recovery = { ...(run.recovery || {}), status: 'needs_review' };
+    } catch {}
+    finish({ status: 'failed', reason: err.message });
+  });
+  return run.replan;
+}
+
 function queueRecoveryRetry(run, pack, snapshot, { source = 'auto-recovery', dryRun = run.dryRun } = {}) {
   // Resume only when the snapshot is the exact plan that ran. Any repair step —
   // including one added before the failure — makes it a different plan, so the
   // whole snapshot replays rather than dropping the repair.
   const failedStep = (run.steps || []).find((step) => step.status === 'failed');
   const resumed = failedStep ? resumeRecoveryPlan(snapshot.steps, run.steps, failedStep.id) : null;
+  // A retry whose next step is the exact step that just failed cannot pass twice,
+  // unless the failure may clear by itself. Refuse it instead of spending a run.
+  const firstNext = (resumed ? resumed.steps : snapshot.steps || [])[0] || null;
+  if (retryReplaysFailure({ failedStep, firstNext })) {
+    pack.logs = Array.isArray(pack.logs) ? pack.logs : [];
+    pack.logs.unshift({ at: now(), level: 'warn', stage: 'verify', message: RECOVERY_REPEAT });
+    if (pack.status !== 'passed') pack.status = 'needs_review';
+    pack.repeatBlocked = { stepId: failedStep.id, step: failedStep.name || failedStep.type, at: now() };
+    pack.updatedAt = now();
+    persist();
+    return null;
+  }
   const retry = createRun(resumed ? { ...snapshot, steps: resumed.steps } : snapshot, {
     trigger: 'recovery',
     dryRun: Boolean(dryRun),
@@ -3725,10 +3789,10 @@ setRunFinishedHook(async (run) => {
     try {
       const outcome = await prepareRecovery(run);
       if (outcome?.retryWorkflow) {
-        queueRecoveryRetry(run, outcome.pack, outcome.retryWorkflow, {
+        const retry = queueRecoveryRetry(run, outcome.pack, outcome.retryWorkflow, {
           source: db().settings.autoRecoverFailures === false ? 'continuity' : 'auto-recovery',
         });
-        recoveryQueued = true;
+        recoveryQueued = Boolean(retry);
       }
     } catch (err) {
       run.log.push({ at: now(), level: 'warn', message: `Auto-recovery failed: ${err.message}` });

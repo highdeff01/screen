@@ -4947,6 +4947,9 @@ function settingsFields(s) {
     <label class="field" style="max-width:240px"><span>Recovery loops</span><input type="number" min="1" max="4" value="${Number(
       s.recoveryMaxAttempts ?? 2
     )}" data-scope="settings" data-key="recoveryMaxAttempts" /><span class="help">Maximum recovery retries after the original run fails.</span></label>
+    <label class="check" style="margin-bottom:6px"><input type="checkbox" data-scope="settings" data-key="replanMedia" ${
+      s.replanMedia !== false ? 'checked' : ''
+    } /> Let the AI revision plan video and playback steps</label>
     <div class="field-row">
       <label class="field"><span>Presenter settle window (ms)</span><input type="number" min="0" max="10000" value="${Number(
         s.presenterSettleMs ?? 2000
@@ -6388,6 +6391,31 @@ function renderDeepFocusCard(run) {
   </section>`;
 }
 
+/** Follow a background re-plan until it queues a retry or says why it did not. */
+async function followReplan(runId) {
+  for (let attempt = 0; attempt < 120; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    const res = await api(`/api/runs/${encodeURIComponent(runId)}`);
+    if (!res.ok || !res.run) return;
+    const replan = res.run.replan || {};
+    if (replan.status === 'queued' && replan.retryRunId) {
+      toast('AI plan tested; retry queued', 'ok');
+      ui.selectedRun = replan.retryRunId;
+      await refresh();
+      await loadRun(replan.retryRunId);
+      return;
+    }
+    if (['needs_review', 'failed'].includes(replan.status)) {
+      toast(replan.reason || 'No candidate plan passed; nothing was retried', 'error');
+      ui.selectedRun = runId;
+      await refresh();
+      await loadRun(runId);
+      return;
+    }
+  }
+  toast('Re-planning is still running; this run shows the tested plan when it finishes', 'error');
+}
+
 async function loadRun(id) {
   const changed = ui.runDetail?.id !== id || !ui.runDetailOpen;
   ui.selectedRun = id;
@@ -7383,6 +7411,11 @@ async function runAction(name, ds, el) {
       if (!res.ok) {
         render();
         return toast(res.error, 'error');
+      }
+      if (res.planning) {
+        render();
+        toast('Re-planning in the background; the tested plan replaces this run', 'ok');
+        return followReplan(res.runId);
       }
       if (!res.retried) {
         render();
@@ -8925,6 +8958,7 @@ async function runAction(name, ds, el) {
         autoProposeFailures: settings.autoProposeFailures === true,
         autoRecoverFailures: settings.autoRecoverFailures !== false,
         recoveryMaxAttempts: Number(settings.recoveryMaxAttempts || 2),
+        replanMedia: settings.replanMedia !== false,
         presenceEnabled: settings.presenceEnabled !== false,
         presenceHoldMs: Number(settings.presenceHoldSeconds || 10) * 1000,
         presenceMaxDeferMs: Number(settings.presenceMaxDeferSeconds || 60) * 1000,

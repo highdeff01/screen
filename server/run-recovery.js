@@ -6,7 +6,7 @@ import { shadowTestPlan } from './shadow-test.js';
 import { buildWorkflowResearch, compactResearch } from './research.js';
 import { listShortcuts } from './shortcuts.js';
 import { firstAppStep, opensTargetBefore, launchAndWaitSteps } from './app-launch-hints.js';
-import { revisePlan } from './replan.js';
+import { revisePlan, isTransientFailure } from './replan.js';
 import { readScreenContext } from './automation.js';
 
 const MAX_PACKS = 80;
@@ -456,6 +456,8 @@ export async function prepareRecovery(
         error: failedRuntime?.error || '',
       },
       desktop,
+      // Off means the revision may not plan video or playback work at all.
+      allowMedia: d.settings.replanMedia !== false,
       suggestions: (d.suggestions || []).filter((entry) => !entry.dismissed).slice(0, 6),
       lessons: (d.agentLessons || [])
         .filter((entry) => !entry.workflowId || entry.workflowId === workflow.id)
@@ -472,28 +474,54 @@ export async function prepareRecovery(
     log(pack, 'info', 'plan', 'AI plan revision is turned off in settings.');
   } else if (revision?.steps?.length) {
     aiOutageUntil = 0;
+    const transient = isTransientFailure({ type: failedRuntime?.type, error: failedRuntime?.error });
+    const replays = Boolean(revision.replaysFailure);
+    // "continue" with nothing new hands the retry the exact step that failed, so
+    // it only counts as a candidate when the failure may clear by itself.
+    const blocked = replays && !transient;
     pack.aiRevision = {
       decision: revision.decision,
       note: revision.note,
       prepCount: revision.prepCount,
       resumeFrom: revision.resumeFrom,
+      replaysFailure: replays,
+      transient,
+      blocked,
+      droppedPlayback: revision.droppedPlayback || 0,
       at: now(),
     };
-    log(
-      pack,
-      'info',
-      'plan',
-      `AI revision: ${revision.decision} with ${revision.prepCount} prep step(s), resuming after ${revision.resumeFrom} passed step(s). ${revision.note}`
-    );
-    candidates.push(
-      candidateTest({
-        id: 'candidate_ai',
-        label: `AI revision: ${revision.decision}${revision.prepCount ? ` +${revision.prepCount} prep` : ''}`,
-        source: 'ai-replan',
-        reason: revision.note || `The model chose to ${revision.decision} the plan.`,
-        steps: ensureOpenPrerequisites(revision.steps),
-      })
-    );
+    if (revision.droppedPlayback) {
+      log(
+        pack,
+        'info',
+        'plan',
+        `AI revision dropped ${revision.droppedPlayback} playback step(s) that no step or user input requires.`
+      );
+    }
+    if (blocked) {
+      log(
+        pack,
+        'warn',
+        'plan',
+        `The AI chose “${revision.decision}” but returned the failed step unchanged; a retry would fail the same way, so it was not made a candidate.`
+      );
+    } else {
+      log(
+        pack,
+        'info',
+        'plan',
+        `AI revision: ${revision.decision} with ${revision.prepCount} prep step(s), resuming after ${revision.resumeFrom} passed step(s).${transient ? ' The failure looks transient, so replaying the failed step is allowed.' : ''} ${revision.note}`
+      );
+      candidates.push(
+        candidateTest({
+          id: 'candidate_ai',
+          label: `AI revision: ${revision.decision}${revision.prepCount ? ` +${revision.prepCount} prep` : ''}`,
+          source: 'ai-replan',
+          reason: revision.note || `The model chose to ${revision.decision} the plan.`,
+          steps: ensureOpenPrerequisites(revision.steps),
+        })
+      );
+    }
   }
 
   addStage(
@@ -548,7 +576,9 @@ export async function prepareRecovery(
     '4 · Test the candidates and select a workflow',
     selected
       ? `Selected “${selected.label}” after a non-destructive shadow test (${selected.score}%).`
-      : 'No candidate passed the shadow test; the workflow was not changed.',
+      : pack.aiRevision?.blocked
+        ? 'No candidate passed: the AI revision would have replayed the failed step unchanged, and no other candidate passed its test. The workflow was not changed.'
+        : 'No candidate passed the shadow test; the workflow was not changed.',
     candidates.map((candidate) => ({
       name: candidate.label,
       substeps: [

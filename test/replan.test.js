@@ -1,6 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { applyRevision, buildRevisionPrompt, desktopSummary } from '../server/replan.js';
+import {
+  applyRevision,
+  buildRevisionPrompt,
+  desktopSummary,
+  isTransientFailure,
+  retryReplaysFailure,
+} from '../server/replan.js';
 
 function plan() {
   return [
@@ -110,6 +116,87 @@ test('the revision prompt carries the desktop, the rules and the failure point',
   assert.match(prompt, /Notepad restores its last tab/);
   assert.match(prompt, /Chrome search/);
   assert.match(prompt, /Never repeat a step that already passed/);
+});
+
+test('continue with no new steps is flagged as a replay of the failed step', () => {
+  const revision = applyRevision({ decision: 'continue', note: 'the plan is right', steps: [] }, { steps: plan(), failedIndex: 2 });
+  assert.equal(revision.replaysFailure, true);
+  assert.equal(revision.prepCount, 0);
+
+  const changed = applyRevision(
+    { decision: 'rearrange', steps: [{ type: 'type', name: 'Type again', params: { text: 'hello', foreground: 'Untitled - Notepad' } }] },
+    { steps: plan(), failedIndex: 2 }
+  );
+  assert.equal(changed.replaysFailure, false);
+});
+
+test('a replay is refused unless the failure looks transient', () => {
+  const steps = plan();
+  const failed = steps[2];
+  assert.equal(retryReplaysFailure({ failedStep: failed, firstNext: steps[2] }), true);
+  assert.equal(
+    retryReplaysFailure({ failedStep: failed, firstNext: steps[2], failure: { error: 'Typing timed out after 15000ms' } }),
+    false
+  );
+  assert.equal(
+    retryReplaysFailure({
+      failedStep: failed,
+      firstNext: { ...steps[2], params: { ...steps[2].params, text: 'different' } },
+    }),
+    false
+  );
+  assert.equal(isTransientFailure({ error: 'Refusing to type: foreground window is another document' }), false);
+  assert.equal(isTransientFailure({ error: 'The app is not responding' }), true);
+});
+
+test('a play step nothing in the goal or plan requires is dropped', () => {
+  const revision = applyRevision(
+    {
+      decision: 'rearrange',
+      steps: [
+        { type: 'playMedia', name: 'Press play', params: { x: 10, y: 20, title: 'YouTube' } },
+        { type: 'expect', name: 'Check', params: { kind: 'window', value: 'Notepad' } },
+      ],
+    },
+    { steps: plan(), failedIndex: 2, goal: 'type a note in Notepad' }
+  );
+  assert.equal(revision.steps.some((step) => step.type === 'playMedia'), false);
+  assert.equal(revision.droppedPlayback, 1);
+});
+
+test('playback survives only when the goal needs it and the operator allows it', () => {
+  const reply = {
+    decision: 'rearrange',
+    steps: [
+      { type: 'playMedia', name: 'Start playback', params: { x: 10, y: 20, title: 'YouTube' } },
+      { type: 'expect', name: 'Check', params: { kind: 'window', value: 'YouTube' } },
+    ],
+  };
+  const wanted = applyRevision(reply, { steps: plan(), failedIndex: 2, goal: 'open YouTube and play the video' });
+  assert.ok(wanted.steps.some((step) => step.type === 'playMedia'));
+  assert.equal(wanted.droppedPlayback, 0);
+
+  const off = applyRevision(reply, {
+    steps: plan(),
+    failedIndex: 2,
+    goal: 'open YouTube and play the video',
+    allowMedia: false,
+  });
+  assert.equal(off.steps.some((step) => step.type === 'playMedia'), false);
+  assert.equal(off.droppedPlayback, 1);
+});
+
+test('the prompt says playback needs a reason and can be turned off', () => {
+  const on = buildRevisionPrompt({ goal: 'type a note', steps: plan(), failedIndex: 2, failure: { error: 'x' } }).prompt;
+  assert.match(on, /press play/i);
+  const off = buildRevisionPrompt({
+    goal: 'type a note',
+    steps: plan(),
+    failedIndex: 2,
+    failure: { error: 'x' },
+    allowMedia: false,
+  }).prompt;
+  assert.match(off, /turned video and playback steps off/);
 });
 
 test('the desktop summary names the foreground and the other windows separately', () => {

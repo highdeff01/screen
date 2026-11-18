@@ -36,6 +36,15 @@ const FORBIDDEN_TYPES = new Set([
   'closeWindow',
 ]);
 
+// Video and playback work. A revision may only keep these when the operator
+// allows them and the goal (or a real step) actually needs them: a bare "press
+// play" with nothing to act on is the step that hangs a run.
+const MEDIA_TYPES = new Set(['playMedia', 'mediaHold', 'watchVideo', 'recordVideo']);
+const MEDIA_WORDS = /\b(?:play|plays|playing|paused|playback|watch|video|audio|music|movie|clip|youtube|listen|stream)\b/i;
+// Failures that may clear on their own. Only then may a retry replay the exact
+// step that just failed, because the next attempt has a real chance to differ.
+const TRANSIENT_FAILURE = /\b(?:timeout|timed out|timed-out|not ready|still loading|loading|busy|try again|temporar|transient|network|connection reset|econnreset|etimedout|eai_again|unavailable|throttl|rate limit|not responding|503|429)\b/i;
+
 const DECISIONS = ['continue', 'rearrange', 'rebuild'];
 
 function text(value, max = 240) {
@@ -49,6 +58,53 @@ function stepLine(step, index) {
     .map(([key, value]) => `${key}=${text(JSON.stringify(value), 60)}`)
     .join(' ');
   return `${index + 1}. [${step?.status || 'pending'}] ${step?.type || 'step'} “${text(step?.name || step?.type, 80)}” ${params}`;
+}
+
+function sortedValue(value) {
+  if (Array.isArray(value)) return value.map(sortedValue);
+  if (value && typeof value === 'object') {
+    return Object.keys(value)
+      .sort()
+      .reduce((acc, key) => {
+        acc[key] = sortedValue(value[key]);
+        return acc;
+      }, {});
+  }
+  return value ?? null;
+}
+
+function stepKey(step) {
+  return JSON.stringify([step?.type || '', sortedValue(step?.params || {})]);
+}
+
+/** True when a planned step is the same step, unchanged, that just failed. */
+export function replaysFailedStep(step, failed) {
+  if (!step || !failed) return false;
+  return stepKey(step) === stepKey(failed);
+}
+
+/** True when the failure looks like something that may clear on its own. */
+export function isTransientFailure(failure = {}) {
+  const message = `${failure?.type || ''} ${failure?.name || ''} ${failure?.error || ''} ${failure?.message || ''}`;
+  return TRANSIENT_FAILURE.test(message);
+}
+
+/** True when a retry would start with the failed step, unchanged, all over again. */
+export function retryReplaysFailure({ failedStep = null, firstNext = null, failure = null } = {}) {
+  if (!failedStep || !replaysFailedStep(firstNext, failedStep)) return false;
+  return !isTransientFailure(failure || { type: failedStep.type, name: failedStep.name, error: failedStep.error });
+}
+
+/** Playback is required only by the goal or by work that feeds it, not by a play step itself. */
+function planWantsPlayback(goal, steps = []) {
+  if (MEDIA_WORDS.test(String(goal || ''))) return true;
+  return (steps || []).some((step) => {
+    if (!step || MEDIA_TYPES.has(step.type)) return false;
+    const p = step.params || {};
+    return MEDIA_WORDS.test(
+      `${step.name || ''} ${p.url || ''} ${p.target || ''} ${p.title || ''} ${p.kind || ''} ${p.text || ''} ${p.app || ''}`
+    );
+  });
 }
 
 /** The desktop the revision may reason about: the window in front and other open windows. */
@@ -87,6 +143,7 @@ export function buildRevisionPrompt({
   suggestions = [],
   lessons = [],
   workflows = [],
+  allowMedia = true,
 } = {}) {
   const system =
     'You revise the plan of a Windows desktop automation workflow after one of its steps failed. ' +
@@ -133,7 +190,11 @@ Rules for the answer:
 3. The operator may be using this machine. Prefer the smallest number of steps that completes the goal and gives their windows back.
 4. Every type / key / clipboard step needs params.foreground (the window it types into) or params.window for clickElement.
 5. Do not use runTool, installApp, downloadMedia, recordVideo, watchVideo, testApp, writeTextFile or closeWindow.
-6. At most ${MAX_STEPS} steps in "steps", at most ${MAX_PREP} in "prep".`;
+6. At most ${MAX_STEPS} steps in "steps", at most ${MAX_PREP} in "prep".
+7. ${allowMedia
+    ? 'Playback and recording steps (playMedia, mediaHold, watchVideo, recordVideo) are only for work the goal asks for. A "press play" step that no earlier step and no user input acts on is the step that hangs a run: re-check the workflow and replace it with the step that actually moves the goal forward instead of pressing play again.'
+    : 'The operator turned video and playback steps off for revisions: do not return playMedia, mediaHold, watchVideo or recordVideo.'}
+8. "continue" means the remaining steps are still right, but still return the remainder you stand behind. Returning the failed step unchanged with no prep and nothing else adjusted is refused, because the retry fails the same way.`;
 
   return { system, prompt };
 }
@@ -145,38 +206,56 @@ Rules for the answer:
  */
 export function applyRevision(
   reply,
-  { steps = [], failedIndex = 0, goal = '', keepPassed = true } = {}
+  { steps = [], failedIndex = 0, goal = '', keepPassed = true, allowMedia = true } = {}
 ) {
   const parsed = typeof reply === 'string' ? parseJsonLoose(reply) : reply;
   if (!parsed || typeof parsed !== 'object') return null;
   const decision = DECISIONS.includes(parsed.decision) ? parsed.decision : 'rearrange';
   const guard = String(steps?.[failedIndex]?.params?.foreground || '').trim();
+  // Playback survives only when the operator allows it and the goal or a real
+  // step needs it; a bare "press play" is dropped and counted instead of kept.
+  const playbackWanted = allowMedia && planWantsPlayback(goal, [...steps, ...(parsed.prep || [])]);
+  const dropped = [];
+  const keepStep = (step) => {
+    if (!MEDIA_TYPES.has(step.type) || playbackWanted) return true;
+    dropped.push(step);
+    return false;
+  };
 
   const prep = normalizePlanSteps(parsed.prep, goal, {}, { align: false })
     .filter((step) => PREP_TYPES.has(step.type))
+    .filter(keepStep)
     .slice(0, MAX_PREP);
 
   const revised = normalizePlanSteps(parsed.steps, goal, {}, { align: false })
     .filter((step) => !FORBIDDEN_TYPES.has(step.type))
+    .filter(keepStep)
     .map((step) => {
       if (!['type', 'key', 'clipboard'].includes(step.type)) return step;
       if (String(step.params?.foreground || '').trim() || !guard) return step;
       return { ...step, params: { ...(step.params || {}), foreground: guard } };
     });
 
-  const rest = decision === 'continue' ? (revised.length ? revised : steps.slice(failedIndex)) : revised;
+  const fallback = steps.slice(failedIndex).filter(keepStep);
+  const rest = decision === 'continue' ? (revised.length ? revised : fallback) : revised;
   if (!rest.length) return null;
 
   const prefix = keepPassed ? steps.slice(0, Math.max(0, Math.min(failedIndex, steps.length))) : [];
   const merged = [...prefix, ...prep, ...rest]
     .slice(0, MAX_STEPS)
     .map((step, index) => ({ ...step, name: String(step.name || `Step ${index + 1}`).slice(0, 100) }));
+  // "continue" with no new steps hands the retry the exact step that failed, so
+  // the caller can refuse it unless the failure may clear on its own.
+  const replaysFailure = replaysFailedStep([...prep, ...rest][0], steps?.[failedIndex] || null);
 
   return {
     decision,
     steps: merged,
     prepCount: prep.length,
     resumeFrom: prefix.length,
+    replaysFailure,
+    droppedPlayback: dropped.length,
+    mediaEnabled: allowMedia,
     note: text(parsed.note || parsed.reason || '', 400),
   };
 }
@@ -204,4 +283,4 @@ export async function revisePlan({ ask, timeoutMs = 60000, ...input } = {}) {
   return { error: typeof reply === 'object' && reply?.error ? reply.error : 'the model returned no usable plan' };
 }
 
-export const REPLAN_LIMITS = { MAX_STEPS, MAX_PREP, PREP_TYPES, FORBIDDEN_TYPES };
+export const REPLAN_LIMITS = { MAX_STEPS, MAX_PREP, PREP_TYPES, FORBIDDEN_TYPES, MEDIA_TYPES };

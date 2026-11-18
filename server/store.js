@@ -66,6 +66,11 @@ function seed() {
       autoProposeFailures: false,
       autoRecoverFailures: true,
       recoveryMaxAttempts: 2,
+      // The AI revision of a failed run: whole-plan rethink, a live desktop read
+      // and whether it may plan video and playback work.
+      replanAi: true,
+      replanDesktop: true,
+      replanMedia: true,
       presenterSettleMs: 2000,
       presenterInputPolicy: 'auto',
       presenterAutoContinueMs: 15000,
