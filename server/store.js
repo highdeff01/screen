@@ -47,6 +47,9 @@ function seed() {
       aiSuggestions: true,
       requireToolApproval: true,
       agentTickMs: 5000,
+      // Commit and push this console's own source whenever it changes.
+      autoSync: true,
+      autoSyncIntervalMs: 20000,
       visionEnabled: true,
       visualChecks: true,
       missionCheckIntervalMs: 5000,

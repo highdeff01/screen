@@ -4590,6 +4590,57 @@ function renderPython() {
 }
 
 /* ------------------------------------------------------------------ settings fields */
+/**
+ * GitHub auto-sync and the shareable test link, shown at the end of Settings.
+ * Both are runtime state, so they action immediately instead of waiting for Save.
+ */
+function sharingPanel() {
+  const sync = ui.data?.gitSync || {};
+  const share = ui.data?.share || {};
+  const enabled = sync.enabled !== false;
+  const link = share.link || ui.shareLink || '';
+  const labels = {
+    idle: 'idle',
+    clean: 'up to date',
+    waiting: 'waiting for the save to settle',
+    pushed: 'pushed',
+    behind: 'remote moved — merge needed',
+    conflict: 'conflict — merge needed',
+    'push-failed': 'push failed',
+    error: 'failed',
+    'not-a-repo': 'this folder is not a git repository',
+    disabled: 'paused',
+  };
+  const statusText = enabled ? labels[sync.status] || sync.status || 'idle' : 'paused';
+  return `
+  <hr style="border:none;border-top:1px solid var(--line);margin:16px 0 12px" />
+  <h3 style="margin:0 0 6px;font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--dim)">GitHub sync</h3>
+  <p class="small muted" style="margin:0 0 8px">Commits and pushes this console's source whenever it changes. Data, captures and tokens stay untracked.</p>
+  <div class="row wrap" style="gap:8px;align-items:center">
+    <span class="pill ${enabled ? 'passed' : ''}">${enabled ? 'auto-sync on' : 'auto-sync off'}</span>
+    <span class="small dim">${esc(String(statusText))}${Number(sync.pending) ? ` · ${Number(sync.pending)} file(s) pending` : ''}${sync.lastSyncAt ? ` · last ${esc(fmtTime(sync.lastSyncAt))}` : ''}</span>
+    <span class="spacer"></span>
+    <button class="btn btn-sm btn-ghost" data-act="toggle-autosync">${enabled ? 'Pause' : 'Turn on'}</button>
+    <button class="btn btn-sm" data-act="git-sync-now">Sync now</button>
+  </div>
+  ${sync.lastError ? `<p class="small" style="color:var(--bad);margin:6px 0 0">${esc(sync.lastError)}</p>` : ''}
+  <h3 style="margin:18px 0 6px;font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--dim)">Share link for testing</h3>
+  <p class="small muted" style="margin:0 0 8px">A token-gated copy of this console for someone else to open. They can read everything and run simulated runs; live desktop control, tool execution and settings stay refused.</p>
+  ${
+    share.active
+      ? `<div class="row wrap" style="gap:8px;align-items:center">
+          <input type="text" readonly value="${esc(link)}" style="flex:1;min-width:220px;font-family:var(--mono);font-size:11px" />
+          <button class="btn btn-sm" data-act="copy-share-link">Copy</button>
+          <button class="btn btn-sm btn-ghost" data-act="share-stop">Stop sharing</button>
+        </div>
+        <p class="small dim" style="margin:6px 0 0">${share.publicUrl ? 'public tunnel link' : 'local network only'} · port ${Number(share.port) || 4318} · ${Number(share.requests) || 0} request(s) · ${Number(share.visitors) || 0} visitor(s)</p>`
+      : `<div class="row wrap" style="gap:8px;align-items:center">
+          <button class="btn btn-sm" data-act="share-start">Create test link</button>
+          <span class="small dim">${esc(share.lastError || 'Starts a token-gated proxy on port 4318. Public URL only when cloudflared is installed.')}</span>
+        </div>`
+  }`;
+}
+
 function settingsFields(s) {
   const models = ui.models || [];
   const names = [...new Set([s.model, ...models.map((m) => m.name)].filter(Boolean))];
@@ -5426,7 +5477,7 @@ function renderModal() {
   } else if (type === 'settings') {
     const s = ui.settingsDraft || (ui.settingsDraft = { ...ui.data.settings });
     title = 'Settings';
-    body = settingsFields(s);
+    body = settingsFields(s) + sharingPanel();
     footer = `<button class="btn btn-ghost" data-mact="close">Cancel</button><button class="btn btn-primary" data-mact="save-settings">Save</button>`;
   } else if (type === 'pyview') {
     const f = payload.file;
@@ -5793,6 +5844,51 @@ async function runAction(name, ds, el) {
       ui.missionEventFilter = { view: ds.view || 'all', agent: 'all', kind: 'all', severity: 'all', q: '', sort: 'newest' };
       render();
       break;
+    case 'git-sync-now': {
+      const res = await api('/api/git-sync/now', { method: 'POST', body: {} });
+      if (!res.ok) toast(res.gitSync?.lastError || res.error || 'Sync failed', 'error');
+      else toast(`Sync: ${res.gitSync?.status || 'done'}`, 'ok');
+      await refresh();
+      renderModal();
+      break;
+    }
+    case 'toggle-autosync': {
+      const next = ui.data?.gitSync?.enabled === false;
+      const res = await api('/api/settings', { method: 'PATCH', body: { autoSync: next } });
+      if (!res.ok) return toast(res.error, 'error');
+      await refresh();
+      renderModal();
+      toast(next ? 'Auto-sync on' : 'Auto-sync paused', 'ok');
+      break;
+    }
+    case 'share-start': {
+      const res = await api('/api/share/start', { method: 'POST', body: {} });
+      if (!res.ok) return toast(res.error || 'Could not start sharing', 'error');
+      ui.shareLink = res.share?.link || '';
+      await refresh();
+      renderModal();
+      toast(res.share?.publicUrl ? 'Public test link ready' : 'Test link ready on your network', 'ok');
+      break;
+    }
+    case 'share-stop': {
+      const res = await api('/api/share/stop', { method: 'POST', body: {} });
+      if (!res.ok) return toast(res.error, 'error');
+      ui.shareLink = '';
+      await refresh();
+      renderModal();
+      toast('Sharing stopped', 'ok');
+      break;
+    }
+    case 'copy-share-link': {
+      const link = ui.data?.share?.link || ui.shareLink || '';
+      try {
+        await navigator.clipboard.writeText(link);
+        toast('Link copied', 'ok');
+      } catch {
+        toast('Copy failed — select the link instead', 'error');
+      }
+      break;
+    }
     case 'open-settings':
       ui.settingsDraft = { ...d.settings };
       openModal('settings');
