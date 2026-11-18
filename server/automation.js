@@ -2084,8 +2084,14 @@ async function locateElementOnce({ description, title = '', minConfidence = 0.6 
   const shot = await liveScreenshot(null, {
     maxWidth: VISION_ENABLED ? VISION_MAX_WIDTH : 0,
     quality: VISION_JPEG_QUALITY,
-    crop: VISION_CROP,
+    // A locate over the whole desktop can match a control in another app, which
+    // is how keystrokes end up somewhere the workflow never named. With a named
+    // window the frame is that window alone.
+    crop: title ? 'foreground' : VISION_CROP,
   });
+  if (!frameIsTargetWindow(shot, title)) {
+    return { found: false, reason: `“${title}” is not the window on screen (“${shot.cropTitle}”)`, shot };
+  }
   const cached = locateCache.get(key);
   if (
     LOCATE_CACHE_MS > 0 &&
@@ -2182,6 +2188,15 @@ async function findVisualElement(options = {}) {
   const pending = locateElementOnce(options).finally(() => locateInflight.delete(key));
   locateInflight.set(key, pending);
   return pending;
+}
+
+/** Only the window the step named may be searched for a control. */
+function frameIsTargetWindow(shot, title) {
+  const wanted = String(title || '').toLowerCase().trim();
+  if (!wanted) return true;
+  const captured = String(shot?.cropTitle || '').toLowerCase().trim();
+  if (!captured) return false;
+  return captured.includes(wanted) || wanted.includes(captured);
 }
 
 function resolveTextFile(params = {}) {
@@ -2439,8 +2454,13 @@ export async function previewActionOnce({ step = null, description = '', title =
   const shot = await liveScreenshot(null, {
     maxWidth: VISION_ENABLED ? VISION_MAX_WIDTH : 0,
     quality: VISION_JPEG_QUALITY,
-    crop: VISION_CROP,
+    // Previewing the whole desktop finds “a text area” anywhere; with a named
+    // window only that window is read.
+    crop: title ? 'foreground' : VISION_CROP,
   });
+  if (!frameIsTargetWindow(shot, title)) {
+    return { found: false, reason: `“${title}” is not the window on screen (“${shot.cropTitle}”)`, shot };
+  }
   const view = shot.vision || {
     path: shot.path,
     width: Number(shot.width) || 1920,
@@ -4475,7 +4495,14 @@ try {
     if (!live) return { output: `Simulated: find and click “${requested}” in ${str(p.window, 'the window')}.`, evidence: [] };
     if (!requested) throw new Error('Click element needs a visible control name.');
     const title = str(p.window || p.title);
-    if (title) await executeStep({ type: 'focusWindow', name: 'Focus target window', params: { title }, timeoutMs: 15000 }, ctx);
+    // A control is only meaningful inside the window it belongs to: without one
+    // the search matches whatever looks similar anywhere on the desktop.
+    if (!title) {
+      throw new Error(
+        `“${requested}” needs the window it belongs to (params.window). Without it the search could click a control in another app, so nothing was clicked.`
+      );
+    }
+    await executeStep({ type: 'focusWindow', name: 'Focus target window', params: { title }, timeoutMs: 15000 }, ctx);
 
     const labels = elementLabels(requested);
     const controlTypes = [...new Set([str(p.controlType).trim(), ''])];

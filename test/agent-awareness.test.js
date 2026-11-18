@@ -43,6 +43,7 @@ test('signing out removes the agent', () => {
 });
 
 test('freshly modified files count as agent activity even without a heartbeat', async () => {
+  fs.mkdirSync(path.join(process.cwd(), 'server'), { recursive: true });
   fs.writeFileSync(path.join(process.cwd(), 'server', 'nothing.js'), '// touched\n');
   const activity = awareness.agentActivity();
   assert.equal(activity.active, true);

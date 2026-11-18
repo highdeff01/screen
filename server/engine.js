@@ -667,12 +667,19 @@ function rememberWindow(run, step) {
  * text area” is exactly how text ended up in the wrong place.
  */
 function deriveTypingGuard(step, run) {
-  if (!['type', 'key', 'clipboard'].includes(step.type)) return;
-  if (String(step.params?.foreground || '').trim()) return;
+  const typing = ['type', 'key', 'clipboard'].includes(step.type);
+  const clicking = step.type === 'clickElement' && !String(step.params?.window || '').trim();
+  if (!typing && !clicking) return;
+  if (typing && String(step.params?.foreground || '').trim()) return;
   const window = run.lastWindow;
   if (!window?.title) return;
-  step.params = { ...(step.params || {}), foreground: window.title };
-  pushLog(run, 'info', `No window named for “${step.name}”; it inherits “${window.title}”, the window this run opened.`, step.id);
+  step.params = { ...(step.params || {}), ...(typing ? { foreground: window.title } : { window: window.title }) };
+  pushLog(
+    run,
+    'info',
+    `No window named for “${step.name}”; it inherits “${window.title}”, the window this run opened.`,
+    step.id
+  );
 }
 
 /** Report a failed or crashed run to the action log and the working agents. */
@@ -1573,6 +1580,17 @@ async function executeRun(runId) {
         }
       }
       deriveTypingGuard(step, run);
+      // After inheritance a typing step still without a window has no destination
+      // this run can name, and "whatever is in front" is how it typed into an
+      // unrelated text area. Nothing is sent; the console asks for a window.
+      if (['type', 'key', 'clipboard'].includes(step.type) && !String(step.params?.foreground || '').trim()) {
+        step.status = 'skipped';
+        step.output = `Skipped: no window was named or opened before “${step.name}”, so the keystrokes were not sent anywhere. Add a focusWindow step or set the step's foreground window.`;
+        recordLedger(run, step);
+        pushLog(run, 'warn', step.output, step.id);
+        persist();
+        continue;
+      }
       await perceiveStep(step, run, workflow, getTool, probe);
       if (step.perception?.guardFailed) {
         step.status = 'skipped';
