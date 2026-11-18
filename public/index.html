@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Sightline — screen agent console</title>
+<link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
+    <span class="brand-text"><strong>Sightline</strong><small>screen agent console</small></span>
+  </div>
+  <div class="topbar-mid">
+    <button class="mode-pill" id="mode-pill" data-act="toggle-mode" title="Switch between simulated and live desktop control">
+      <span class="dot"></span><span id="mode-label">Simulated</span>
+    </button>
+    <span class="ai-status" id="ai-status" title="AI endpoint status"><span class="dot"></span><span id="ai-label">checking AI…</span></span>
+    <span class="platform-tag" id="platform-tag"></span>
+  </div>
+  <div class="topbar-actions">
+    <button class="btn btn-ghost" data-act="capture-now" title="Capture the screen now">Capture screen</button>
+    <button class="btn btn-ghost" data-act="admin-open" id="admin-btn" title="Local admin sign-in for operator commands">Admin sign-in</button>
+    <button class="btn btn-ghost" data-act="open-settings">Settings</button>
+  </div>
+</header>
+
+<div class="shell">
+  <nav class="rail" aria-label="Main">
+    <div class="rail-group">
+      <button class="nav-item" data-nav="builder"><span class="nav-glyph">◧</span><span>AI &amp; UI Builders</span><em id="badge-suggestions"></em></button>
+      <button class="nav-item" data-nav="runs"><span class="nav-glyph">◉</span><span>Test runs</span><em id="badge-runs"></em></button>
+      <button class="nav-item" data-nav="memory"><span class="nav-glyph">◫</span><span>Workflow memory</span><em id="badge-memory"></em></button>
+      <button class="nav-item" data-nav="companion"><span class="nav-glyph">♡</span><span>Companion</span><em id="badge-companion"></em></button>
+      <button class="nav-item" data-nav="continuity"><span class="nav-glyph">◐</span><span>Continuity verifier</span><em id="badge-continuity"></em></button>
+      <button class="nav-item" data-nav="captures"><span class="nav-glyph">▣</span><span>Screen captures</span></button>
+      <button class="nav-item" data-nav="examples"><span class="nav-glyph">❖</span><span>Example workflows</span></button>
+    </div>
+    <div class="rail-group">
+      <span class="rail-label">Orchestration</span>
+      <button class="nav-item" data-nav="command"><span class="nav-glyph">◎</span><span>Command Center</span><em id="badge-missions"></em></button>
+      <button class="nav-item" data-nav="presentation"><span class="nav-glyph">▦</span><span>Presentation</span></button>
+    </div>
+    <div class="rail-group">
+      <span class="rail-label">Workspace</span>
+      <button class="nav-item" data-nav="tools"><span class="nav-glyph">⌘</span><span>Tools &amp; commands</span></button>
+      <button class="nav-item" data-nav="python"><span class="nav-glyph">🐍</span><span>Python files</span></button>
+      <button class="nav-item" data-nav="files"><span class="nav-glyph">▤</span><span>Files &amp; notes</span></button>
+    </div>
+    <div class="rail-group">
+      <span class="rail-label">Automation</span>
+      <button class="nav-item" data-nav="agents"><span class="nav-glyph">◈</span><span>Tools &amp; agents</span></button>
+      <button class="nav-item" data-nav="ambient"><span class="nav-glyph">◍</span><span>Ambient</span><em id="badge-ambient"></em></button>
+      <button class="nav-item" data-nav="shortcuts"><span class="nav-glyph">⌨</span><span>Shortcuts</span><em id="badge-shortcuts"></em></button>
+      <button class="nav-item" data-nav="links"><span class="nav-glyph">⌁</span><span>Element links</span></button>
+    </div>
+    <div class="rail-foot">
+      <div class="rail-foot-row"><span class="dot ok"></span><span id="engine-label">engine idle</span></div>
+      <p>Desktop input runs through PowerShell + Win32 SendInput on this machine. Nothing leaves it except model prompts.</p>
+    </div>
+  </nav>
+
+  <main class="view" id="view" aria-live="polite"></main>
+</div>
+
+<div id="modal-root"></div>
+<div id="presenter-root"></div>
+<div id="tray-root" class="tray-root"></div>
+<div id="toast-root" class="toast-root"></div>
+<script src="/app.js" defer></script>
+</body>
+</html>

@@ -1,0 +1,14 @@
+# Runtime state and evidence — machine-specific, can be large or private.
+data/
+# Corroborated test/scratch artifacts
+*.log
+test/tmp-*/
+__pycache__/
+*.pyc
+node_modules/
+.freebuff/
+
+# Unrelated local display-driver repair artifacts kept out of the project repo.
+fix-display.ps1
+force-rollback.ps1
+graphicsdrivers-backup.reg
