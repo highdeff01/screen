@@ -6,9 +6,14 @@ touching the project — and the one folder every failure report lands in.
 How it works:
 
 - The **Sentinel** (the console watching itself) runs the test suite whenever the
-  project's source files change, in a separate process. Every failing run is
-  written here as a dated markdown report, queued in the console's repair queue,
-  and left as a handoff note for the next agent.
+  project's source files change, in a separate process, inside a throwaway git
+  worktree holding the current (including uncommitted) source. The tree the
+  console is serving from is never touched by a test run.
+- Every failing run is written here as a dated markdown report, queued in the
+  console's repair queue, and left as a handoff note for the next agent. The
+  machine-readable form is `repair-queue.json` in this folder: one item per open
+  failure with the parsed test name, file, line and assertion message, so another
+  app or agent can pick it up without reading the console's state.
 - Auto-sync commits and pushes this folder to GitHub, and pulls it back down, so
   every connected app and agent sees the same stream without anyone wiring
   anything new up.

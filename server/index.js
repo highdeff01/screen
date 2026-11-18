@@ -667,6 +667,7 @@ route('POST', /^\/api\/sentinel\/settings$/, async (req, res) => {
     if (body.enabled !== undefined) settings.enabled = body.enabled === true;
     if (body.autoPlan !== undefined) settings.autoPlan = body.autoPlan === true;
     if (body.showWindow !== undefined) settings.showWindow = body.showWindow === true;
+    if (body.worktree !== undefined) settings.worktree = body.worktree === true;
     if (Number(body.cooldownMs)) settings.cooldownMs = Math.max(5000, Number(body.cooldownMs));
     if (typeof body.testCommand === 'string' && body.testCommand.trim()) settings.testCommand = body.testCommand.trim().slice(0, 300);
     persist();

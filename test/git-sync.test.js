@@ -106,7 +106,9 @@ test('a remote that moved is not overwritten', async () => {
   const second = await sync.checkAndSync({ run: git.run });
   assert.equal(second.status, 'behind');
   assert.equal(second.behind, 2);
-  assert.equal(git.calls.some((call) => call.startsWith('push')), false);
+  // The commit is staged on the auto branch; main itself is never written.
+  assert.equal(git.calls.some((call) => call === 'push origin HEAD:refs/heads/main'), false);
+  assert.equal(git.calls.some((call) => call === 'push --force origin HEAD:refs/heads/auto/main'), true);
 });
 
 test('an operator asking now skips the settle wait', async () => {

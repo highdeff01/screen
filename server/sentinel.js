@@ -34,6 +34,8 @@ const REPORT_LIMIT = 40;
 /** Folders and files worth watching; data/ holds machine state and is skipped. */
 const WATCH_ROOTS = ['public', 'server', 'test', 'bin', 'examples', 'package.json'];
 const IGNORED = /(^|[\\/])(node_modules|\.git|\.freebuff|data|must-check)([\\/]|$)|\.log$|\.pid$|~$|(^|[\\/])tmp-|-tmp/;
+/** Machine state and dependencies never belong in a run's worktree. */
+const OVERLAY_SKIP = /^(data|node_modules|\.git|\.freebuff)([\\/]|$)/;
 
 const state = {
   watchers: [],
@@ -204,6 +206,7 @@ export async function overlayWorkingTree(dir, { run } = {}) {
       drop(rel);
       continue;
     }
+    if (OVERLAY_SKIP.test(rel.split('\\').join('/'))) continue;
     const from = path.join(ROOT, rel);
     const to = path.join(dir, rel);
     try {

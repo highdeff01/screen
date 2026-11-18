@@ -5790,8 +5790,10 @@ function renderSentinel() {
           <div class="row wrap" style="gap:8px">
             <button class="btn btn-sm ${s.autoPlan ? 'btn-ghost' : ''}" data-act="sentinel-setting" data-key="autoPlan" data-value="${s.autoPlan ? 'off' : 'on'}">AI repair plans: ${s.autoPlan ? 'on' : 'off'}</button>
             <button class="btn btn-sm ${s.showWindow ? '' : 'btn-ghost'}" data-act="sentinel-setting" data-key="showWindow" data-value="${s.showWindow ? 'off' : 'on'}">Separate window: ${s.showWindow ? 'on' : 'off'}</button>
+            <button class="btn btn-sm ${s.worktree ? '' : 'btn-ghost'}" data-act="sentinel-setting" data-key="worktree" data-value="${s.worktree ? 'off' : 'on'}" title="Run the suite in a throwaway git worktree instead of this folder">Isolated worktree: ${s.worktree ? 'on' : 'off'}</button>
           </div>
           <p class="small dim" style="margin-top:8px">“Separate window” shows the test run in its own console window; either way it runs in a child process, so the console never blocks on tests.</p>
+          <p class="small dim">Worktree ${s.worktree ? 'on' : 'off'}${s.lastRun?.isolated ? ' · last run tested an isolated copy' : ''} · queue file <span class="mono">${esc(s.queueFile || 'must-check/repair-queue.json')}</span></p>
           ${s.lastError ? `<div class="hint-box small" style="color:var(--bad)">${esc(s.lastError)}</div>` : ''}
         </div>
       </div>
@@ -6025,6 +6027,7 @@ function renderSync() {
         <div>
           <p class="small">Local is <b>${Number(info.ahead ?? g.ahead) || 0}</b> commit(s) ahead and <b>${Number(info.behind ?? g.behind) || 0}</b> behind.</p>
           <p class="small dim">Last sync: ${g.lastSyncAt ? fmtTime(g.lastSyncAt) : 'never'} · auto-sync ${g.enabled ? 'on' : 'off'} every ${Math.round(Number(g.intervalMs || 0) / 1000)}s · auto-pull ${ui.data?.settings?.autoPull === false ? 'off' : 'on'}</p>
+          ${g.autoBranch ? `<p class="small dim">Conveyor: <span class="mono">${esc(g.autoBranch)}</span> — every automatic commit lands there first; ${g.branch || 'main'} can only fast-forward to it after the suite passes on that exact commit.${g.held && g.held.ok === false ? ` <span style="color:var(--bad)">Held back by ${g.held.fail ?? 'failing'} test(s).</span>` : ''}</p>` : ''}
         </div>
         <div>
           ${g.lastError ? `<div class="hint-box small" style="color:var(--bad)">${esc(g.lastError)}</div>` : '<p class="small dim">No errors. Nothing to do means the folder matches the remote.</p>'}
