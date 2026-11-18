@@ -886,6 +886,7 @@ function renderRunTray() {
     <div class="tray-meter" title="${settled}/${total} steps settled"><i style="width:${pct}%"></i></div>
     <div class="tray-status">${statusPill(run.status, run.status)}<span class="small">${esc(control)}</span></div>
     <div class="tray-step"><b>${esc(step || (active ? 'waiting for the next step' : 'run finished'))}</b><span class="dim small">${settled}/${total} steps · ${Number(run.passed || 0)} passed · ${Number(run.failed || 0)} failed · ${Number(run.evidenceCount || 0)} evidence</span></div>
+    ${run.presence?.holding ? `<div class="dim small" title="The run is waiting so it does not take the desktop while you work.">waiting for the desktop · ${esc(run.presence.reason || 'the user is active')}${Number(run.presence.deferredMs) > 0 ? ` · held ${Math.round(Number(run.presence.deferredMs) / 1000)}s` : ''}</div>` : ''}
     ${ui.trayExpanded ? `<div class="tray-detail">
       ${next ? `<div><span class="dim">Next</span> ${esc(next)}</div>` : ''}
       ${run.position ? `<div><span class="dim">Position</span> ${Number(run.position.stepNumber) || 0}/${Number(run.position.total) || total} · ${esc(run.position.phase || '')}</div>` : ''}
@@ -3256,6 +3257,7 @@ function renderPresentation() {
           </div>
           <div class="hint-box small">
             <b>Now:</b> ${esc(liveStep || (liveActive ? 'waiting for the next step' : 'run finished'))}${liveNext ? `<br><b>Next:</b> ${esc(liveNext)}` : ''}
+            ${liveRun.presence?.holding ? `<br><b>Hold:</b> ${esc(liveRun.presence.reason || 'waiting for the desktop')}${Number(liveRun.presence.deferredMs) > 0 ? ` · held ${Math.round(Number(liveRun.presence.deferredMs) / 1000)}s` : ''}` : ''}
             ${liveRun.position ? `<br><span class="dim">position ${Number(liveRun.position.stepNumber) || 0}/${Number(liveRun.position.total) || liveRun.total || 0} · ${esc(liveRun.position.phase || '')}</span>` : ''}
           </div>
           ${liveFacts.length ? `<div class="stack" style="gap:4px">${liveFacts.map((fact) => `<div class="cc-event"><span class="badge">${esc(fact.level || 'note')}</span><span class="small">${esc(fact.message || '')}</span></div>`).join('')}</div>` : ''}

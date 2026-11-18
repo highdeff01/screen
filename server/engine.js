@@ -215,6 +215,8 @@ export function summary(run) {
     visualWarnings: (run.visualWarnings || []).length,
     visualChecks: run.visualChecks !== false,
     position: run.position || null,
+    presence: run.presence || null,
+    deferrals: (run.deferrals || []).slice(-3),
     recoveryOf: run.recoveryOf || null,
     recoveryPackId: run.recoveryPackId || null,
     recoveryDepth: Number(run.recoveryDepth || 0),
@@ -616,7 +618,6 @@ async function awaitUserSettle(step, run, probe = null) {
     }
     if (presence?.error) return;
     const classified = classifyPresence({ idleMs: presence.idleMs, foreground: presence.foreground, target, holdMs });
-    run.presence = { at: now(), idleMs: classified.idleMs, state: classified.state, watching: classified.watching, holdMs };
     const decision = holdDecision({
       step,
       presence: classified,
@@ -628,7 +629,22 @@ async function awaitUserSettle(step, run, probe = null) {
       // front, so it cannot fall back to a silent read-only check.
       silentAvailable: step.type === 'verifyPlayback' ? false : silentChecksFor(step).length > 0,
     });
+    // A held step says so on the run itself: the console can then explain why a
+    // step is still "running" without opening the log.
+    run.presence = {
+      at: now(),
+      idleMs: classified.idleMs,
+      state: classified.state,
+      watching: classified.watching,
+      holdMs,
+      holding: decision.action === 'wait',
+      deferredMs,
+      waitMs: Number(decision.waitMs) || 0,
+      reason: decision.reason,
+      note: classified.note,
+    };
     if (decision.action !== 'wait') {
+      run.presence = { ...run.presence, holding: false };
       if (deferredMs > 0) {
         run.deferrals = [...(run.deferrals || []), { stepId: step.id, waitedMs: deferredMs, at: now() }];
         db().presence = learnHold(habits, [{ waitedMs: deferredMs }]);
