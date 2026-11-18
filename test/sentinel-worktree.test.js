@@ -105,7 +105,7 @@ test('the spec output keeps the failing file, line and assertion', () => {
   const details = sentinel.parseFailureDetails(failingOutput);
   const first = details.find((item) => item.name === 'renders the sync page');
   assert.ok(first, 'the failing test is parsed');
-  assert.match(first.file, /test\/app-observer\.test\.js$/);
+  assert.match(first.file, /test\/app-observer\\.test\\.js$/);
   assert.equal(first.line, 42);
   assert.match(first.message, /expected 2 to equal 3/);
   assert.ok(details.some((item) => item.file === 'test/sync-page.test.js'));
@@ -147,6 +147,12 @@ test('a verdict only applies while the source has not changed since it began', a
 });
 
 test('dismissing the item leaves the queue file consistent', async () => {
+  // A passing run settles whatever is queued, so this test queues its own
+  // failure instead of relying on leftovers from an earlier test.
+  await sentinel.runSentinelNow({
+    run: async () => ({ ok: false, code: 1, output: failingOutput, durationMs: 9 }),
+    worktree: false,
+  });
   const open = sentinel.sentinelStatus().failures.filter((f) => f.status === 'queued');
   assert.ok(open.length, 'a queued item is there to dismiss');
   sentinel.dismissFailure(open[0].id);
