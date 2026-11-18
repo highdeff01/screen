@@ -170,11 +170,15 @@ export function assessStep({ step = {}, screen = null, goal = '', history = [] }
 
   if (step.type === 'launchApp') {
     const wantsArgs = Array.isArray(p.args) && p.args.length > 0;
-    if (!wantsArgs && target && matchesTarget(fg, target)) {
+    // A launch is how a flow asks for a window or tab. A matching window that
+    // happens to be on the desktop is not the same thing as the window this run
+    // asked for, so only an explicit `reuse` (or a dialog the run is already
+    // working through) keeps the launch from happening.
+    if (!wantsArgs && p.reuse === true && target && matchesTarget(fg, target)) {
       result.alreadySatisfied = true;
-      result.skipReason = `Already open in front${fg.dialog ? ` with the “${clip(fg.title, 50)}” dialog in progress` : ''}; the launch was skipped.`;
+      result.skipReason = `Already open in front; the launch was skipped because reuse was requested.`;
       result.inProgress = fg.dialog;
-    } else if (!wantsArgs && fg.dialog && target && matchesTarget({ title: screen?.app?.title || '', process: screen?.app?.process || '' }, target)) {
+    } else if (!wantsArgs && fg.dialog && target && (matchesTarget({ title: screen?.app?.title || '', process: screen?.app?.process || '' }, target) || sameAppProcess(fg, target))) {
       result.alreadySatisfied = true;
       result.skipReason = `The app is already running with “${clip(fg.title, 50)}” open; continue that dialog instead of launching again.`;
       result.inProgress = true;
@@ -183,10 +187,18 @@ export function assessStep({ step = {}, screen = null, goal = '', history = [] }
   }
 
   if (step.type === 'focusWindow') {
-    if (guard && fg.title && fg.title.toLowerCase().includes(guard.toLowerCase())) {
+    // Only the exact window counts as already focused. “Some window whose title
+    // contains Notepad” is not the window the step named — that is how a flow
+    // ends up typing into a document the operator already had open.
+    const norm = (value) => String(value || '').toLowerCase().replace(/\s+/g, ' ').trim();
+    const wantedTitle = String(p.title || p.window || '').trim();
+    const wantedProcess = String(p.process || '').trim().replace(/\.exe$/i, '').toLowerCase();
+    const exactTitle = wantedTitle && fg.title && norm(fg.title) === norm(wantedTitle);
+    const exactProcess = !wantedTitle && wantedProcess && norm(fg.process).replace(/\.exe$/i, '') === wantedProcess;
+    if (exactTitle || exactProcess) {
       result.alreadySatisfied = true;
       result.skipReason = 'Already focused; no action was needed.';
-    } else if (guard && fg.dialog && (fg.title.toLowerCase().includes(guard.toLowerCase()) || matchesTarget(fg, target) || sameAppDialog(screen, guard))) {
+    } else if (wantedTitle && fg.dialog && norm(fg.title) === norm(wantedTitle)) {
       result.alreadySatisfied = true;
       result.inProgress = true;
       result.skipReason = `Already focused on “${clip(fg.title, 50)}”, a dialog of the same app.`;
@@ -271,7 +283,7 @@ export function assessStep({ step = {}, screen = null, goal = '', history = [] }
     return result;
   }
 
-  if (step.type === 'waitFor' || step.type === 'expect') {
+  if (step.type === 'waitFor') {
     if (p.kind === 'window' && p.mode !== 'absent' && p.value && fg.title.toLowerCase().includes(String(p.value).toLowerCase())) {
       result.alreadySatisfied = true;
       result.skipReason = `“${clip(fg.title, 50)}” is already in front.`;
@@ -280,6 +292,12 @@ export function assessStep({ step = {}, screen = null, goal = '', history = [] }
       result.alreadySatisfied = true;
       result.skipReason = `The foreground already shows “${clip(fg.title, 50)}”.`;
     }
+    return result;
+  }
+
+  if (step.type === 'expect') {
+    // An expectation is the verification. It is never skipped for looking
+    // satisfied: that is how a run reports success without checking anything.
     return result;
   }
 

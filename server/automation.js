@@ -840,6 +840,7 @@ $isPath = $target -match '[\\/]' -or $target -match '\.\w+$'
 # never adopted as "already open", and after a launch the real app window is
 # raised instead of leaving whichever window was in front on top.
 $frontLeaf = ${psQuote(knownProcess)}
+$reuseExisting = ${p.reuseExisting === true ? 1 : 0}
 if (-not $frontLeaf) { $frontLeaf = $leaf }
 $setupPattern = '(?i)(setup|installer|installing|installation|uninstall|downloading|download|wizard|extracting|updating)'
 function Show-SightlineFront($processLeaf) {
@@ -861,7 +862,7 @@ function Show-SightlineFront($processLeaf) {
   Start-Sleep -Milliseconds 250
   Write-Output ('front ' + $front.ProcessName + ' :: ' + $front.MainWindowTitle)
 }
-if (-not $isPath -and ${launchArgs.length} -eq 0) {
+if (-not $isPath -and ${launchArgs.length} -eq 0 -and $reuseExisting -eq 1) {
   $existing = @(Get-Process | Where-Object {
     $_.MainWindowHandle -ne 0 -and ($_.ProcessName -like ('*' + $leaf + '*') -or $_.MainWindowTitle -like ('*' + $target + '*'))
   } | Where-Object { $_.MainWindowTitle -notmatch $setupPattern } | Sort-Object Id -Descending)

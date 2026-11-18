@@ -733,15 +733,31 @@ async function alreadyInFront(step, probe = null) {
   if (!['launchApp', 'focusWindow'].includes(step.type)) return '';
   // A launch with arguments (e.g. notepad.exe <file>) must actually run.
   if (step.type === 'launchApp' && (step.params?.args || []).length) return '';
+  // A launch is the flow asking for a window or tab, not for a window that
+  // already exists. Unless the step explicitly asks to reuse what is open, an
+  // app that is merely running must not stop the launch — otherwise Notepad
+  // keeps the operator’s old document and the next step types into it.
+  if (step.type === 'launchApp' && step.params?.reuse !== true) return '';
+  // Reuse is opt-in: without it a launch opens a new instance instead of
+  // adopting whatever window of that app happens to be open. Adopting silently
+  // once typed a workflow's text into the operator's own Notepad document.
+  if (step.type === 'launchApp' && step.params?.reuseExisting !== true) return '';
   const title = String(step.params?.title || '').trim();
   const target = String(step.params?.target || '').trim();
   const processName = String(step.params?.process || '').trim() || (/\.exe$/i.test(target) ? target.replace(/\.exe$/i, '') : '');
   const windowTitle = title || (/\s/.test(target) && !/[\\/]/.test(target) && !/\.\w+$/.test(target) ? target : '');
-  if (!windowTitle && !processName) return '';
+  // A process match alone is never enough to skip: two windows of the same app
+  // are different documents. The foreground must carry the exact window title
+  // the step asked for; a focus step with no exact title is simply run again
+  // (focusing an already-focused window is harmless, typing into the wrong one
+  // is not).
+  if (!windowTitle) return '';
   const state = probe?.inspectWindowState
     ? await probe.inspectWindowState({ title: windowTitle, process: processName })
     : await inspectWindowState({ title: windowTitle, process: processName });
   if (state.state !== 'foreground') return '';
+  const foregroundTitle = String(state.foreground?.title || '').trim().toLowerCase();
+  if (foregroundTitle !== windowTitle.toLowerCase()) return '';
   // A setup wizard, installer, updater or browser page that carries the app's
   // name is not the installed app. "Already in front" must not skip the launch
   // just because the installer window or the download page still has focus.
