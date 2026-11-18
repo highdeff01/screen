@@ -1,9 +1,58 @@
 {
   "version": 1,
   "by": "sentinel",
-  "updatedAt": "2026-11-18T21:15:24.171Z",
-  "head": "",
-  "lastRun": null,
-  "open": 0,
-  "items": []
+  "updatedAt": "2026-11-18T21:18:46.352Z",
+  "head": "ba19aaf51fdf",
+  "lastRun": {
+    "at": "2026-11-18T21:18:46.350Z",
+    "ok": false,
+    "tests": 439,
+    "pass": 432,
+    "fail": 3,
+    "isolated": true,
+    "failingTests": [
+      "chat() reaches the console provider through the local gateway (363.3868ms)",
+      "three real failing runs pause the shared budget and reset re-enables the scheduler (5180.1077ms)",
+      "C:\\Users\\Dan\\.config\\freebuff-desktop\\local-projects\\40af3ced-48bf-4a9d-a8b7-cb42815bab8f\\data\\worktrees\\sentinel-1795036674162-29060\\test\\presentation-live.test.js (237.4682ms)"
+    ]
+  },
+  "open": 1,
+  "items": [
+    {
+      "id": "sent_mwmmiqfi02e373",
+      "at": "2026-11-18T21:18:46.350Z",
+      "status": "queued",
+      "attempts": 1,
+      "fail": 3,
+      "pass": 432,
+      "tests": [
+        "chat() reaches the console provider through the local gateway (363.3868ms)",
+        "three real failing runs pause the shared budget and reset re-enables the scheduler (5180.1077ms)",
+        "C:\\Users\\Dan\\.config\\freebuff-desktop\\local-projects\\40af3ced-48bf-4a9d-a8b7-cb42815bab8f\\data\\worktrees\\sentinel-1795036674162-29060\\test\\presentation-live.test.js (237.4682ms)"
+      ],
+      "details": [
+        {
+          "name": "chat() reaches the console provider through the local gateway",
+          "file": "",
+          "line": null,
+          "message": ""
+        },
+        {
+          "name": "three real failing runs pause the shared budget and reset re-enables the scheduler",
+          "file": "",
+          "line": null,
+          "message": ""
+        },
+        {
+          "name": "C:\\Users\\Dan\\.config\\freebuff-desktop\\local-projects\\40af3ced-48bf-4a9d-a8b7-cb42815bab8f\\data\\worktrees\\sentinel-1795036674162-29060\\test\\presentation-live.test.js",
+          "file": "",
+          "line": null,
+          "message": ""
+        }
+      ],
+      "plan": "",
+      "planError": "",
+      "report": "must-check/2026-11-18T21-18-46-chat-reaches-the-console-provider-throug.md"
+    }
+  ]
 }
