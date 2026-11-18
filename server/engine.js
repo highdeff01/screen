@@ -704,11 +704,6 @@ function reportRunFailure(run, summary, error = '') {
       detail: `${summary} (run ${run.id}); fix, then re-run`,
       tags: ['run-failed'],
     });
-    // And the run itself goes to deep focus: live re-reads, a rethink round,
-    // reshaped steps and a conclusion — instead of ending as just a record.
-    try {
-      enqueue({ kind: 'deep-focus', payload: { id: run.id }, key: `deep-focus:${run.id}`, priority: 3 });
-    } catch { /* before boot the handler is not registered yet; skip */ }
     return item;
   } catch (err) {
     console.warn(`[engine] failure report failed: ${err.message}`);
@@ -2137,6 +2132,13 @@ async function executeRun(runId) {
     run.goalUnverified = true;
     run.errorSummary = `Goal not verified: ${reason}.`;
     pushLog(run, 'warn', `Marked needs review: ${reason}.`);
+  }
+  // Decide after follow-up and goal verification, so a run whose commands all
+  // passed but whose goal was not proved still gets an evidence-gathering pass.
+  if (!run.dryRun && !run.shadow && ['failed', 'needs_review'].includes(run.status)) {
+    try {
+      enqueue({ kind: 'deep-focus', payload: { id: run.id }, key: `deep-focus:${run.id}`, priority: 3 });
+    } catch { /* pipeline may not be available during boot */ }
   }
   if (run.status === 'passed' && run.replannedAfterFailure && run.replanLesson && !run.replanLessonSaved) {
     const superseded = (run.supersededSteps || []).slice(-1)[0];

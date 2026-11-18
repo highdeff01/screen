@@ -10,6 +10,7 @@ process.chdir(tempRoot);
 const load = (name) => import(pathToFileURL(path.join(root, name)).href);
 const store = await load('server/store.js');
 const engine = await load('server/engine.js');
+const pipeline = await load('server/pipeline.js');
 
 after(() => {
   try {
@@ -57,6 +58,7 @@ function quietSettings() {
 
 test('a passing run that never opened the goal app is marked needs_review', async () => {
   quietSettings();
+  pipeline.registerHandler('deep-focus', async () => 'started');
   const workflow = workflowWith(
     [
       { id: 's1', type: 'launchApp', name: 'Open Chrome', params: { target: 'chrome.exe' } },
@@ -76,6 +78,7 @@ test('a passing run that never opened the goal app is marked needs_review', asyn
   assert.equal(finished.presenter.summary.goalMet, false);
   assert.equal(finished.presenter.verifier.status, 'needs_review');
   assert.match(finished.errorSummary, /Goal not verified/);
+  assert.ok(pipeline.pipelineStatus().queued.some((job) => job.key === `deep-focus:${run.id}`), 'the unverified goal is queued for focus');
 });
 
 test('a passing run that launched the goal app stays passed', async () => {
