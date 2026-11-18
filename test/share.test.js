@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildShareLink, downgradeLiveRun, lanAddress } from '../server/share.js';
+import http from 'node:http';
+import { buildShareLink, downgradeLiveRun, lanAddress, startShare, stopShare } from '../server/share.js';
 
 test('the share link carries the token and the right host', () => {
   assert.equal(
@@ -36,7 +37,109 @@ test('a shared visitor can never ask for a live run', () => {
   const dry = '{"mode":"dry"}';
   assert.equal(downgradeLiveRun('/api/workflows/wf_1/runs', dry), dry);
 
-  // Other routes and unparseable bodies are left exactly as they arrived.
+  // Other routes are unchanged; invalid bodies must not pass through.
   assert.equal(downgradeLiveRun('/api/workflows', '{"mode":"live"}'), '{"mode":"live"}');
-  assert.equal(downgradeLiveRun('/api/workflows/wf_1/runs', 'not json'), 'not json');
+  assert.throws(() => downgradeLiveRun('/api/workflows/wf_1/runs', 'not json'));
+  assert.equal(JSON.parse(downgradeLiveRun('/api/missions', '')).mode, 'dry');
+  assert.equal(JSON.parse(downgradeLiveRun('/api/missions', '{}')).mode, 'dry');
+});
+
+function listen(server) {
+  return new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => resolve(server.address().port));
+  });
+}
+
+function close(server) {
+  return new Promise((resolve, reject) => server.close((err) => err ? reject(err) : resolve()));
+}
+
+function request(port, path, { method = 'GET', body, headers = {} } = {}) {
+  return new Promise((resolve, reject) => {
+    const req = http.request({ host: '127.0.0.1', port, path, method, headers }, (res) => {
+      const chunks = [];
+      res.on('data', (chunk) => chunks.push(chunk));
+      res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks).toString() }));
+      res.on('error', reject);
+    });
+    req.on('error', reject);
+    req.end(body);
+  });
+}
+
+test('share proxy only forwards safe reads and dry executions', async (t) => {
+  const received = [];
+  const upstream = http.createServer((req, res) => {
+    const chunks = [];
+    req.on('data', (chunk) => chunks.push(chunk));
+    req.on('end', () => {
+      received.push({ method: req.method, path: req.url, headers: req.headers, body: Buffer.concat(chunks).toString() });
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{"ok":true}');
+    });
+  });
+  const targetPort = await listen(upstream);
+  t.after(() => close(upstream));
+
+  // Reserve an OS-assigned port for startShare, which does not accept port 0.
+  const reservation = http.createServer();
+  const port = await listen(reservation);
+  await close(reservation);
+  const share = await startShare({ port, targetPort, tunnel: false });
+  assert.equal(share.active, true, share.lastError);
+  t.after(() => stopShare());
+  const token = share.token;
+  const auth = { cookie: `sightline_share=${token}` };
+
+  assert.equal((await request(port, '/api/state')).status, 401);
+  assert.equal(received.length, 0);
+  const get = await request(port, '/api/state?view=all', { headers: auth });
+  assert.equal(get.status, 200);
+  assert.equal(received[0].path, '/api/state?view=all');
+  assert.equal(received[0].headers.host, `127.0.0.1:${port}`);
+  assert.equal(received[0].headers['x-sightline-shared'], '1');
+  assert.equal((await request(port, '/', { method: 'HEAD', headers: auth })).status, 200);
+  const tokenGet = await request(port, `/?token=${token}`);
+  assert.equal(tokenGet.status, 200);
+  assert.match(tokenGet.headers['set-cookie'][0], /^sightline_share=/);
+
+  const blocked = [
+    ['POST', '/api/control'], ['POST', '/api/shortcuts/habits/h/replay'],
+    ['POST', '/api/missions/m/resume'], ['POST', '/api/workflows/w/runs/r/retry'],
+    ['POST', '/api/tools/t/run'], ['POST', '/api/files/write'],
+    ['PATCH', '/api/settings'], ['PUT', '/api/missions'], ['DELETE', '/api/missions/m'],
+    ['OPTIONS', '/api/state'], ['GET', '/api/admin'], ['GET', '/api/tools'],
+    ['HEAD', '/api/element-links'], ['GET', '/api/python/file/download'],
+    ['GET', '/api/share'], ['GET', '/api/ambient/refresh'], ['HEAD', '/api/ambient/refresh'],
+  ];
+  for (const [method, path] of blocked) {
+    const before = received.length;
+    const result = await request(port, path, { method, headers: auth, body: method === 'POST' ? '{}' : undefined });
+    assert.equal(result.status, 403, `${method} ${path}`);
+    assert.equal(received.length, before, `${method} ${path} reached upstream`);
+  }
+
+  for (const path of ['/api/workflows/wf_1/runs', '/api/missions']) {
+    for (const body of ['{"mode":"live","goal":"test"}', '{}', '', '{"mode":"dry"}', '{"mode":"other"}']) {
+      const before = received.length;
+      const result = await request(port, path, {
+        method: 'POST', body, headers: { ...auth, 'content-type': 'application/json', origin: `http://127.0.0.1:${port}` },
+      });
+      assert.equal(result.status, 200, `${path} ${body}`);
+      assert.equal(received.length, before + 1);
+      const forwarded = received.at(-1);
+      assert.equal(JSON.parse(forwarded.body).mode, 'dry');
+      assert.equal(forwarded.headers.host, `127.0.0.1:${port}`);
+      assert.equal(forwarded.headers.origin, `http://127.0.0.1:${port}`);
+      assert.equal(Number(forwarded.headers['content-length']), Buffer.byteLength(forwarded.body));
+      if (body.includes('goal')) assert.equal(JSON.parse(forwarded.body).goal, 'test');
+    }
+    for (const body of ['not json', '{', 'null', '[]', '"live"', '3', 'true', ' ']) {
+      const before = received.length;
+      const result = await request(port, path, { method: 'POST', body, headers: auth });
+      assert.equal(result.status, 400, `${path} ${body}`);
+      assert.equal(received.length, before, `${path} ${body} reached upstream`);
+    }
+  }
 });

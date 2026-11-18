@@ -39,7 +39,11 @@ const BLOCKED = [
   { test: /^\/api\/(admin|tools|element-links|python)(\/|$)/i, why: 'operator-only routes are not available through a share link' },
   { test: /^\/api\/share(\/|$)/i, why: 'sharing cannot be managed from a shared session' },
   { test: /^\/api\/settings$/i, method: /^(PATCH|PUT|POST)$/i, why: 'settings are read-only through a share link' },
+  // This GET changes the ambient clock and invokes PowerShell on Windows.
+  { test: /^\/api\/ambient\/refresh$/i, why: 'refresh detection is not available through a share link' },
 ];
+
+const RUN_PATH = /^\/api\/(workflows\/[^/]+\/runs|missions)$/;
 
 /** First non-loopback IPv4 address, so the link is usable on the LAN. */
 export function lanAddress(interfaces = os.networkInterfaces()) {
@@ -110,19 +114,14 @@ function readBody(req, limit = 4 * 1024 * 1024) {
 
 /** Shared visitors may run workflows, but never against this desktop. */
 export function downgradeLiveRun(pathname, bodyText) {
-  if (!/^\/api\/(workflows\/[^/]+\/runs|missions)$/.test(pathname)) return bodyText;
-  if (!bodyText) return bodyText;
-  try {
-    const parsed = JSON.parse(bodyText);
-    if (parsed && parsed.mode === 'live') {
-      parsed.mode = 'dry';
-      parsed.sharedDowngrade = true;
-      return JSON.stringify(parsed);
-    }
-  } catch {
-    // A body that is not JSON is forwarded untouched.
+  if (!RUN_PATH.test(pathname)) return bodyText;
+  const parsed = bodyText === '' ? {} : JSON.parse(bodyText);
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new TypeError('Request body must be a JSON object.');
   }
-  return bodyText;
+  if (parsed.mode !== 'dry') parsed.sharedDowngrade = true;
+  parsed.mode = 'dry';
+  return JSON.stringify(parsed);
 }
 
 function blocked(pathname, method) {
@@ -157,18 +156,30 @@ async function handle(req, res) {
   state.requests += 1;
   state.visitors.add(String(req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'unknown'));
 
-  const rule = blocked(url.pathname, req.method || 'GET');
-  if (rule) {
+  const method = req.method || 'GET';
+  const rule = blocked(url.pathname, method);
+  const approvedPost = method === 'POST' && RUN_PATH.test(url.pathname);
+  if (rule || (!['GET', 'HEAD'].includes(method) && !approvedPost)) {
+    const why = rule?.why || 'this action is not available through a share link';
     res.writeHead(403, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
-    res.end(JSON.stringify({ ok: false, error: `Blocked on a share link: ${rule.why}.` }));
+    res.end(JSON.stringify({ ok: false, error: `Blocked on a share link: ${why}.` }));
     return;
   }
 
-  const rawBody = req.method === 'GET' || req.method === 'HEAD' ? Buffer.alloc(0) : await readBody(req);
-  const body = downgradeLiveRun(url.pathname, rawBody.toString('utf8'));
+  let body = '';
+  if (approvedPost) {
+    const rawBody = await readBody(req);
+    try {
+      body = downgradeLiveRun(url.pathname, rawBody.toString('utf8'));
+    } catch {
+      res.writeHead(400, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+      res.end(JSON.stringify({ ok: false, error: 'Request body must be a JSON object.' }));
+      return;
+    }
+  }
   const headers = { ...req.headers };
-  delete headers.host;
   delete headers['content-length'];
+  delete headers['transfer-encoding'];
   delete headers.connection;
   headers['x-sightline-shared'] = '1';
   if (body) headers['content-length'] = Buffer.byteLength(body);
