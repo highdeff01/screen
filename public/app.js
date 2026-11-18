@@ -700,6 +700,7 @@ function renderHeader() {
     sentinelBadge.textContent = s.openFailures ? String(s.openFailures) : '';
     sentinelBadge.className = s.openFailures ? 'warnbadge' : '';
   }
+  relayBadge();
   const adminBtn = $('#admin-btn');
   if (adminBtn) {
     adminBtn.textContent = ui.auth?.authenticated ? `Admin · ${ui.auth.username}` : 'Admin sign-in';
@@ -5782,11 +5783,15 @@ function renderSentinel() {
                 <span class="small dim">${fmtTime(f.at)} · ${f.fail ?? '?'} of ${f.tests ?? '?'} failing · attempt ${f.attempts || 1}</span>
                 <span class="spacer"></span>
                 <button class="btn btn-sm" data-act="sentinel-plan" data-id="${esc(f.id)}">${f.plan?.text ? 'Re-plan' : 'AI repair plan'}</button>
+                <button class="btn btn-sm" data-act="sentinel-opinion" data-id="${esc(f.id)}" data-lens="skeptic" title="A second look from a different angle">2nd: skeptic</button>
+                <button class="btn btn-sm" data-act="sentinel-opinion" data-id="${esc(f.id)}" data-lens="race" title="Read it as a race/timing bug">2nd: race</button>
+                <button class="btn btn-sm" data-act="sentinel-opinion" data-id="${esc(f.id)}" data-lens="user" title="Judge it from the user's point of view">2nd: user</button>
                 <button class="btn btn-sm" data-act="sentinel-retry" data-id="${esc(f.id)}">Re-run</button>
                 <button class="btn btn-sm btn-ghost" data-act="sentinel-dismiss" data-id="${esc(f.id)}">Dismiss</button>
               </div>
               ${(f.tests || []).length ? `<p class="small" style="margin-top:6px">${(f.tests || []).slice(0, 4).map((t) => `✖ ${esc(t)}`).join('<br>')}${(f.tests || []).length > 4 ? ` <span class="dim">+${f.tests.length - 4} more</span>` : ''}</p>` : ''}
               ${f.plan?.text ? `<div class="hint-box small" style="margin-top:8px;white-space:pre-wrap">${esc(f.plan.text)}</div>` : ''}
+              ${(f.opinions || []).length ? `<div class="stack" style="gap:6px;margin-top:8px">${f.opinions.map((op) => op.text ? `<div class="hint-box small"><b>${esc(op.label || op.lens)}</b><div style="white-space:pre-wrap;margin-top:4px">${esc(op.text)}</div></div>` : '').join('')}</div>` : ''}
               ${f.plan?.error ? `<p class="small dim" style="margin-top:6px">Plan unavailable: ${esc(f.plan.error)}</p>` : ''}
               ${f.output ? `<details style="margin-top:6px"><summary class="small dim">Output tail</summary><pre class="mono small" style="white-space:pre-wrap">${esc(String(f.output).slice(-1500))}</pre></details>` : ''}
             </div>`).join('')}</div>`
@@ -6033,6 +6038,29 @@ function renderSync() {
             ? commands.map((cmd) => `<div class="cc-note"><div class="row wrap" style="gap:6px;align-items:center"><strong class="small">${esc(cmd.name)}</strong><span class="mono small dim">${esc(cmd.command)}</span><span class="spacer"></span><button class="btn btn-sm" data-act="command-run" data-id="${esc(cmd.id)}">Run</button><button class="btn btn-sm btn-ghost" data-act="command-rm" data-id="${esc(cmd.id)}">Delete</button></div>${cmd.lastRun ? `<p class="small ${cmd.lastRun.ok ? 'dim' : ''}" style="margin-top:4px;${cmd.lastRun.ok ? '' : 'color:var(--bad)'}">${cmd.lastRun.ok ? 'ok' : `exit ${cmd.lastRun.code}`} · ${fmtTime(cmd.lastRun.at)}${cmd.lastRun.stdout ? ` · ${esc(String(cmd.lastRun.stdout).slice(0, 160))}` : ''}${cmd.lastRun.stderr ? ` · ${esc(String(cmd.lastRun.stderr).slice(0, 160))}` : ''}</p>` : ''}</div>`).join('')
             : '<p class="muted small">No custom commands yet.</p>'}
         </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="card-head"><h3>Version snapshots</h3><span class="dim small">${(ui.data?.snapshots?.count || 0)} kept · full-project copies off-branch</span></div>
+      <div class="card-body">
+        <div class="row wrap" style="gap:8px;align-items:flex-start">
+          <input id="snapshot-label" class="input" placeholder="label (e.g. before the relay refactor)" style="flex:1;min-width:220px" />
+          <button class="btn btn-sm btn-primary" data-act="snapshot-create">Snapshot now</button>
+        </div>
+        <p class="small dim" style="margin-top:6px">A snapshot captures the whole folder as a git commit object without touching any branch, so auto-sync and your own history stay untouched. Restores take a safety snapshot of what is here first.</p>
+        ${(ui.data?.snapshots?.snapshots || []).length ? `
+        <div class="row wrap" style="gap:8px;margin-top:10px;align-items:center">
+          <select id="snapshot-diff-select" class="input" style="max-width:340px">
+            ${(ui.data?.snapshots?.snapshots || []).slice(0, 12).map((snap, index, all) => index < all.length - 1 ? `<option value="${esc(all[index + 1].id)}|${esc(snap.id)}">${esc(all[index + 1].label)} → ${esc(snap.label)}</option>` : '').join('')}
+          </select>
+          <button class="btn btn-sm" data-act="snapshot-diff">Diff</button>
+          <button class="btn btn-sm" data-act="snapshot-transfer" title="Apply the changes between the two versions onto the current tree (three-way)">Transfer changes</button>
+        </div>
+        <div class="stack" style="gap:6px;margin-top:10px">
+          ${(ui.data?.snapshots?.snapshots || []).slice(0, 8).map((snap) => `<div class="row wrap" style="gap:8px;align-items:center"><strong class="small">${esc(snap.label)}</strong><span class="mono small dim">${esc(snap.commit.slice(0, 8))}</span><span class="small dim">${fmtTime(snap.at)}</span><span class="spacer"></span><button class="btn btn-sm" data-act="snapshot-restore" data-id="${esc(snap.id)}">Restore</button></div>`).join('')}
+        </div>` : '<p class="muted small" style="margin-top:10px">No snapshots yet.</p>'}
+        ${ui.snapshotDiff ? `<details style="margin-top:10px" open><summary class="small dim">Diff: ${esc(ui.snapshotDiff.from)} → ${esc(ui.snapshotDiff.to)}</summary><pre class="mono small" style="white-space:pre-wrap">${esc(ui.snapshotDiff.patch || '(no differences)')}</pre></details>` : ''}
       </div>
     </section>
   </div>`;
@@ -6659,7 +6687,8 @@ async function runAction(name, ds, el) {
       if (!a || !b) return toast('Pick two snapshots to compare', 'error');
       const res = await api('/api/snapshots/diff', { method: 'POST', body: { a, b } });
       if (!res.ok) return toast(res.error, 'error');
-      openModal('snapshot-diff', { title: `Diff: ${res.from} → ${res.to}`, body: `<pre class="mono small" style="white-space:pre-wrap">${esc(res.patch || '(no differences)')}</pre>` });
+      ui.snapshotDiff = res;
+      render();
       break;
     }
     case 'snapshot-transfer': {
