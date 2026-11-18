@@ -5960,6 +5960,29 @@ function renderRelay() {
     </section>
 
     <section class="card">
+      <div class="card-head"><h3>Action log</h3><span class="dim small">${(() => { const al = ui.data?.actionLog || {}; return al.open ? `${al.open} open${al.triaged ? ` · ${al.triaged} with suggestions` : ''}` : 'clear'; })()}</span></div>
+      <div class="card-body">
+        <p class="small dim" style="margin-top:0">Every UI action, click and error is reported here and deduplicated. A recurring problem is written once into <span class="mono">must-check/</span> — the folder auto-sync carries to GitHub — and the pipeline drafts an AI suggestion for it. Nothing is auto-applied to source files.</p>
+        ${(ui.data?.actionLog?.items || []).length ? `<div class="stack" style="gap:10px;margin-top:10px">${(ui.data?.actionLog?.items || []).slice(0, 10).map((item) => `
+          <div class="cc-note">
+            <div class="row wrap" style="gap:6px;align-items:center">
+              <span class="badge ${item.status === 'fix-suggested' ? 'okbadge' : item.status === 'fix-applied' || item.status === 'dismissed' || item.status === 'suppressed' ? '' : 'warnbadge'}">${esc(item.status)}</span>
+              <strong class="small">${esc(item.action || item.kind)}</strong>
+              <span class="small dim">${item.count}× · ${fmtTime(item.lastAt)}${item.pattern ? ` · known: ${esc(item.pattern.id)}` : ''}</span>
+              <span class="spacer"></span>
+              <button class="btn btn-sm" data-act="alog-triage" data-id="${esc(item.id)}" title="Ask the model for a fix suggestion">${item.suggestion ? 'Re-suggest' : 'AI suggestion'}</button>
+              <button class="btn btn-sm ${item.pattern?.fix ? '' : 'btn-ghost'}" data-act="alog-fix" data-id="${esc(item.id)}" title="Mark handled / apply the known safe fix">Mark fixed</button>
+              <button class="btn btn-sm btn-ghost" data-act="alog-dismiss" data-id="${esc(item.id)}">Dismiss</button>
+            </div>
+            ${item.error ? `<p class="small mono" style="margin-top:6px">${esc(String(item.error).slice(0, 220))}</p>` : ''}
+            ${item.pattern?.advice ? `<p class="small" style="margin-top:4px;color:var(--ok)">${esc(item.pattern.advice)}</p>` : ''}
+            ${item.suggestion ? `<div class="hint-box small" style="margin-top:6px;white-space:pre-wrap">${esc(item.suggestion)}</div>` : ''}
+            ${item.reportFile ? `<p class="small dim" style="margin-top:4px">Reported to <span class="mono">${esc(item.reportFile)}</span> (synced to GitHub)</p>` : ''}
+          </div>`).join('')}</div>` : '<p class="muted small" style="margin-top:10px">Nothing recurring. Click around; if something breaks twice, it shows up here and in must-check/.</p>'}
+      </div>
+    </section>
+
+    <section class="card">
       <div class="card-head"><h3>Exchange stream</h3><span class="dim small">${exchanges.length ? `${exchanges.length} recorded` : 'empty'}</span></div>
       <div class="card-body">
         ${exchanges.length ? `<div class="stack" style="gap:6px">${exchanges.slice(0, 12).map((exchange) => `<div class="row wrap" style="gap:8px;align-items:center"><span class="badge">${exchange.direction === 'push' ? '→ sent' : '← received'}</span><strong class="small">${esc(exchange.link)}</strong><span class="small dim">${fmtTime(exchange.at)}${exchange.forced ? ' · forced' : ''}</span><span class="spacer"></span><span class="small dim">${(exchange.files || []).length} path(s)</span></div>`).join('')}</div>` : '<p class="muted small" style="margin:0">Nothing has moved through a link yet.</p>'}
@@ -6732,6 +6755,30 @@ async function runAction(name, ds, el) {
       const res = await api(`/api/snapshots/${encodeURIComponent(id)}/restore`, { method: 'POST', body: {} });
       toast(res.message || res.error || 'Done', res.ok ? 'ok' : 'error');
       await refresh();
+      break;
+    }
+    case 'alog-triage': {
+      toast('Asking the model…');
+      const res = await api(`/api/action-log/${encodeURIComponent(ds.id)}/triage`, { method: 'POST', body: {} });
+      if (!res.ok) return toast(res.error, 'error');
+      toast(res.item?.suggestion ? 'Suggestion drafted — review it in the Action log.' : 'No suggestion right now.', res.item?.suggestion ? 'ok' : 'error');
+      await refresh();
+      render();
+      break;
+    }
+    case 'alog-fix': {
+      const res = await api(`/api/action-log/${encodeURIComponent(ds.id)}/fix`, { method: 'POST', body: {} });
+      if (!res.ok) return toast(res.error, 'error');
+      toast('Marked as handled; the must-check report was updated.', 'ok');
+      await refresh();
+      render();
+      break;
+    }
+    case 'alog-dismiss': {
+      const res = await api(`/api/action-log/${encodeURIComponent(ds.id)}/dismiss`, { method: 'POST', body: {} });
+      if (!res.ok) return toast(res.error, 'error');
+      await refresh();
+      render();
       break;
     }
     case 'note-add': {
@@ -8833,6 +8880,7 @@ async function queueRun(id, mode) {
         : 'Simulated run queued in the background.',
       'ok'
     );
+    }
     ui.view = 'runs';
     ui.selectedRun = res.run.id;
     ui.runFilter = 'all';
