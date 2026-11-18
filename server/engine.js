@@ -664,6 +664,10 @@ async function awaitUserSettle(step, run, probe = null) {
   ).trim();
   let deferredMs = 0;
   for (;;) {
+    if (run.presenceBypass) {
+      // "Run now anyway" was pressed: the desktop activity no longer holds the step.
+      return;
+    }
     let presence;
     try {
       presence = probe?.readPresence ? await probe.readPresence() : await readPresence();
@@ -716,7 +720,7 @@ async function awaitUserSettle(step, run, probe = null) {
     const until = Date.now() + chunk;
     while (Date.now() < until) {
       await waitWhileRunPaused(run);
-      if (run.cancelRequested) return;
+      if (run.cancelRequested || run.presenceBypass) return;
       await sleep(Math.min(250, Math.max(0, until - Date.now())));
     }
     deferredMs += chunk;
@@ -1978,8 +1982,8 @@ export function controlRun(id, action) {
   const run = findRun(id);
   if (!run) throw new Error('Run not found');
   const code = String(action || '').toLowerCase();
-  if (!['pause', 'resume', 'continue', 'skip'].includes(code)) {
-    throw new Error('Unknown run control. Use pause, resume, continue or skip.');
+  if (!['pause', 'resume', 'continue', 'skip', 'bypass'].includes(code)) {
+    throw new Error('Unknown run control. Use pause, resume, continue, skip or bypass.');
   }
   if (!['queued', 'running'].includes(run.status)) {
     throw new Error(`Run is ${run.status}; controls only apply while queued or running.`);
@@ -1999,6 +2003,10 @@ export function controlRun(id, action) {
   } else if (code === 'skip') {
     run.skipRequested = true;
     pushLog(run, 'warn', 'Skip requested; the current wait or next step will be skipped.');
+  } else if (code === 'bypass') {
+    run.presenceBypass = true;
+    run.presence = { ...(run.presence || {}), holding: false, reason: 'bypassed by the operator' };
+    pushLog(run, 'info', 'Run now anyway: the presence hold is bypassed; the step takes focus immediately.');
   }
   persist();
   logActivity('run', `Control ${code} on ${run.workflowName}`, { runId: run.id });
