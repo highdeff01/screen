@@ -78,7 +78,7 @@ test('a failing run is queued, reported to must-check and left as a note', async
   assert.match(body, /boot renders state without waiting/);
   assert.ok(body.includes(failure.id), 'the report carries the queue id');
 
-  // A handoff note was left for the next agent.f
+  // A handoff note was left for the next agent.
   const handoff = await load('server/handoff.js');
   const notes = handoff.listNotes({ limit: 5 });
   assert.ok(notes.some((note) => note.by === 'sentinel' && /Auto-test failed/.test(note.text)));
@@ -130,4 +130,3 @@ test('watching ignores machine state and test scratch folders', () => {
   for (const file of ignored) assert.ok(sentinel.__sentinelIgnored.test(file), `${file} should be ignored`);
   for (const file of watched) assert.ok(!sentinel.__sentinelIgnored.test(file), `${file} should be watched`);
 });
-
