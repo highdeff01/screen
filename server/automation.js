@@ -2558,6 +2558,17 @@ function frameReadouts(parsed = null) {
 const mediaDurations = new Map();
 const MEDIA_FILE = /\.(mp4|m4v|webm|mkv|mov|avi|ogv|mpg|mpeg|wmv)$/i;
 
+// A weaker verification must not be silent: every reason the media length is
+// unavailable is logged once, so a run whose total was never cross-checked is
+// visible in the console instead of looking like a full check.
+const durationNotes = new Set();
+
+function noteNoDuration(message) {
+  if (durationNotes.has(message)) return;
+  durationNotes.add(message);
+  console.warn(`[playback] ${message}`);
+}
+
 function probeMediaSeconds(file) {
   return new Promise((resolve) => {
     execFile(
@@ -2565,9 +2576,22 @@ function probeMediaSeconds(file) {
       ['-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', file],
       { timeout: 8000, windowsHide: true },
       (error, stdout) => {
-        if (error) return resolve(null);
+        if (error) {
+          if (error.code === 'ENOENT') {
+            noteNoDuration('ffprobe is not installed, so the readout total is not cross-checked against the media file.');
+          } else {
+            noteNoDuration(
+              `ffprobe could not read the media duration (${String(error.code || error.message).slice(0, 80)}), so the readout total is not cross-checked.`
+            );
+          }
+          return resolve(null);
+        }
         const seconds = Number(String(stdout || '').trim());
-        resolve(Number.isFinite(seconds) && seconds > 0 ? Math.round(seconds * 10) / 10 : null);
+        if (!Number.isFinite(seconds) || seconds <= 0) {
+          noteNoDuration('ffprobe returned no usable duration, so the readout total is not cross-checked.');
+          return resolve(null);
+        }
+        resolve(Math.round(seconds * 10) / 10);
       }
     );
   });
@@ -2590,11 +2614,18 @@ export async function mediaDurationSeconds(run = null) {
       candidates.push(text);
     }
   }
+  if (!candidates.length) {
+    noteNoDuration('this run names no media file, so the readout total is not cross-checked against a file length.');
+    return null;
+  }
   for (const file of candidates) {
     let absolute;
     try {
       absolute = path.isAbsolute(file) ? file : path.join(DATA, file);
-      if (!fs.existsSync(absolute)) continue;
+      if (!fs.existsSync(absolute)) {
+        noteNoDuration(`the media file ${absolute} is missing, so the readout total is not cross-checked.`);
+        continue;
+      }
       const key = `${absolute}:${fs.statSync(absolute).mtimeMs}`;
       if (mediaDurations.has(key)) return mediaDurations.get(key);
       const seconds = await probeMediaSeconds(absolute);
@@ -4173,21 +4204,35 @@ try {
       error.evidence = evidence;
       throw error;
     }
+    // A pass whose total was never cross-checked against the file is weaker, and
+    // says so on the step instead of reading like a full check.
+    const weaker = mediaSeconds == null ? ' The media length was unavailable, so the readout total was not cross-checked.' : '';
     if (history) {
       return {
         output: `Playback verified from this run's screenshot history${history.verdict.confidence != null ? ` (${history.verdict.confidence}%)` : ''}: ${
           String(history.parsed?.observed || history.parsed?.reason || '').slice(0, 500) || 'the earlier frame shows the video in progress'
-        } [earlier ${history.prior.path}]`,
+        } [earlier ${history.prior.path}].${weaker}`,
         evidence,
-        playback: { source: 'history', state: history.verdict.state, finished: history.verdict.finished },
+        playback: {
+          source: 'history',
+          state: history.verdict.state,
+          finished: history.verdict.finished,
+          crossChecked: mediaSeconds != null,
+        },
       };
     }
     return {
-      output: verdict.completed
-        ? `Playback finished${verdict.confidence != null ? ` (${verdict.confidence}%)` : ''}: the video played to its end. ${observed}`
-        : `Playback advancing${verdict.confidence != null ? ` (${verdict.confidence}%)` : ''}: ${observed}`,
+      output:
+        (verdict.completed
+          ? `Playback finished${verdict.confidence != null ? ` (${verdict.confidence}%)` : ''}: the video played to its end. ${observed}`
+          : `Playback advancing${verdict.confidence != null ? ` (${verdict.confidence}%)` : ''}: ${observed}`) + weaker,
       evidence,
-      playback: { source: 'frames', state: verdict.state, finished: verdict.completed },
+      playback: {
+        source: 'frames',
+        state: verdict.state,
+        finished: verdict.completed,
+        crossChecked: mediaSeconds != null,
+      },
     };
   }
 

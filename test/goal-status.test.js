@@ -514,6 +514,27 @@ test('a held step reports the wait on the run summary', async () => {
   assert.equal(summary.deferrals.length, 1);
 });
 
+test('a finished run stops showing the presence hold', async () => {
+  const run = {
+    presence: { holding: true, reason: 'holding 7s for the user to finish moving', deferredMs: 3000, waitMs: 7400 },
+  };
+  engine.clearPresenceHold(run);
+  assert.equal(run.presence.holding, false);
+  assert.equal(run.presence.reason, '');
+  assert.equal(run.presence.waitMs, 0);
+  assert.equal(run.presence.deferredMs, 3000, 'the history of the wait is kept');
+
+  const summary = engine.summary({
+    id: 'run_done',
+    workflowId: 'wf_done',
+    workflowName: 'Done run',
+    status: 'passed',
+    steps: [],
+    presence: run.presence,
+  });
+  assert.equal(summary.presence.holding, false, 'a finished run does not look like it is waiting');
+});
+
 test('the Space key survives shortcut normalization', async () => {
   const { normalizeShortcutKeys } = await load('server/automation.js');
   // `space` used to map to a literal " " that every trim in the parser ate,

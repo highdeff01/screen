@@ -225,6 +225,17 @@ export function summary(run) {
   };
 }
 
+/**
+ * A finished run is not waiting for the desktop any more. Without this the last
+ * presence reading stays `holding: true` and a passed run still looks queued
+ * behind the user in the console.
+ */
+export function clearPresenceHold(run = null) {
+  if (!run?.presence) return run;
+  run.presence = { ...run.presence, holding: false, waitMs: 0, reason: '' };
+  return run;
+}
+
 export function findRun(id) {
   const run = db().runs.find((r) => r.id === id) || null;
   if (run) {
@@ -350,6 +361,7 @@ async function pump() {
     if (run) {
       run.status = 'failed';
       run.endedAt = now();
+      clearPresenceHold(run);
       run.log.push({ at: now(), level: 'error', message: `Engine error: ${err.message}` });
       if (run.shadow) delete run.workflowSnapshot;
       persist();
@@ -1789,6 +1801,7 @@ async function executeRun(runId) {
   run.pauseRequested = false;
   run.paused = false;
   run.skipRequested = false;
+  clearPresenceHold(run);
 
   if (run.cancelRequested) {
     run.status = 'cancelled';
@@ -1949,6 +1962,7 @@ export function cancelRun(id) {
     run.cancelRequested = true;
     run.status = 'cancelled';
     run.endedAt = now();
+    clearPresenceHold(run);
     const idx = queue.indexOf(id);
     if (idx >= 0) queue.splice(idx, 1);
     persist();
@@ -2284,6 +2298,7 @@ export function startAgents() {
       run.status = 'failed';
       run.currentStepId = null;
       run.endedAt = now();
+      clearPresenceHold(run);
       run.durationMs = started ? Math.max(0, Date.now() - started) : null;
       run.pauseRequested = false;
       run.paused = false;
