@@ -138,17 +138,312 @@ function runCommand(command, { cwd = ROOT, timeoutMs = 600000, showWindow = fals
   });
 }
 
+/* ---------------- isolated runs: a git worktree per run ---------------- */
+
+function runGit(args, cwd = ROOT, timeoutMs = 60000) {
+  return new Promise((resolve) => {
+    execFile(
+      'git',
+      args,
+      { cwd, timeout: timeoutMs, windowsHide: true, maxBuffer: 16 * 1024 * 1024 },
+      (error, stdout, stderr) => {
+        resolve({
+          ok: !error,
+          code: error?.code ?? 0,
+          stdout: String(stdout || ''),
+          stderr: String(stderr || ''),
+        });
+      }
+    );
+  });
+}
+
+async function headSha() {
+  const rev = await runGit(['rev-parse', 'HEAD']);
+  return rev.ok ? rev.stdout.trim().slice(0, 12) : '';
+}
+
+/**
+ * Copy this folder's uncommitted work into a fresh worktree, so the suite tests
+ * the source as it is right now without touching the tree the console serves
+ * from. `git status --porcelain -z` lists everything that differs from HEAD;
+ * ignored paths (data/, node_modules) never appear in it.
+ */
+export async function overlayWorkingTree(dir, { run } = {}) {
+  const git = run || ((args) => runGit(args, ROOT));
+  const status = await git(['status', '--porcelain', '-z', '--untracked-files=all']);
+  if (!status.ok) {
+    return { ok: false, copied: 0, removed: 0, skipped: 0, error: status.stderr.trim() || 'git status failed' };
+  }
+  const tokens = String(status.stdout || '').split('\0');
+  let copied = 0;
+  let removed = 0;
+  let skipped = 0;
+  const drop = (rel) => {
+    try {
+      fs.rmSync(path.join(dir, rel), { recursive: true, force: true });
+      removed += 1;
+    } catch {
+      skipped += 1;
+    }
+  };
+  for (let i = 0; i < tokens.length; i += 1) {
+    const entry = tokens[i];
+    if (!entry || entry.length < 4) continue;
+    const code = entry.slice(0, 2);
+    const rel = entry.slice(3);
+    // A rename/copy carries the original path in the next token.
+    if (code[0] === 'R' || code[0] === 'C') {
+      const original = tokens[i + 1];
+      if (original) {
+        i += 1;
+        drop(original);
+      }
+    }
+    if (code.includes('D')) {
+      drop(rel);
+      continue;
+    }
+    const from = path.join(ROOT, rel);
+    const to = path.join(dir, rel);
+    try {
+      if (!fs.statSync(from).isFile()) {
+        skipped += 1;
+        continue;
+      }
+      fs.mkdirSync(path.dirname(to), { recursive: true });
+      fs.copyFileSync(from, to);
+      copied += 1;
+    } catch {
+      skipped += 1;
+    }
+  }
+  return { ok: true, copied, removed, skipped, error: '' };
+}
+
+/** Share installed dependencies with the worktree instead of copying them. */
+function linkDependencies(dir) {
+  const source = path.join(ROOT, 'node_modules');
+  const target = path.join(dir, 'node_modules');
+  if (!fs.existsSync(source) || fs.existsSync(target)) return false;
+  try {
+    fs.symlinkSync(source, target, 'junction');
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Create a throwaway worktree at HEAD (with this folder's uncommitted changes
+ * laid over it) or at one exact commit. Always returns a cleanup function.
+ */
+export async function prepareWorktree({ commit = '', run } = {}) {
+  const git = run || ((args) => runGit(args, ROOT));
+  const base = path.join(DATA, 'worktrees');
+  const dir = path.join(base, `sentinel-${Date.now()}-${process.pid}`);
+  const cleanup = async () => {
+    await runGit(['worktree', 'remove', '--force', dir], ROOT, 60000);
+    try {
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    } catch { /* a locked file is retried by the prune below */ }
+    await runGit(['worktree', 'prune'], ROOT, 30000);
+  };
+  try {
+    fs.mkdirSync(base, { recursive: true });
+  } catch (err) {
+    return { ok: false, dir: '', copied: 0, error: `cannot create the worktree folder: ${err.message}`, cleanup: async () => {} };
+  }
+  const added = await git(['worktree', 'add', '--detach', '--force', dir, commit || 'HEAD']);
+  if (!added.ok) {
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* nothing to clean */ }
+    return { ok: false, dir: '', copied: 0, error: added.stderr.trim() || 'git worktree add failed', cleanup: async () => {} };
+  }
+  const overlay = commit ? { ok: true, copied: 0, removed: 0, skipped: 0 } : await overlayWorkingTree(dir);
+  linkDependencies(dir);
+  return { ok: true, dir, ...overlay, cleanup };
+}
+
+/* ---------------- the queue file other apps and agents read ---------------- */
+
+export function queueFilePath() {
+  return `${MUST_CHECK_DIR}/repair-queue.json`;
+}
+
+/**
+ * The spec reporter names each failing test and, below it, the assertion and a
+ * stack frame. This keeps the name and the first file:line and message, which is
+ * what a fixer needs; the raw output stays in the report for everything else.
+ */
+export function parseFailureDetails(text) {
+  const lines = String(text || '').split('\n');
+  const items = [];
+  const byName = new Map();
+  let current = null;
+  let summary = false;
+  const add = (item) => {
+    if (!item.name) return;
+    const existing = byName.get(item.name);
+    if (existing) {
+      if (!existing.file && item.file) {
+        existing.file = item.file;
+        existing.line = item.line;
+      }
+      if (!existing.message && item.message) existing.message = item.message;
+      return;
+    }
+    byName.set(item.name, item);
+    items.push(item);
+  };
+  for (const raw of lines) {
+    const trimmed = String(raw).replace(/\r$/, '').trim();
+    if (/^✖\s*failing tests:?$/.test(trimmed)) {
+      summary = true;
+      current = null;
+      continue;
+    }
+    const head = trimmed.match(/^✖\s+(.+)$/);
+    if (head) {
+      const label = head[1].replace(/\s*\([\d.]+ms\)\s*$/, '').trim();
+      const fileOnly = label.match(/^([A-Za-z0-9_./\\-]+\.(?:m?js|cjs|ts|jsx|tsx))$/);
+      const item = {
+        name: label,
+        file: fileOnly ? fileOnly[1].split('\\').join('/') : '',
+        line: null,
+        message: '',
+      };
+      add(item);
+      current = summary ? null : item;
+      continue;
+    }
+    if (!current) continue;
+    if (/^[✔ℹ]/.test(trimmed)) {
+      current = null;
+      continue;
+    }
+    if (!current.message) {
+      const err = trimmed.match(/^([A-Za-z_$][\w$]*(?:Error|Exception)(?:\s*\[[^\]]*\])?:.*)$/);
+      if (err) current.message = err[1].slice(0, 400);
+    }
+    if (!current.file) {
+      const loc = trimmed.match(/([A-Za-z0-9_./\\-]+\.(?:m?js|cjs|ts|jsx|tsx)):(\d+)(?::\d+)?/);
+      if (loc) {
+        current.file = loc[1].split('\\').join('/');
+        current.line = Number(loc[2]);
+      }
+    }
+  }
+  return items.slice(0, 40);
+}
+
+/**
+ * The machine-readable queue: everything open, with the parsed file:line for
+ * each failure. It lives in must-check/, so auto-sync carries it to GitHub and
+ * another app or agent can pick an item up without reading the console's state.
+ */
+export function writeRepairQueue() {
+  try {
+    const d = db();
+    const failures = Array.isArray(d.sentinel?.failures) ? d.sentinel.failures : [];
+    const open = failures.filter((f) => ['queued', 'planning', 'planned'].includes(f.status));
+    const last = state.lastRun || null;
+    const body = {
+      version: 1,
+      by: 'sentinel',
+      updatedAt: now(),
+      head: last?.head || '',
+      lastRun: last
+        ? {
+            at: last.at,
+            ok: last.ok,
+            tests: last.tests,
+            pass: last.pass,
+            fail: last.fail,
+            isolated: last.isolated === true,
+            failingTests: last.failingTests || [],
+          }
+        : null,
+      open: open.length,
+      items: open
+        .slice(-FAILURE_LIMIT)
+        .reverse()
+        .map((f) => ({
+          id: f.id,
+          at: f.at,
+          status: f.status,
+          attempts: f.attempts || 1,
+          fail: f.fail ?? null,
+          pass: f.pass ?? null,
+          tests: f.tests || [],
+          details: f.details || [],
+          plan: f.plan?.text || '',
+          planError: f.plan?.error || '',
+          report: f.report || '',
+        })),
+    };
+    const dir = path.join(ROOT, MUST_CHECK_DIR);
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, 'repair-queue.json');
+    const tmp = `${file}.${process.pid}.tmp`;
+    fs.writeFileSync(tmp, `${JSON.stringify(body, null, 2)}\n`);
+    fs.renameSync(tmp, file);
+    return queueFilePath();
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Run the suite against one exact commit in a worktree — the check auto-sync
+ * uses before it lets the main branch move. Nothing is written into the live
+ * tree, and the worktree is removed afterwards.
+ */
+export async function verifyCommit(sha, deps = {}) {
+  const settings = sentinelSettings();
+  const commit = String(sha || '').trim();
+  if (!commit) return { ok: false, fail: null, failingTests: [], isolated: false, error: 'a commit is required' };
+  const worktree = deps.worktree === false ? { ok: false, cleanup: async () => {} } : await prepareWorktree({ commit });
+  if (!worktree.ok) return { ok: false, fail: null, failingTests: [], isolated: false, commit, error: worktree.error };
+  try {
+    const result = deps.run
+      ? await deps.run(settings.testCommand, { cwd: worktree.dir })
+      : await runCommand(settings.testCommand, { cwd: worktree.dir, timeoutMs: settings.timeoutMs, showWindow: settings.showWindow });
+    const parsed = parseTestOutput(result.output || '');
+    return {
+      ok: Boolean(result.ok && (parsed.fail === null || parsed.fail === 0)),
+      ...parsed,
+      details: parseFailureDetails(result.output || ''),
+      isolated: true,
+      commit,
+      output: String(result.output || '').slice(-OUTPUT_LIMIT),
+      error: '',
+    };
+  } finally {
+    await worktree.cleanup();
+  }
+}
+
 /** One test run. `deps.run` replaces the process spawn for tests. */
 export async function runSentinelNow(deps = {}) {
   const settings = sentinelSettings();
   if (state.busy) return sentinelStatus();
   state.busy = true;
   state.lastRunAt = now();
+  let worktree = null;
   try {
+    const isolate = deps.worktree === undefined ? settings.worktree !== false : deps.worktree !== false;
+    if (isolate && !deps.run) {
+      worktree = await prepareWorktree();
+      state.worktreeOk = worktree.ok;
+      if (!worktree.ok) state.lastError = `Isolated run unavailable, testing this folder instead: ${worktree.error}`;
+    }
+    const cwd = worktree?.ok ? worktree.dir : ROOT;
     const result = deps.run
-      ? await deps.run(settings.testCommand)
-      : await runCommand(settings.testCommand, { timeoutMs: settings.timeoutMs, showWindow: settings.showWindow });
+      ? await deps.run(settings.testCommand, { cwd })
+      : await runCommand(settings.testCommand, { cwd, timeoutMs: settings.timeoutMs, showWindow: settings.showWindow });
     const parsed = parseTestOutput(result.output || '');
+    const details = parseFailureDetails(result.output || '');
+    const head = await headSha();
     const run = {
       id: uid('sent'),
       at: now(),
@@ -159,6 +454,9 @@ export async function runSentinelNow(deps = {}) {
       pass: parsed.pass,
       fail: parsed.fail,
       failingTests: parsed.failingTests,
+      details,
+      isolated: Boolean(worktree?.ok),
+      head,
       output: (result.output || '').slice(-OUTPUT_LIMIT),
       durationMs: Number(result.durationMs) || null,
     };
@@ -175,6 +473,7 @@ export async function runSentinelNow(deps = {}) {
       runId: run.id,
     });
     if (!run.ok) queueFailure(run, settings);
+    else writeRepairQueue();
     state.cooldownUntil = Date.now() + Math.max(5000, Number(settings.cooldownMs) || 60000);
     return sentinelStatus();
   } catch (err) {
@@ -182,6 +481,7 @@ export async function runSentinelNow(deps = {}) {
     return sentinelStatus();
   } finally {
     state.busy = false;
+    if (worktree?.ok) await worktree.cleanup();
   }
 }
 
@@ -198,6 +498,8 @@ function queueFailure(run, settings) {
     fail: run.fail,
     pass: run.pass,
     output: run.output.slice(-4000),
+    details: run.details || [],
+    isolated: run.isolated === true,
     plan: null,
   };
   const existing = d.sentinel.failures.find((f) => f.id === run.id);
@@ -214,12 +516,14 @@ function queueFailure(run, settings) {
     d.sentinel.failures.splice(settled === -1 ? 0 : settled, 1);
   }
   const report = writeMustCheckReport(failure);
+  failure.report = report;
   addNote({
     by: 'sentinel',
     tags: ['must-check', 'auto-test'],
     text: `Auto-test failed: ${(run.failingTests || []).slice(0, 3).join('; ') || `${run.fail} failing`}. Queued for repair${report ? `; report in ${report}` : ''}.`,
   });
   persist();
+  writeRepairQueue();
   if (settings.autoPlan !== false) {
     // A plan is advice, not action; if the model is offline the item stays queued.
     planFailure(failure.id).catch(() => {});
@@ -239,7 +543,13 @@ export function writeMustCheckReport(failure) {
       '',
       `- queued id: \`${failure.id}\``,
       `- failing: ${failure.fail ?? '?'} of ${failure.tests ?? '?'} tests`,
-      ...(failure.tests?.length ? failure.tests.map((t) => `  - ✖ ${t}`) : []),
+      ...(failure.details?.length
+        ? failure.details.map(
+            (d) => `  - ✖ ${d.name}${d.file ? ` — ${d.file}${d.line ? `:${d.line}` : ''}` : ''}${d.message ? ` — ${d.message}` : ''}`
+          )
+        : failure.tests?.length
+        ? failure.tests.map((t) => `  - ✖ ${t}`)
+        : []),
       '',
       '## Output tail',
       '',
@@ -298,6 +608,7 @@ export async function planFailure(id, deps = {}) {
   }
   item.status = item.plan?.text ? 'planned' : 'queued';
   persist();
+  writeRepairQueue();
   logActivity('sentinel', item.plan?.text ? 'Repair plan drafted for a failing run' : 'Repair plan unavailable for a failing run', { runId: item.id });
   return item;
 }
@@ -309,6 +620,7 @@ export function dismissFailure(id) {
   item.status = 'dismissed';
   item.settledAt = now();
   persist();
+  writeRepairQueue();
   return item;
 }
 
