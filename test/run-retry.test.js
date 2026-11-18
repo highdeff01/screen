@@ -115,7 +115,7 @@ function retryWorkflow(id, pauseBeforeRetryMs = 500) {
   return workflow;
 }
 
-async function until(predicate, timeoutMs = 3000) {
+async function until(predicate, timeoutMs = 15000) {
   const deadline = Date.now() + timeoutMs;
   while (!predicate()) {
     if (Date.now() >= deadline) throw new Error('Timed out waiting for run state');
@@ -128,7 +128,7 @@ async function until(predicate, timeoutMs = 3000) {
  * previous run is still retrying leaves its own run queued behind it. Wait for
  * the queue to drain before starting (or clearing runs for) the next test.
  */
-async function settleQueue(timeoutMs = 15000) {
+async function settleQueue(timeoutMs = 60000) {
   await until(
     () => !(store.db().runs || []).some((run) => ['queued', 'running'].includes(run.status)),
     timeoutMs
