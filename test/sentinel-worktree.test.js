@@ -133,6 +133,19 @@ test('a failing run writes the machine-readable queue file', async () => {
   assert.ok(handoff.listNotes({ limit: 5 }).some((note) => note.by === 'sentinel'));
 });
 
+test('a verdict only applies while the source has not changed since it began', async () => {
+  const passing = 'ℹ tests 3\nℹ pass 3\nℹ fail 0';
+  await sentinel.runSentinelNow({ run: async () => ({ ok: true, code: 0, output: passing }), worktree: false });
+  const state = sentinel.__sentinelState;
+  state.lastChangeAt = null;
+  const fresh = sentinel.lastVerdict();
+  assert.equal(fresh.ok, true);
+  assert.equal(fresh.isolated, false);
+  // An edit after the run began means the run proves nothing about the edit.
+  state.lastChangeAt = new Date(Date.now() + 1000).toISOString();
+  assert.equal(sentinel.lastVerdict(), null);
+});
+
 test('dismissing the item leaves the queue file consistent', async () => {
   const open = sentinel.sentinelStatus().failures.filter((f) => f.status === 'queued');
   assert.ok(open.length, 'a queued item is there to dismiss');

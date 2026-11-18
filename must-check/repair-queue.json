@@ -1,25 +1,83 @@
 {
   "version": 1,
   "by": "sentinel",
-  "updatedAt": "2026-11-18T21:31:47.806Z",
-  "head": "63f6d7b662de",
+  "updatedAt": "2026-11-18T21:34:19.628Z",
+  "head": "fa50815f874c",
   "lastRun": {
-    "at": "2026-11-18T21:31:47.805Z",
+    "at": "2026-11-18T21:34:19.626Z",
     "ok": false,
     "tests": 442,
-    "pass": 433,
-    "fail": 5,
+    "pass": 432,
+    "fail": 6,
     "isolated": true,
     "failingTests": [
-      "a repair that opens another app is adopted by the presenter and verifier (25114.3904ms)",
-      "the engine rewrites the remainder after an irreparable action and still passes (20053.9853ms)",
-      "C:\\Users\\Dan\\.config\\freebuff-desktop\\local-projects\\40af3ced-48bf-4a9d-a8b7-cb42815bab8f\\data\\worktrees\\sentinel-1795037437119-15988\\test\\agent-replan.test.js (166.9559ms)",
-      "three real failing runs pause the shared budget and reset re-enables the scheduler (5137.6333ms)",
-      "C:\\Users\\Dan\\.config\\freebuff-desktop\\local-projects\\40af3ced-48bf-4a9d-a8b7-cb42815bab8f\\data\\worktrees\\sentinel-1795037437119-15988\\test\\presentation-live.test.js (135.1026ms)"
+      "the engine executes an AI replacement and records the repair (20229.4369ms)",
+      "a repair that opens another app is adopted by the presenter and verifier (25054.5991ms)",
+      "the engine rewrites the remainder after an irreparable action and still passes (20046.0026ms)",
+      "C:\\Users\\Dan\\.config\\freebuff-desktop\\local-projects\\40af3ced-48bf-4a9d-a8b7-cb42815bab8f\\data\\worktrees\\sentinel-1795037572898-15988\\test\\agent-replan.test.js (282.6912ms)",
+      "three real failing runs pause the shared budget and reset re-enables the scheduler (5058.6145ms)",
+      "C:\\Users\\Dan\\.config\\freebuff-desktop\\local-projects\\40af3ced-48bf-4a9d-a8b7-cb42815bab8f\\data\\worktrees\\sentinel-1795037572898-15988\\test\\presentation-live.test.js (132.2276ms)"
     ]
   },
-  "open": 1,
+  "open": 2,
   "items": [
+    {
+      "id": "sent_mwmn2qju784cbb",
+      "at": "2026-11-18T21:34:19.626Z",
+      "status": "queued",
+      "attempts": 1,
+      "fail": 6,
+      "pass": 432,
+      "tests": [
+        "the engine executes an AI replacement and records the repair (20229.4369ms)",
+        "a repair that opens another app is adopted by the presenter and verifier (25054.5991ms)",
+        "the engine rewrites the remainder after an irreparable action and still passes (20046.0026ms)",
+        "C:\\Users\\Dan\\.config\\freebuff-desktop\\local-projects\\40af3ced-48bf-4a9d-a8b7-cb42815bab8f\\data\\worktrees\\sentinel-1795037572898-15988\\test\\agent-replan.test.js (282.6912ms)",
+        "three real failing runs pause the shared budget and reset re-enables the scheduler (5058.6145ms)",
+        "C:\\Users\\Dan\\.config\\freebuff-desktop\\local-projects\\40af3ced-48bf-4a9d-a8b7-cb42815bab8f\\data\\worktrees\\sentinel-1795037572898-15988\\test\\presentation-live.test.js (132.2276ms)"
+      ],
+      "details": [
+        {
+          "name": "the engine executes an AI replacement and records the repair",
+          "file": "",
+          "line": null,
+          "message": ""
+        },
+        {
+          "name": "a repair that opens another app is adopted by the presenter and verifier",
+          "file": "",
+          "line": null,
+          "message": ""
+        },
+        {
+          "name": "the engine rewrites the remainder after an irreparable action and still passes",
+          "file": "",
+          "line": null,
+          "message": ""
+        },
+        {
+          "name": "C:\\Users\\Dan\\.config\\freebuff-desktop\\local-projects\\40af3ced-48bf-4a9d-a8b7-cb42815bab8f\\data\\worktrees\\sentinel-1795037572898-15988\\test\\agent-replan.test.js",
+          "file": "",
+          "line": null,
+          "message": ""
+        },
+        {
+          "name": "three real failing runs pause the shared budget and reset re-enables the scheduler",
+          "file": "",
+          "line": null,
+          "message": ""
+        },
+        {
+          "name": "C:\\Users\\Dan\\.config\\freebuff-desktop\\local-projects\\40af3ced-48bf-4a9d-a8b7-cb42815bab8f\\data\\worktrees\\sentinel-1795037572898-15988\\test\\presentation-live.test.js",
+          "file": "",
+          "line": null,
+          "message": ""
+        }
+      ],
+      "plan": "",
+      "planError": "",
+      "report": "must-check/2026-11-18T21-34-19-the-engine-executes-an-ai-replacement-an.md"
+    },
     {
       "id": "sent_mwmmzhelaf52bd",
       "at": "2026-11-18T21:31:47.805Z",

@@ -137,16 +137,21 @@ async function verifyHead(sha, deps = {}) {
   return verdict;
 }
 
-/** The real check: the suite against that exact commit, in its own worktree. */
-async function defaultVerify(sha) {
+/**
+ * The real check: the watchdog's verdict on the source as it is now. If it has
+ * not run since the last edit, ask it for one run — never a second suite of our
+ * own, which would compete with it for the machine and make both flaky.
+ */
+async function defaultVerify() {
   const sentinel = await import('./sentinel.js');
-  const run = await sentinel.verifyCommit(sha);
-  return {
-    ok: run.ok,
-    fail: run.fail ?? null,
-    failingTests: run.failingTests || [],
-    message: run.error || '',
-  };
+  if (sentinel.sentinelBusy()) return { ok: false, deferred: true };
+  const fresh = sentinel.lastVerdict();
+  if (fresh) {
+    return { ok: fresh.ok, fail: fresh.fail ?? null, failingTests: fresh.failingTests || [], message: fresh.stale ? 'the last run started before the newest edit' : '' };
+  }
+  const status = await sentinel.runSentinelNow();
+  const run = status.lastRun || {};
+  return { ok: run.ok === true, fail: run.fail ?? null, failingTests: run.failingTests || [] };
 }
 
 /**

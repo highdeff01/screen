@@ -433,10 +433,30 @@ export function writeRepairQueue() {
   }
 }
 
+/** True while one suite is running, so callers never start a second. */
+export function sentinelBusy() {
+  return state.busy;
+}
+
 /**
- * Run the suite against one exact commit in a worktree — the check auto-sync
- * uses before it lets the main branch move. Nothing is written into the live
- * tree, and the worktree is removed afterwards.
+ * The last suite verdict, but only when it still describes the source as it is
+ * now: a run that started before the newest edit proves nothing about that
+ * edit. auto-sync uses this instead of launching a second suite of its own.
+ */
+export function lastVerdict() {
+  const run = state.lastRun;
+  if (!run) return null;
+  const changed = state.lastChangeAt;
+  const began = run.startedAt || run.at;
+  if (!run.ok) return { ok: false, at: run.at, fail: run.fail ?? null, failingTests: run.failingTests || [], stale: Boolean(changed && began < changed) };
+  if (changed && began < changed) return null;
+  return { ok: true, at: run.at, tests: run.tests, pass: run.pass, fail: run.fail, isolated: run.isolated === true };
+}
+
+/**
+ * Run the suite against one exact commit in a worktree — an explicit "does this
+ * commit pass" check (auto-sync normally reuses the watchdog's verdict instead).
+ * Nothing is written into the live tree, and the worktree is removed afterwards.
  */
 export async function verifyCommit(sha, deps = {}) {
   const settings = sentinelSettings();
@@ -474,6 +494,7 @@ export async function runSentinelNow(deps = {}) {
   if (state.busy) return sentinelStatus();
   state.busy = true;
   state.lastRunAt = now();
+  const startedAt = state.lastRunAt;
   let worktree = null;
   try {
     const isolate = deps.worktree === undefined ? settings.worktree !== false : deps.worktree !== false;
@@ -492,6 +513,7 @@ export async function runSentinelNow(deps = {}) {
     const run = {
       id: uid('sent'),
       at: now(),
+      startedAt,
       ok: Boolean(result.ok && (parsed.fail === null || parsed.fail === 0)),
       exitCode: result.code ?? null,
       timedOut: Boolean(result.timedOut),
