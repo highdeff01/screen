@@ -21,6 +21,8 @@ import { classifyPresence, holdDecision, learnHold, completionFor, isFocusSteali
 import { recordAction } from './action-log.js';
 import { sendContinuation } from './agent-awareness.js';
 import { enqueue } from './pipeline.js';
+import { firewallCheck } from './firewall.js';
+import { addNote } from './handoff.js';
 import { beginRunObservation, endRunObservation } from './app-observer.js';
 import { expectsScreenChange, windowChecksFor, resumePlan, corroboratesNoChange, lookupWindowFor, screenChangeVerdict } from './step-effects.js';
 
@@ -1606,6 +1608,31 @@ async function executeRun(runId) {
         step.output = `Skipped: “${step.perception.guard}” is not the window in front (“${step.perception.foregroundAfterFocus || 'unknown'}”), so the keystrokes were not sent.`;
         recordLedger(run, step);
         pushLog(run, 'warn', step.output, step.id);
+        persist();
+        continue;
+      }
+      // The firewall gate: the last thing that happens before a step acts.
+      // Deny skips with the reason; review offers the step as a decision.
+      const verdict = firewallCheck(step, run);
+      if (verdict.verdict === 'deny') {
+        step.status = 'skipped';
+        step.output = `Firewall denied: ${verdict.reason}`;
+        step.firewall = verdict;
+        recordLedger(run, step);
+        pushLog(run, 'error', `Firewall denied “${step.name}” (${verdict.ruleName}): ${verdict.reason}`, step.id);
+        recordAction({ kind: 'firewall', action: `deny:${step.type}`, error: verdict.reason, detail: { runId: run.id, step: step.name, rule: verdict.ruleName } });
+        persist();
+        continue;
+      }
+      if (verdict.verdict === 'review') {
+        step.status = 'skipped';
+        step.output = `Firewall held for review: ${verdict.reason}`;
+        step.firewall = verdict;
+        recordLedger(run, step);
+        pushLog(run, 'warn', `Firewall held “${step.name}” for review: ${verdict.reason}`, step.id);
+        try {
+          addNote({ by: 'firewall', tags: ['must-check', 'firewall'], text: `Review needed on “${run.workflowName}” step “${step.name}” (${step.type}): ${verdict.reason}` });
+        } catch { /* notes never break the run */ }
         persist();
         continue;
       }
