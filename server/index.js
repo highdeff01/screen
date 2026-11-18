@@ -23,6 +23,7 @@ import {
 } from './store.js';
 import { executeStep, runPowerShell, STEP_TYPES, IS_WINDOWS, describe, findUiElement, readFocusedElement } from './automation.js';
 import { liveControl } from './platform.js';
+import { loopStatus, reviewPendingVerifications, startVerificationLoop, stopVerificationLoop } from './verification-loop.js';
 import { chatWithProjectMemory, getHistory, clearHistory, health, parseJsonLoose, chat, listModels, getMemoryStats, summarizeConversation } from './llm.js';
 import { estimateTokens } from './context.js';
 import { readTextChunk, writeTextChunk, digestForSummary, isTextFile } from './longfiles.js';
@@ -361,6 +362,7 @@ function buildState() {
     },
     workflows: d.workflows.map(workflowView),
     runs: d.runs.slice(0, 80).map(summary),
+    verificationLoop: loopStatus(),
     notes: d.notes.slice(0, 60).map(({ body, ...rest }) => ({
       ...rest,
       preview: body.split('\n').filter(Boolean).slice(0, 3).join(' ').slice(0, 180),
@@ -489,6 +491,34 @@ function route(method, pattern, handler) {
 
 /* ---------------- State & health ---------------- */
 route('GET', /^\/api\/state$/, async (req, res) => sendJson(res, 200, buildState()));
+// The verification review loop: what it has done, and a way to run a pass now
+// instead of waiting for the timer.
+route('GET', /^\/api\/verification-loop$/, async (req, res) => {
+  const runs = (db().runs || []).filter((run) => (run.verificationReview || []).length);
+  sendJson(res, 200, {
+    ok: true,
+    loop: loopStatus(),
+    runs: runs.slice(0, 20).map((run) => ({
+      id: run.id,
+      workflowName: run.workflowName,
+      status: run.status,
+      awaitingChecks: (run.pendingVerification || []).length,
+      verificationState: run.verificationState || '',
+      attempts: Number(run.verificationAttempts || 0),
+      stalled: Boolean(run.verificationStalled),
+      review: (run.verificationReview || []).slice(-6),
+      stepStalled: run.stepStalled || null,
+    })),
+  });
+});
+
+route('POST', /^\/api\/verification-loop\/review$/, async (req, res) => {
+  const body = await readBody(req);
+  const onlyRunIds = Array.isArray(body?.runIds) ? body.runIds.map(String) : null;
+  const summary = await reviewPendingVerifications({ ignoreBackoff: true }, { onlyRunIds });
+  sendJson(res, 200, { ok: true, summary });
+});
+
 route('GET', /^\/api\/health$/, async (req, res) => {
   const h = await health();
   sendJson(res, 200, { ok: true, ...h, platform: process.platform, windows: IS_WINDOWS, ...liveControl() });
@@ -2977,6 +3007,9 @@ server.listen(PORT, HOST, () => {
   ensurePresentationAgent();
   compactPresentations({ keep: 8 });
   startAgents();
+  // Re-check what finished runs still owe, and look for blocked steps, on a
+  // timer; read-only, so it is safe while the console is in use.
+  startVerificationLoop({ intervalMs: Number(db().settings.verificationReviewMs) || undefined });
   startAmbient();
   setInterval(scanElementLinks, 5000).unref?.();
   console.log(`Sightline console running at http://${HOST}:${PORT}`);
@@ -2995,6 +3028,7 @@ function shutdown() {
   console.log('\nShutting down…');
   stopAmbient();
   stopAgents();
+  stopVerificationLoop();
   flush();
   server.close(() => process.exit(0));
   setTimeout(() => process.exit(0), 1500);

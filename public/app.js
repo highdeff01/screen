@@ -912,6 +912,11 @@ function renderRunTray() {
     <div class="tray-meter" title="${settled}/${total} steps settled"><i style="width:${pct}%"></i></div>
     <div class="tray-status">${statusPill(run.status, run.status)}<span class="small">${esc(control)}</span></div>
     <div class="tray-step"><b>${esc(step || (active ? 'waiting for the next step' : 'run finished'))}</b><span class="dim small">${settled}/${total} steps · ${Number(run.passed || 0)} passed${Number(run.awaitingChecks) > 0 ? ` (${Number(run.awaitingChecks)} still checking)` : ''} · ${Number(run.failed || 0)} failed · ${Number(run.evidenceCount || 0)} evidence</span></div>
+    ${Number(run.awaitingChecks) > 0 && run.verificationState !== 'unverified' ? `<div class="dim small" title="Queued verification checks are being re-read on a timer; the step is not counted as finished until they answer.">${
+      run.verificationState === 'stale'
+        ? 'queued check left open — not re-read'
+        : `checking · review ${Number(run.verificationAttempts) || 1}${run.verificationStalled ? ' · stalled — needs a decision' : ''}`
+    }</div>` : ''}
     ${run.presence?.holding ? `<div class="dim small" title="The run is waiting so it does not take the desktop while you work.">waiting for the desktop · ${esc(run.presence.reason || 'the user is active')}${Number(run.presence.deferredMs) > 0 ? ` · held ${Math.round(Number(run.presence.deferredMs) / 1000)}s` : ''}</div>` : ''}
     ${ui.trayExpanded ? `<div class="tray-detail">
       ${next ? `<div><span class="dim">Next</span> ${esc(next)}</div>` : ''}
@@ -1758,6 +1763,29 @@ function renderRunDetail(run) {
     }
 
     ${renderRecoveryPack(full.recoveryPack)}
+
+    ${
+      (full.verificationReview || []).length || full.stepStalled
+        ? `<div class="card">
+      <div class="card-head">
+        <h3>Verification review</h3>
+        <span class="dim small">${full.verificationStalled ? 'stalled — needs a decision' : `attempt ${Number(full.verificationAttempts) || 0}`} · read-only, the desktop is never touched</span>
+      </div>
+      <div class="card-body">
+        ${full.stepStalled ? `<div class="hint-box small" style="border-color:rgba(251,191,36,.4)"><strong>Blocked step</strong><div class="small" style="margin-top:4px">${esc(full.stepStalled.suggestion || full.stepStalled.stepName || '')}</div></div>` : ''}
+        <ul class="rule-list">
+          ${(full.verificationReview || [])
+            .slice(-8)
+            .map(
+              (entry) =>
+                `<li><b>${esc(entry.kind || 'review')}</b>${entry.attempt ? ` · attempt ${Number(entry.attempt)}` : ''} · ${esc(fmtTime(entry.at))}${entry.drift === true ? ' · screen changed' : entry.drift === false ? ' · screen unchanged' : ''}${entry.remaining != null ? ` · ${Number(entry.remaining)} open` : ''}${entry.detail ? `<div class="small dim">${esc(entry.detail)}</div>` : ''}${(entry.suggestions || []).length ? `<div class="small">${entry.suggestions.map((line) => esc(line)).join('<br />')}</div>` : ''}</li>`
+            )
+            .join('')}
+        </ul>
+      </div>
+    </div>`
+        : ''
+    }
 
     <div class="card">
       <div class="card-head">
