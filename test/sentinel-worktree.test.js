@@ -70,7 +70,7 @@ test('the worktree holds this folder exactly as it is right now', async () => {
 
 test('machine state is never copied into the worktree', async () => {
   fs.mkdirSync(path.join(tempRoot, 'data', 'worktrees'), { recursive: true });
-  fs.writeFileSync(path.join(tempRoot, 'data', 'db.json'), '{"private":true}\n');
+  fs.writeFileSync(path.join(tempRoot, 'data', 'db.json'), '{\"private\":true}\n');
   const worktree = await sentinel.prepareWorktree();
   assert.ok(worktree.ok, worktree.error);
   assert.equal(fs.existsSync(path.join(worktree.dir, 'data', 'db.json')), false);
@@ -105,7 +105,7 @@ test('the spec output keeps the failing file, line and assertion', () => {
   const details = sentinel.parseFailureDetails(failingOutput);
   const first = details.find((item) => item.name === 'renders the sync page');
   assert.ok(first, 'the failing test is parsed');
-  assert.match(first.file, /test\/app-observer\\.test\\.js$/);
+  assert.ok(first.file.endsWith('test/app-observer.test.js'));
   assert.equal(first.line, 42);
   assert.match(first.message, /expected 2 to equal 3/);
   assert.ok(details.some((item) => item.file === 'test/sync-page.test.js'));
