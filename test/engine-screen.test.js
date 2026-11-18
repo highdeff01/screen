@@ -75,7 +75,7 @@ test('an unguarded type step with no window named is skipped, never typed anywhe
   assert.equal(finished.status, 'passed', 'a skipped step is not a failure, it is work the run refused to guess at');
 });
 
-test('a type step with a named window that types identical text passes via corroboration', async () => {
+test('a type step with a named window proves its destination instead of guessing from the screen', async () => {
   const d = resetDb();
   const workflow = {
     id: 'wf_engine_screen_type',
@@ -95,12 +95,11 @@ test('a type step with a named window that types identical text passes via corro
   });
   const finished = await settle(run.id);
   const step = finished.steps[0];
-  // The screen-change corroboration passes, and because the step names the
+  // Identical text produces no screen change, but because the step names the
   // window it types into, the app the goal names is proven as well.
   assert.equal(finished.status, 'passed');
   assert.equal(step.status, 'passed');
-  assert.equal(step.verification?.changedPct, 0);
-  assert.match(step.verification?.corroborated || '', /already present in the window|field already contains/);
+  assert.equal(step.verification?.kind, 'window', 'the named window is the proof; a screen diff is no longer the only evidence');
   assert.equal(finished.effectFailures || 0, 0);
 });
 

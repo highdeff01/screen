@@ -293,21 +293,29 @@ test('repairs that fail are reported and safe later steps still run', async () =
   store.db().settings.autoRecoverFailures = false;
   const workflow = workflowWith(
     [
-      { id: 's1', type: 'type', name: 'Ask the question', params: { text: 'what is python' }, timeoutMs: 5000 },
+      // A named window: an unguarded type step is skipped now, and this test needs
+      // a step that really attempts the work and fails.
+      { id: 's1', type: 'type', name: 'Ask the question', params: { text: 'what is python', foreground: 'Untitled - Notepad' }, timeoutMs: 5000 },
       { id: 's2', type: 'writeNote', name: 'Record', params: { title: 'After failure', text: 'continued' }, timeoutMs: 1000 },
     ],
     'repair continue'
   );
-  const probe = probeFor({ succeed: (step) => step.type === 'writeNote' });
+  // The engine now opens the window a typing step names before it types, so the
+  // prerequisite steps succeed and only the typing itself is the failure.
+  const probe = probeFor({
+    succeed: (step) => ['writeNote', 'launchApp', 'wait', 'focusWindow'].includes(step.type),
+  });
   const run = engine.createRun(workflow, { dryRun: false, probe, repair: true });
   const finished = await engine.waitForRun(run.id, { timeoutMs: 30000 });
+  const failed = finished.steps.filter((step) => step.status === 'failed');
   assert.equal(finished.status, 'failed');
   assert.equal(finished.continuedAfterFailure, true);
-  assert.equal(finished.steps[0].status, 'failed');
-  assert.equal(finished.steps[1].status, 'passed');
+  assert.equal(failed.length, 1, 'only the typing step fails; the steps around it do not');
+  assert.equal(failed[0].type, 'type');
+  assert.equal(finished.steps.find((step) => step.type === 'writeNote')?.status, 'passed');
   assert.equal(finished.failedSteps.length, 1);
   assert.match(finished.errorSummary, /Ask the question/);
-  assert.ok((finished.steps[0].repairs || []).length >= 2);
+  assert.ok((failed[0].repairs || []).length >= 2);
 });
 
 test('a failed winget install switches to the vendor installer and verifies the app', () => {

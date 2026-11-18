@@ -1,32 +1,32 @@
 {
   "version": 1,
   "by": "sentinel",
-  "updatedAt": "2026-11-18T22:24:12.012Z",
-  "head": "b6998aebfc4e",
+  "updatedAt": "2026-11-18T22:25:30.817Z",
+  "head": "295ffc59b7d3",
   "lastRun": {
-    "at": "2026-11-18T22:24:11.996Z",
+    "at": "2026-11-18T22:25:30.816Z",
     "ok": false,
     "tests": 452,
     "pass": 446,
     "fail": 2,
     "isolated": true,
     "failingTests": [
-      "a type step with a named window that types identical text passes via corroboration (16066.3101ms)",
-      "repairs that fail are reported and safe later steps still run (6695.5407ms)"
+      "a type step with a named window that types identical text passes via corroboration (12324.5724ms)",
+      "repairs that fail are reported and safe later steps still run (5454.317ms)"
     ]
   },
-  "open": 8,
+  "open": 9,
   "items": [
     {
-      "id": "sent_mwmouvh834c257",
-      "at": "2026-11-18T22:24:11.996Z",
+      "id": "sent_mwmowkao456162",
+      "at": "2026-11-18T22:25:30.816Z",
       "status": "queued",
       "attempts": 1,
       "fail": 2,
       "pass": 446,
       "tests": [
-        "a type step with a named window that types identical text passes via corroboration (16066.3101ms)",
-        "repairs that fail are reported and safe later steps still run (6695.5407ms)"
+        "a type step with a named window that types identical text passes via corroboration (12324.5724ms)",
+        "repairs that fail are reported and safe later steps still run (5454.317ms)"
       ],
       "details": [
         {
@@ -44,7 +44,36 @@
       ],
       "plan": "",
       "planError": "",
-      "report": "must-check/2026-11-18T22-24-11-a-type-step-with-a-named-window-that-typ.md"
+      "report": "must-check/2026-11-18T22-25-30-a-type-step-with-a-named-window-that-typ.md"
+    },
+    {
+      "id": "sent_mwmotjt94aa0d4",
+      "at": "2026-11-18T22:23:10.221Z",
+      "status": "queued",
+      "attempts": 1,
+      "fail": 2,
+      "pass": 445,
+      "tests": [
+        "an unguarded type step that types identical text passes via corroboration (2812.9357ms)",
+        "repairs that fail are reported and safe later steps still run (8329.5244ms)"
+      ],
+      "details": [
+        {
+          "name": "an unguarded type step that types identical text passes via corroboration",
+          "file": "",
+          "line": null,
+          "message": ""
+        },
+        {
+          "name": "repairs that fail are reported and safe later steps still run",
+          "file": "",
+          "line": null,
+          "message": ""
+        }
+      ],
+      "plan": "",
+      "planError": "",
+      "report": "must-check/2026-11-18T22-23-10-an-unguarded-type-step-that-types-identi.md"
     },
     {
       "id": "sent_mwmobumc45c119",
