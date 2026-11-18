@@ -2185,6 +2185,14 @@ function resolveTextFile(params = {}) {
   return destination;
 }
 
+/** "0 KB" for a 16-byte file reads like a failure; keep bytes below 1 KB. */
+function sizeLabel(bytes) {
+  const size = Math.max(0, Number(bytes) || 0);
+  if (size >= 1024 * 1024) return `${(size / 1024 / 1024).toFixed(1)} MB`;
+  if (size >= 1024) return `${Math.round(size / 1024)} KB`;
+  return `${size} bytes`;
+}
+
 async function downloadUrlToData(url, options = {}) {
   if (!/^https?:\/\//i.test(String(url || ''))) throw new Error('Only http(s) URLs can be downloaded.');
   const folderName = safeFileName(options.folder || 'media', 'media').replace(/\.[^.]+$/, '');
@@ -3098,13 +3106,13 @@ export async function executeStep(step, ctx) {
     if (p.noteTitle) {
       saveInteractionNote({
         title: p.noteTitle,
-        body: `Saved ${saved.kind}: ${saved.url}\n\nFile: ${saved.path} (${Math.round(saved.bytes / 1024)} KB)`,
+        body: `Saved ${saved.kind}: ${saved.url}\n\nFile: ${saved.path} (${sizeLabel(saved.bytes)})`,
         tags: ['file', saved.kind],
         runId: ctx.runId,
         workflowId: ctx.workflow?.id,
       });
     }
-    return { output: `Saved ${saved.kind} to ${saved.path} (${Math.round(saved.bytes / 1024)} KB).`, evidence: [] };
+    return { output: `Saved ${saved.kind} to ${saved.path} (${sizeLabel(saved.bytes)}).`, evidence: [] };
   }
 
   if (step.type === 'saveImage') {
@@ -3124,7 +3132,7 @@ export async function executeStep(step, ctx) {
         if (!ctx.run.variables) ctx.run.variables = {};
         ctx.run.variables[str(p.outputVar, 'savedImage')] = saved.path;
       }
-      return { output: `Saved image to ${saved.path} (${Math.round(saved.bytes / 1024)} KB).`, evidence: [] };
+      return { output: `Saved image to ${saved.path} (${sizeLabel(saved.bytes)}).`, evidence: [] };
     }
     if (source === 'clipboard') {
       fs.mkdirSync(CAPTURES, { recursive: true });
@@ -3209,13 +3217,13 @@ Write-Output ('saved image ' + ${psQuote(path.basename(destination))})`;
     if (flag(p.note, true)) {
       saveInteractionNote({
         title: p.noteTitle || `Screen recording ${new Date().toLocaleString()}`,
-        body: `Recorded ${(durationMs / 1000).toFixed(1)}s of the desktop at ${fps} fps.\n\nFile: ${saved.path} (${Math.round(saved.bytes / 1024)} KB)`,
+        body: `Recorded ${(durationMs / 1000).toFixed(1)}s of the desktop at ${fps} fps.\n\nFile: ${saved.path} (${sizeLabel(saved.bytes)})`,
         tags: ['video', 'recording'],
         runId: ctx.runId,
         workflowId: ctx.workflow?.id,
       });
     }
-    return { output: `Recorded ${(durationMs / 1000).toFixed(1)}s to ${saved.path} (${Math.round(saved.bytes / 1024)} KB).`, evidence };
+    return { output: `Recorded ${(durationMs / 1000).toFixed(1)}s to ${saved.path} (${sizeLabel(saved.bytes)}).`, evidence };
   }
 
   if (step.type === 'installApp') {
