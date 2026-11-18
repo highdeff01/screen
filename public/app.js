@@ -5602,6 +5602,8 @@ function openModal(type, payload) {
 
 function closeModal() {
   ui.modal = null;
+  ui.annotateMode = false;
+  ui.captureAnnotations = null;
   const root = $('#modal-root');
   if (root) root.innerHTML = '';
 }
@@ -5627,13 +5629,17 @@ function renderModal() {
           </div>
           <div class="row">
             ${c.runId ? `<button class="btn btn-sm" data-mact="open-run" data-id="${c.runId}">Open run</button>` : ''}
+            <button class="btn btn-sm ${ui.annotateMode ? 'btn-primary' : 'btn-ghost'}" data-mact="toggle-annotate" data-id="${esc(c.id || '')}">${ui.annotateMode ? 'Annotating…' : 'Annotate'}</button>
             <button class="btn btn-sm btn-ghost" data-mact="delete-capture" data-id="${c.id || ''}" data-path="${esc(c.path)}">Delete</button>
             <button class="btn btn-sm" data-mact="close">Close</button>
           </div>
         </div>
-        <div class="capture-mark-stage" style="position:relative;display:inline-block;max-width:100%">
-          <img src="/api/files/raw?path=${encodeURIComponent(c.path)}" alt="${esc(c.caption || 'Capture')}" style="display:block;max-width:100%" />
+        <div class="capture-mark-stage" id="annotate-stage" style="position:relative;display:inline-block;max-width:100%;${ui.annotateMode ? 'cursor:crosshair' : ''}">
+          <img src="/api/files/raw?path=${encodeURIComponent(c.path)}" alt="${esc(c.caption || 'Capture')}" style="display:block;max-width:100%" ${ui.annotateMode ? 'data-annotate-click="1"' : ''} />
           ${marks.map((mark) => `<span title="${esc(mark.label)}" style="position:absolute;left:${Number(mark.x) || 0}%;top:${Number(mark.y) || 0}%;transform:translate(-50%,-50%);background:#e5484d;color:#fff;border-radius:50%;font-size:10px;width:18px;height:18px;line-height:18px;text-align:center;font-weight:700;box-shadow:0 0 0 2px rgba(0,0,0,.45)">${esc(mark.number)}</span>`).join('')}
+          ${(ui.captureAnnotations || []).map((annotation) => annotation.kind === 'box'
+            ? `<div title="${esc(annotation.text || annotation.kind)}" style="position:absolute;left:${(Number(annotation.x) || 0) * 100}%;top:${(Number(annotation.y) || 0) * 100}%;width:${(Number(annotation.w) || 0) * 100}%;height:${(Number(annotation.h) || 0) * 100}%;border:2px solid ${esc(annotation.color || '#7c5cff')};border-radius:4px;pointer-events:none"></div><span style="position:absolute;left:${(Number(annotation.x) || 0) * 100}%;top:${(Number(annotation.y) || 0) * 100}%;transform:translateY(-110%);background:${esc(annotation.color || '#7c5cff')};color:#fff;font-size:10px;padding:1px 5px;border-radius:3px;pointer-events:none">${esc(annotation.text || annotation.by)}</span>`
+            : `<span title="${esc(annotation.text || annotation.by)}" style="position:absolute;left:${(Number(annotation.x) || 0) * 100}%;top:${(Number(annotation.y) || 0) * 100}%;transform:translate(-50%,-50%);background:${esc(annotation.color || '#7c5cff')};color:#fff;border-radius:50%;font-size:9px;min-width:16px;height:16px;line-height:16px;text-align:center;font-weight:700;box-shadow:0 0 0 2px rgba(0,0,0,.45);pointer-events:none">${annotation.kind === 'pin' ? '●' : '✎'}</span>${annotation.text ? `<span style="position:absolute;left:${(Number(annotation.x) || 0) * 100}%;top:${(Number(annotation.y) || 0) * 100}%;transform:translate(10px,-6px);background:rgba(0,0,0,.72);color:#fff;font-size:10px;padding:2px 6px;border-radius:4px;max-width:180px;pointer-events:none">${esc(annotation.text)}</span>` : ''}`).join('')}
         </div>
         <div class="card" style="margin-top:10px;padding:10px">
           <div class="row wrap" style="gap:6px;align-items:end">
@@ -9244,6 +9250,36 @@ document.addEventListener('click', (event) => {
         ui.noteDraft = null;
         toast('Note saved', 'ok');
         await refresh();
+      });
+      return;
+    }
+    if (act === 'toggle-annotate') {
+      const capture = ui.modal?.payload?.capture;
+      ui.annotateMode = !ui.annotateMode;
+      ui.captureAnnotations = [];
+      if (ui.annotateMode && capture) {
+        api(`/api/annotations?captureId=${encodeURIComponent(capture.id || '')}`).then(async (res) => {
+          if (res.ok) {
+            ui.captureAnnotations = res.annotations || [];
+            renderModal();
+          }
+        });
+      }
+      renderModal();
+      return;
+    }
+    if (ui.annotateMode && event.target.matches?.('#annotate-stage img')) {
+      const capture = ui.modal?.payload?.capture;
+      if (!capture?.id) return toast('This screenshot has no saved capture id', 'error');
+      const rect = event.target.getBoundingClientRect();
+      const x = Math.round(((event.clientX - rect.left) / rect.width) * 1000) / 1000;
+      const y = Math.round(((event.clientY - rect.top) / rect.height) * 1000) / 1000;
+      const text = window.prompt('What does this spot mean? (leave empty for a bare pin)') || '';
+      api('/api/annotations', { method: 'POST', body: { ref: { captureId: capture.id, runId: capture.runId || null }, kind: 'pin', x, y, text, by: 'operator', color: '#e5484d' } }).then(async (res) => {
+        if (!res.ok) return toast(res.error, 'error');
+        const list = await api(`/api/annotations?captureId=${encodeURIComponent(capture.id)}`);
+        ui.captureAnnotations = list.ok ? list.annotations || [] : [];
+        renderModal();
       });
       return;
     }
