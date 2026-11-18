@@ -41,6 +41,21 @@ import {
 } from './git-sync.js';
 import { addNote, deleteCommand, listCommands, listNotes, runCommand, saveCommand } from './handoff.js';
 import {
+  addLink,
+  approveReview,
+  denyReview,
+  receiveFromLink,
+  relayStatus,
+  removeLink,
+  reviewOpinion,
+  sendToLink,
+  updateLink,
+} from './connector.js';
+import { answerRequest, ask, cancelRequest, listInbox, waitRequest } from './inbox.js';
+import { drain, enqueue, pipelineStatus, pipelineSettings, registerHandler, runNow as pipelineRunNow, startPipeline, stopPipeline } from './pipeline.js';
+import { createSnapshot, diffSnapshots, restoreSnapshot, snapshotStatus, transferBetween } from './snapshots.js';
+import { addSecondOpinion, lensList } from './second-opinion.js';
+import {
   dismissFailure,
   planFailure,
   pushSentinelFix,
@@ -401,6 +416,10 @@ function buildState() {
     verificationLoop: loopStatus(),
     gitSync: gitSyncStatus(),
     sentinel: sentinelStatus(),
+    relay: relayStatus(),
+    inbox: { open: listInbox({ status: 'open', limit: 12 }), lenses: lensList() },
+    pipeline: pipelineStatus(),
+    snapshots: snapshotStatus(),
     share: shareStatus(),
     escalation: escalationStatus(),
     notes: d.notes.slice(0, 60).map(({ body, ...rest }) => ({
@@ -681,6 +700,208 @@ route('POST', /^\/api\/sentinel\/push-fix$/, async (req, res) => {
     sendJson(res, 200, await pushSentinelFix({ message: String(body.message || '').slice(0, 200) }));
   } catch (err) {
     fail(res, 500, err.message);
+  }
+});
+
+/* ---------------- Relay: links to other apps' repositories ---------------- */
+route('GET', /^\/api\/relay$/, async (req, res) => {
+  sendJson(res, 200, { ok: true, relay: relayStatus() });
+});
+
+route('POST', /^\/api\/relay\/links$/, async (req, res) => {
+  try {
+    const body = await readBody(req);
+    sendJson(res, 200, { ok: true, link: addLink(body) });
+  } catch (err) {
+    fail(res, 400, err.message);
+  }
+});
+
+route('DELETE', /^\/api\/relay\/links\/([^/]+)$/, async (req, res, [id]) => {
+  try {
+    sendJson(res, 200, { ok: true, link: removeLink(id) });
+  } catch (err) {
+    fail(res, err.message === 'Link not found' ? 404 : 400, err.message);
+  }
+});
+
+route('POST', /^\/api\/relay\/links\/([^/]+)\/settings$/, async (req, res, [id]) => {
+  try {
+    const body = await readBody(req);
+    sendJson(res, 200, { ok: true, link: updateLink(id, body) });
+  } catch (err) {
+    fail(res, err.message === 'Link not found' ? 404 : 400, err.message);
+  }
+});
+
+route('POST', /^\/api\/relay\/links\/([^/]+)\/send$/, async (req, res, [id]) => {
+  try {
+    const body = await readBody(req);
+    sendJson(res, 200, await sendToLink(id, body));
+  } catch (err) {
+    fail(res, err.message === 'Link not found' ? 404 : 500, err.message);
+  }
+});
+
+route('POST', /^\/api\/relay\/links\/([^/]+)\/receive$/, async (req, res, [id]) => {
+  try {
+    sendJson(res, 200, await receiveFromLink(id));
+  } catch (err) {
+    fail(res, err.message === 'Link not found' ? 404 : 500, err.message);
+  }
+});
+
+route('POST', /^\/api\/relay\/reviews\/([^/]+)\/approve$/, async (req, res, [id]) => {
+  try {
+    sendJson(res, 200, await approveReview(id));
+  } catch (err) {
+    fail(res, err.message === 'Review not found' ? 404 : 500, err.message);
+  }
+});
+
+route('POST', /^\/api\/relay\/reviews\/([^/]+)\/deny$/, async (req, res, [id]) => {
+  try {
+    const body = await readBody(req);
+    sendJson(res, 200, { ok: true, review: denyReview(id, body) });
+  } catch (err) {
+    fail(res, err.message === 'Review not found' ? 404 : 500, err.message);
+  }
+});
+
+route('POST', /^\/api\/relay\/reviews\/([^/]+)\/opinion$/, async (req, res, [id]) => {
+  try {
+    sendJson(res, 200, { ok: true, review: await reviewOpinion(id) });
+  } catch (err) {
+    fail(res, err.message === 'Review not found' ? 404 : 500, err.message);
+  }
+});
+
+/* ---------------- Inbox: questions from any connected agent ---------------- */
+route('GET', /^\/api\/inbox$/, async (req, res, _params, url) => {
+  sendJson(res, 200, { ok: true, requests: listInbox({ status: url.searchParams.get('status') || 'open', limit: 40 }) });
+});
+
+route('POST', /^\/api\/inbox$/, async (req, res) => {
+  try {
+    const body = await readBody(req);
+    sendJson(res, 200, { ok: true, request: ask(body) });
+  } catch (err) {
+    fail(res, 400, err.message);
+  }
+});
+
+route('GET', /^\/api\/inbox\/([^/]+)\/wait$/, async (req, res, [id], url) => {
+  sendJson(res, 200, await waitRequest(id, { timeoutMs: url.searchParams.get('timeoutMs') }));
+});
+
+route('POST', /^\/api\/inbox\/([^/]+)\/answer$/, async (req, res, [id]) => {
+  try {
+    const body = await readBody(req);
+    sendJson(res, 200, { ok: true, request: answerRequest(id, body) });
+  } catch (err) {
+    fail(res, err.message === 'Request not found' ? 404 : 400, err.message);
+  }
+});
+
+route('POST', /^\/api\/inbox\/([^/]+)\/cancel$/, async (req, res, [id]) => {
+  try {
+    sendJson(res, 200, { ok: true, request: cancelRequest(id) });
+  } catch (err) {
+    fail(res, err.message === 'Request not found' ? 404 : 400, err.message);
+  }
+});
+
+/* ---------------- Pipeline: parallel workers over one queue ---------------- */
+route('GET', /^\/api\/pipeline$/, async (req, res) => {
+  sendJson(res, 200, { ok: true, pipeline: pipelineStatus(), settings: pipelineSettings() });
+});
+
+route('POST', /^\/api\/pipeline\/enqueue$/, async (req, res) => {
+  try {
+    const body = await readBody(req);
+    sendJson(res, 200, { ok: true, job: enqueue(body) });
+  } catch (err) {
+    fail(res, 400, err.message);
+  }
+});
+
+route('POST', /^\/api\/pipeline\/run-now$/, async (req, res) => {
+  pipelineRunNow();
+  sendJson(res, 200, { ok: true, pipeline: pipelineStatus() });
+});
+
+route('POST', /^\/api\/pipeline\/settings$/, async (req, res) => {
+  try {
+    const body = await readBody(req);
+    const settings = pipelineSettings();
+    if (Number(body.workers)) settings.workers = Math.max(1, Math.min(8, Math.round(Number(body.workers))));
+    persist();
+    sendJson(res, 200, { ok: true, pipeline: pipelineStatus() });
+  } catch (err) {
+    fail(res, 400, err.message);
+  }
+});
+
+/* ---------------- Snapshots: version copies, diff, transfer, restore ------- */
+route('GET', /^\/api\/snapshots$/, async (req, res) => {
+  sendJson(res, 200, { ok: true, snapshots: snapshotStatus() });
+});
+
+route('POST', /^\/api\/snapshots$/, async (req, res) => {
+  try {
+    const body = await readBody(req);
+    sendJson(res, 200, await createSnapshot(body.label));
+  } catch (err) {
+    fail(res, 500, err.message);
+  }
+});
+
+route('POST', /^\/api\/snapshots\/diff$/, async (req, res) => {
+  try {
+    const body = await readBody(req);
+    sendJson(res, 200, await diffSnapshots(body.a, body.b, { stat: body.stat === true }));
+  } catch (err) {
+    fail(res, err.message === 'Snapshot not found' ? 404 : 400, err.message);
+  }
+});
+
+route('POST', /^\/api\/snapshots\/transfer$/, async (req, res) => {
+  try {
+    const body = await readBody(req);
+    sendJson(res, 200, await transferBetween(body.a, body.b));
+  } catch (err) {
+    fail(res, err.message === 'Snapshot not found' ? 404 : 500, err.message);
+  }
+});
+
+route('POST', /^\/api\/snapshots\/([^/]+)\/restore$/, async (req, res, [id]) => {
+  try {
+    sendJson(res, 200, await restoreSnapshot(id));
+  } catch (err) {
+    fail(res, err.message === 'Snapshot not found' ? 404 : 500, err.message);
+  }
+});
+
+/* ---------------- Second opinions: multi-lens review passes ---------------- */
+route('GET', /^\/api\/opinions\/lenses$/, async (req, res) => {
+  sendJson(res, 200, { ok: true, lenses: lensList() });
+});
+
+route('POST', /^\/api\/opinions\/([^/]+)\/([^/]+)$/, async (req, res, [kind, refId]) => {
+  try {
+    const body = await readBody(req);
+    sendJson(res, 200, await addSecondOpinion(kind, refId, body.lens));
+  } catch (err) {
+    fail(res, err.message === 'Failure not found' || err.message === 'Review not found' ? 404 : 400, err.message);
+  }
+});
+
+route('POST', /^\/api\/sentinel\/failures\/([^/]+)\/opinion$/, async (req, res, [id]) => {
+  try {
+    const body = await readBody(req);
+    sendJson(res, 200, await addSecondOpinion('sentinel-failure', id, body.lens || 'skeptic'));
+  } catch (err) {
+    fail(res, err.message === 'Failure not found' ? 404 : 400, err.message);
   }
 });
 
@@ -3404,6 +3625,16 @@ server.listen(PORT, HOST, () => {
   startAutoSync({ intervalMs: Number(db().settings.autoSyncIntervalMs) || undefined });
   // Watch the project's own files and auto-test them in a separate process.
   startSentinel();
+  // The pipeline handlers: what the parallel workers actually do.
+  registerHandler('sentinel-plan', async ({ id }) => {
+    const result = await planFailure(id);
+    return result?.plan?.text ? 'Plan drafted' : result?.plan?.error || 'No plan available';
+  });
+  registerHandler('relay-opinion', async ({ id }) => {
+    const review = await reviewOpinion(id);
+    return review?.opinion?.text ? 'Opinion drafted' : 'No opinion available';
+  });
+  startPipeline();
   startAmbient();
   // Front the model provider with the local Respan Gateway when it is enabled.
   if (db().settings.gatewayEnabled) ensureGateway().catch((err) => console.warn(`[gateway] ${err.message}`));
@@ -3422,6 +3653,7 @@ function shutdown() {
   stopVerificationLoop();
   stopAutoSync();
   stopSentinel();
+  stopPipeline();
   stopShare();
   stopGateway();
   flush();

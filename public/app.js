@@ -753,6 +753,7 @@ function render() {
     presentation: renderPresentation,
     sync: renderSync,
     sentinel: renderSentinel,
+    relay: renderRelay,
   };
   $('#view').innerHTML = (map[ui.view] || renderBuilder)();
   if (pageY != null) window.scrollTo({ top: pageY, behavior: 'auto' });
