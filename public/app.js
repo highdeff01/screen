@@ -7289,13 +7289,22 @@ async function runAction(name, ds, el) {
     case 'retry-run': {
       ui.runBusy = `retry:${ds.id}`;
       render();
-      const res = await api(`/api/runs/${encodeURIComponent(ds.id)}/retry`, { method: 'POST' });
+      const res = await api(`/api/runs/${encodeURIComponent(ds.id)}/replan-retry`, { method: 'POST' });
       ui.runBusy = '';
       if (!res.ok) {
         render();
         return toast(res.error, 'error');
       }
-      toast(res.replanned ? 'Plan rebuilt from the goal; retry queued' : 'No usable new plan; re-running the existing steps', res.replanned ? 'ok' : 'error');
+      if (!res.retried) {
+        render();
+        return toast(res.reason || 'No candidate plan passed the shadow test; nothing was retried', 'error');
+      }
+      toast(
+        res.aiRevision?.decision
+          ? `AI ${res.aiRevision.decision}${res.aiRevision.prepCount ? ` with ${res.aiRevision.prepCount} prep step(s)` : ''}; retry queued`
+          : 'Recovery candidate tested; retry queued',
+        'ok'
+      );
       ui.selectedRun = res.run.id;
       await refresh();
       await loadRun(res.run.id);

@@ -2367,6 +2367,49 @@ route('POST', /^\/api\/runs\/([^/]+)\/retry$/, async (req, res, [id]) => {
   }
 });
 
+route('POST', /^\/api\/runs\/([^/]+)\/replan-retry$/, async (req, res, [id]) => {
+  try {
+    const body = await readBody(req);
+    const original = findRun(decodeURIComponent(id));
+    if (!original) return fail(res, 404, 'Run not found');
+    if (['queued', 'running'].includes(original.status)) {
+      return fail(res, 409, 'This run is still running; replan it after it finishes.');
+    }
+    const outcome = await prepareRecovery(original, { force: true });
+    if (!outcome?.pack) return fail(res, 409, 'Recovery planning did not produce a pack, so nothing was retried.');
+    const pack = outcome.pack;
+    const candidates = (pack.candidates || []).map(recoveryCandidateView);
+    if (!outcome.selected || !outcome.retryWorkflow) {
+      persist();
+      return sendJson(res, 200, {
+        ok: true,
+        retried: false,
+        requiresApproval: true,
+        runId: original.id,
+        packId: pack.id,
+        packStatus: pack.status,
+        candidates,
+        reason: 'No candidate plan passed the shadow test, so no retry was started.',
+      });
+    }
+    const dryRun = body.dryRun === undefined ? Boolean(db().settings.dryRun) : Boolean(body.dryRun);
+    const retry = queueRecoveryRetry(original, pack, outcome.retryWorkflow, { source: 'operator', dryRun });
+    sendJson(res, 200, {
+      ok: true,
+      retried: true,
+      runId: original.id,
+      packId: pack.id,
+      packStatus: pack.status,
+      candidateId: pack.selectedCandidateId || null,
+      aiRevision: pack.aiRevision || null,
+      candidates,
+      run: summary(retry),
+    });
+  } catch (err) {
+    fail(res, 400, err.message);
+  }
+});
+
 route('POST', /^\/api\/runs\/([^/]+)\/analyze$/, async (req, res, [id]) => {
   const run = findRun(id);
   if (!run) return fail(res, 404, 'Run not found');
