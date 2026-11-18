@@ -131,7 +131,20 @@ async function until(predicate, timeoutMs = 3000) {
   }
 }
 
+/**
+ * The engine runs one run at a time, so a test that wipes the run list while the
+ * previous run is still retrying leaves its own run queued behind it. Wait for
+ * the queue to drain before starting (or clearing runs for) the next test.
+ */
+async function settleQueue(timeoutMs = 15000) {
+  await until(
+    () => !(store.db().runs || []).some((run) => ['queued', 'running'].includes(run.status)),
+    timeoutMs
+  );
+}
+
 test('cancellation during retry backoff prevents another attempt', async () => {
+  await settleQueue();
   const workflow = retryWorkflow('wf_cancel_backoff', 2000);
   let attempts = 0;
   const run = engine.createRun(workflow, {
@@ -147,6 +160,7 @@ test('cancellation during retry backoff prevents another attempt', async () => {
 });
 
 test('pause during retry backoff holds the retry until resumed', async () => {
+  await settleQueue();
   const workflow = retryWorkflow('wf_pause_backoff', 300);
   let attempts = 0;
   const run = engine.createRun(workflow, {

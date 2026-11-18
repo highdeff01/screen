@@ -190,6 +190,9 @@ export function summary(run) {
     total: steps.length,
     passed: steps.filter((s) => s.status === 'passed').length,
     failed: steps.filter((s) => s.status === 'failed').length,
+    // Steps whose silent checks have not settled yet: they read as passed in the
+    // run but must not be presented as finished until those checks answer.
+    awaitingChecks: (run.pendingVerification || []).length,
     evidenceCount: (run.evidence || []).length,
     retryCount: Number(run.retryCount || 0),
     errorCategory: run.errorCategory || null,
@@ -230,12 +233,25 @@ export function summary(run) {
     visualWarnings: (run.visualWarnings || []).length,
     visualChecks: run.visualChecks !== false,
     position: run.position || null,
+    presence: run.presence || null,
+    deferrals: (run.deferrals || []).slice(-3),
     recoveryOf: run.recoveryOf || null,
     recoveryPackId: run.recoveryPackId || null,
     recoveryDepth: Number(run.recoveryDepth || 0),
     recoveryStatus: run.recovery?.status || null,
     recoveryVerdict: run.recovery?.verdict || null,
   };
+}
+
+/**
+ * A finished run is not waiting for the desktop any more. Without this the last
+ * presence reading stays `holding: true` and a passed run still looks queued
+ * behind the user in the console.
+ */
+export function clearPresenceHold(run = null) {
+  if (!run?.presence) return run;
+  run.presence = { ...run.presence, holding: false, waitMs: 0, reason: '' };
+  return run;
 }
 
 export function findRun(id) {
@@ -363,6 +379,7 @@ async function pump() {
     if (run) {
       run.status = 'failed';
       run.endedAt = now();
+      clearPresenceHold(run);
       run.log.push({ at: now(), level: 'error', message: `Engine error: ${err.message}` });
       if (run.shadow) delete run.workflowSnapshot;
       persist();
@@ -631,7 +648,6 @@ async function awaitUserSettle(step, run, probe = null) {
     }
     if (presence?.error) return;
     const classified = classifyPresence({ idleMs: presence.idleMs, foreground: presence.foreground, target, holdMs });
-    run.presence = { at: now(), idleMs: classified.idleMs, state: classified.state, watching: classified.watching, holdMs };
     const decision = holdDecision({
       step,
       presence: classified,
@@ -643,7 +659,22 @@ async function awaitUserSettle(step, run, probe = null) {
       // front, so it cannot fall back to a silent read-only check.
       silentAvailable: step.type === 'verifyPlayback' ? false : silentChecksFor(step).length > 0,
     });
+    // A held step says so on the run itself: the console can then explain why a
+    // step is still "running" without opening the log.
+    run.presence = {
+      at: now(),
+      idleMs: classified.idleMs,
+      state: classified.state,
+      watching: classified.watching,
+      holdMs,
+      holding: decision.action === 'wait',
+      deferredMs,
+      waitMs: Number(decision.waitMs) || 0,
+      reason: decision.reason,
+      note: classified.note,
+    };
     if (decision.action !== 'wait') {
+      run.presence = { ...run.presence, holding: false };
       if (deferredMs > 0) {
         run.deferrals = [...(run.deferrals || []), { stepId: step.id, waitedMs: deferredMs, at: now() }];
         db().presence = learnHold(habits, [{ waitedMs: deferredMs }]);
@@ -1793,6 +1824,7 @@ async function executeRun(runId) {
   run.pauseRequested = false;
   run.paused = false;
   run.skipRequested = false;
+  clearPresenceHold(run);
 
   if (run.cancelRequested) {
     run.status = 'cancelled';
@@ -1953,6 +1985,7 @@ export function cancelRun(id) {
     run.cancelRequested = true;
     run.status = 'cancelled';
     run.endedAt = now();
+    clearPresenceHold(run);
     const idx = queue.indexOf(id);
     if (idx >= 0) queue.splice(idx, 1);
     persist();
@@ -2288,6 +2321,7 @@ export function startAgents() {
       run.status = 'failed';
       run.currentStepId = null;
       run.endedAt = now();
+      clearPresenceHold(run);
       run.durationMs = started ? Math.max(0, Date.now() - started) : null;
       run.pauseRequested = false;
       run.paused = false;

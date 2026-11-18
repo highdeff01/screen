@@ -22,6 +22,7 @@ import {
   writeFileDurable,
 } from './store.js';
 import { executeStep, runPowerShell, STEP_TYPES, IS_WINDOWS, describe, findUiElement, readFocusedElement } from './automation.js';
+import { liveControl } from './platform.js';
 import { chatWithProjectMemory, getHistory, clearHistory, health, parseJsonLoose, chat, listModels, getMemoryStats, summarizeConversation } from './llm.js';
 import { estimateTokens } from './context.js';
 import { readTextChunk, writeTextChunk, digestForSummary, isTextFile } from './longfiles.js';
@@ -172,6 +173,15 @@ function sendJson(res, code, payload) {
 
 function fail(res, code, message) {
   sendJson(res, code, { ok: false, error: message });
+}
+
+/**
+ * Live control is available wherever a backend exists (Windows, macOS, Linux,
+ * or Android over adb). When it is not, the refusal names what is missing.
+ */
+function liveRefusal() {
+  const control = liveControl();
+  return control.reason || `Live control is unavailable on this console (${control.backend}).`;
 }
 
 function forwardRunToControlCenter(run, { auto = false } = {}) {
@@ -346,7 +356,13 @@ function buildState() {
     ok: true,
     rev: d.rev,
     settings: d.settings,
-    platform: { windows: IS_WINDOWS, shell: 'PowerShell', pid: process.pid },
+    platform: {
+      windows: IS_WINDOWS,
+      shell: IS_WINDOWS ? 'PowerShell' : 'none',
+      platform: process.platform,
+      pid: process.pid,
+      ...liveControl(),
+    },
     workflows: d.workflows.map(workflowView),
     runs: d.runs.slice(0, 80).map(summary),
     notes: d.notes.slice(0, 60).map(({ body, ...rest }) => ({
@@ -479,7 +495,7 @@ function route(method, pattern, handler) {
 route('GET', /^\/api\/state$/, async (req, res) => sendJson(res, 200, buildState()));
 route('GET', /^\/api\/health$/, async (req, res) => {
   const h = await health();
-  sendJson(res, 200, { ok: true, ...h, platform: process.platform, windows: IS_WINDOWS });
+  sendJson(res, 200, { ok: true, ...h, platform: process.platform, windows: IS_WINDOWS, ...liveControl() });
 });
 
 route('GET', /^\/api\/live\/preview$/, async (req, res) => sendJson(res, 200, { ok: true, preview: livePreview.state() }));
@@ -800,7 +816,7 @@ route('POST', /^\/api\/shortcuts\/habits\/([^/]+)\/replay$/, async (req, res, [i
     if (habit.reviewReason === 'app-update') {
       return fail(res, 400, 'The app changed. Re-approve the updated candidate before replaying this shortcut.');
     }
-    if (!IS_WINDOWS) return fail(res, 400, 'Live replay requires Windows');
+    if (!liveControl().available) return fail(res, 400, liveRefusal());
     const step = {
       id: uid('stp'),
       type: 'key',
@@ -1117,7 +1133,7 @@ route('POST', /^\/api\/missions$/, async (req, res) => {
   const body = await readBody(req);
   const workflow = db().workflows.find((entry) => entry.id === body.workflowId);
   if (!workflow) return fail(res, 400, 'Pick a workflow for the mission');
-  if (body.mode === 'live' && !IS_WINDOWS) return fail(res, 400, 'Live control requires Windows');
+  if (body.mode === 'live' && !liveControl().available) return fail(res, 400, liveRefusal());
   let autoPlan = null;
   try {
     autoPlan = await ensureWorkflowSteps(workflow, body.goal);
@@ -1645,7 +1661,7 @@ route('POST', /^\/api\/workflows\/([^/]+)\/runs$/, async (req, res, [id]) => {
   if (wf.status === 'archived') return fail(res, 400, 'Archived workflows cannot run');
   const body = await readBody(req);
   const dryRun = body.mode ? body.mode !== 'live' : Boolean(db().settings.dryRun);
-  if (body.mode === 'live' && !IS_WINDOWS) return fail(res, 400, 'Live control requires Windows');
+  if (body.mode === 'live' && !liveControl().available) return fail(res, 400, liveRefusal());
   let autoPlan = null;
   try {
     autoPlan = await ensureWorkflowSteps(wf, body.goal || wf.description || wf.name);
@@ -2484,16 +2500,28 @@ route('GET', /^\/api\/files$/, async (req, res) => {
 route('GET', /^\/api\/files\/raw$/, async (req, res, _params, url) => {
   const rel = url.searchParams.get('path') || '';
   const full = resolveInside(DATA, rel);
-  if (!full || !fs.existsSync(full) || fs.statSync(full).isDirectory()) return fail(res, 404, 'File not found');
-  const ext = path.extname(full).toLowerCase();
-  const type = MIME[ext] || 'application/octet-stream';
-  res.writeHead(200, {
-    'Content-Type': type,
-    'Cache-Control': 'no-store',
-    'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'",
-    'X-Content-Type-Options': 'nosniff',
+  if (!full) return fail(res, 404, 'File not found');
+  try {
+    if (!fs.statSync(full).isFile()) return fail(res, 404, 'File not found');
+  } catch {
+    return fail(res, 404, 'File not found');
+  }
+  const stream = fs.createReadStream(full);
+  stream.once('error', () => {
+    if (!res.headersSent) fail(res, 404, 'File not found');
+    else res.destroy();
   });
-  fs.createReadStream(full).pipe(res);
+  stream.once('open', () => {
+    const type = MIME[path.extname(full).toLowerCase()] || 'application/octet-stream';
+    res.writeHead(200, {
+      'Content-Type': type,
+      'Cache-Control': 'no-store',
+      'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'",
+      'X-Content-Type-Options': 'nosniff',
+    });
+    stream.pipe(res);
+  });
+  res.once('close', () => stream.destroy());
 });
 
 route('GET', /^\/api\/files\/read$/, async (req, res, _params, url) => {
@@ -3009,6 +3037,14 @@ server.listen(PORT, HOST, () => {
   setInterval(scanElementLinks, 5000).unref?.();
   console.log(`Sightline console running at http://${HOST}:${PORT}`);
   console.log(`Data: ${DATA}`);
+  // Say which kind of console this is: a live run refused on a different
+  // machine looks identical to a bug on this one without it.
+  const control = liveControl();
+  console.log(
+    control.available
+      ? `Platform: ${process.platform} — live control via ${control.label} (${control.input}; capture: ${control.capture}).`
+      : `Platform: ${process.platform} — live control unavailable: ${control.reason}`
+  );
 });
 
 function shutdown() {

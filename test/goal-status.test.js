@@ -303,6 +303,55 @@ test('a video that played to its end passes playback verification', async () => 
   assert.equal(pausedMidClip.pass, false, 'a paused clip part-way through is not a finished video');
   assert.match(pausedMidClip.reason, /paused part-way/);
 
+  // A stalled player at mid-clip that claims to have finished is contradicted
+  // by its own second frame, and a clip that restarted is not a finish either.
+  const stalledMidClip = playbackVerdict({
+    state: 'ended',
+    playing: false,
+    progressed: false,
+    started: true,
+    finished: true,
+    confidence: 0.9,
+    pass: true,
+    progress: '01:04 / 02:36',
+    frames: [{ elapsed: 64, duration: 156 }, { elapsed: 64, duration: 156 }],
+  });
+  assert.equal(stalledMidClip.pass, false, 'a frame 2 that is not at the end contradicts a finish claim');
+  assert.match(stalledMidClip.reason, /restarted instead of finishing|not at the end/);
+
+  const restarted = playbackVerdict({
+    state: 'ended',
+    playing: true,
+    progressed: true,
+    started: true,
+    finished: true,
+    confidence: 0.92,
+    pass: true,
+    progress: '00:01 / 02:36',
+    frames: [{ elapsed: 156, duration: 156 }, { elapsed: 1, duration: 156 }],
+  });
+  assert.equal(restarted.finished, false, 'a clip that looped back to the start did not finish');
+
+  // The media file's real length is an independent total: a 52s clip cannot
+  // report 02:36 / 02:36, even when both frames repeat the invented number.
+  const endOfShortClip = {
+    state: 'not_started',
+    playing: false,
+    progressed: false,
+    started: false,
+    finished: false,
+    confidence: 0.95,
+    pass: false,
+    progress: '02:36 / 02:36',
+    frames: [{ readout: '02:36 / 02:36' }, { readout: '02:36 / 02:36' }],
+  };
+  const wrongTotal = playbackVerdict(endOfShortClip, { expectedDuration: 52.2 });
+  assert.equal(wrongTotal.pass, false, 'a total that contradicts the media file cannot pass');
+  assert.match(wrongTotal.reason, /does not match the media file/);
+  const rightTotal = playbackVerdict(endOfShortClip, { expectedDuration: 156.6 });
+  assert.equal(rightTotal.pass, true, 'the same readout passes when it matches the file length');
+  assert.equal(rightTotal.durationMatchesMedia, true);
+
   // A model that quotes the prompt's own example while saying no readout is
   // visible must not be read as evidence.
   const quotedExample = playbackVerdict({
@@ -428,6 +477,62 @@ test('an installer window in front never counts as the app being open', async ()
   const run = engine.createRun(workflow, { dryRun: false, probe });
   await engine.waitForRun(run.id, { timeoutMs: 30000 });
   assert.equal(launches, 1, 'the launch ran instead of being skipped for an installer window');
+});
+
+test('media paths, media length and covered-player scans degrade safely', async () => {
+  const { windowsPath, mediaDurationSeconds, coveringWindows } = await load('server/automation.js');
+  // VLC opens an idle window and ignores the media when the path uses forward
+  // slashes, which then looks like a video that refused to start.
+  assert.equal(windowsPath('C:/Users/Dan/clip.mp4'), 'C:\\Users\\Dan\\clip.mp4');
+  assert.equal(windowsPath('C:\\Users\\Dan\\clip.mp4'), 'C:\\Users\\Dan\\clip.mp4');
+  assert.equal(windowsPath('https://example.com/a.mp4'), 'https://example.com/a.mp4');
+  assert.equal(windowsPath('file:///C:/a.mp4'), 'file:///C:/a.mp4');
+  assert.equal(windowsPath('relative/clip.mp4'), 'relative/clip.mp4');
+  assert.equal(windowsPath(''), '');
+
+  assert.equal(
+    await mediaDurationSeconds({ steps: [{ type: 'launchApp', params: { args: ['data/media/missing-clip.mp4'] } }] }),
+    null,
+    'a missing media file yields no duration instead of an error'
+  );
+  assert.equal(await mediaDurationSeconds(null), null);
+  assert.deepEqual(await coveringWindows(''), [], 'no player title means no window scan');
+});
+
+test('a held step reports the wait on the run summary', async () => {
+  const summary = engine.summary({
+    id: 'run_held',
+    workflowId: 'wf_held',
+    workflowName: 'Held run',
+    status: 'running',
+    steps: [],
+    presence: { holding: true, reason: 'holding 7s for the user to finish moving', deferredMs: 3000 },
+    deferrals: [{ stepId: 's1', waitedMs: 8000, at: '2026-11-18T02:00:00Z' }],
+  });
+  assert.equal(summary.presence.holding, true);
+  assert.match(summary.presence.reason, /holding 7s/);
+  assert.equal(summary.deferrals.length, 1);
+});
+
+test('a finished run stops showing the presence hold', async () => {
+  const run = {
+    presence: { holding: true, reason: 'holding 7s for the user to finish moving', deferredMs: 3000, waitMs: 7400 },
+  };
+  engine.clearPresenceHold(run);
+  assert.equal(run.presence.holding, false);
+  assert.equal(run.presence.reason, '');
+  assert.equal(run.presence.waitMs, 0);
+  assert.equal(run.presence.deferredMs, 3000, 'the history of the wait is kept');
+
+  const summary = engine.summary({
+    id: 'run_done',
+    workflowId: 'wf_done',
+    workflowName: 'Done run',
+    status: 'passed',
+    steps: [],
+    presence: run.presence,
+  });
+  assert.equal(summary.presence.holding, false, 'a finished run does not look like it is waiting');
 });
 
 test('the Space key survives shortcut normalization', async () => {

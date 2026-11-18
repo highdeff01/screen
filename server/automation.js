@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { CAPTURES, DATA, NOTES, ROOT, TOOLS, db, now, persist, slug, uid, writeFileDurable } from './store.js';
 import { chat, parseJsonLoose } from './llm.js';
+import { executePortableStep, portableLiveScreenshot } from './portable.js';
 import { decidePreview, describeSurroundings } from './step-context.js';
 import {
   catalogEntry,
@@ -21,6 +22,9 @@ import {
 
 const IS_WINDOWS = process.platform === 'win32';
 const PS = IS_WINDOWS ? 'powershell.exe' : 'pwsh';
+// Used only to read a known media file's real length; a missing ffprobe simply
+// means that extra corroboration is unavailable.
+const FFPROBE = process.env.FFPROBE || 'ffprobe';
 
 const BASE_PRELUDE = `
 $ErrorActionPreference = 'Stop'
@@ -220,6 +224,20 @@ function flag(value, fallback = false) {
   return fallback;
 }
 
+/**
+ * Windows media players silently ignore a path written with forward slashes:
+ * VLC opens its idle window and plays nothing, which then looks exactly like a
+ * video that refused to start. Every absolute path handed to a desktop app is
+ * normalized to the Windows separator first.
+ */
+export function windowsPath(value) {
+  const text = String(value == null ? '' : value).trim();
+  if (!text) return text;
+  if (/^file:\/\//i.test(text) || /^[a-z][a-z0-9+.-]*:\/\//i.test(text)) return text;
+  if (/^[a-zA-Z]:[\\/]/.test(text) || text.startsWith('\\\\')) return text.replace(/\//g, '\\');
+  return text;
+}
+
 function normalizeUrl(value) {
   const raw = String(value || '').trim();
   if (!raw) return raw;
@@ -340,6 +358,9 @@ $tg.Dispose(); $thumb.Dispose(); $g.Dispose(); $src.Dispose()
  * whether a cached locate still describes what is on screen.
  */
 async function liveScreenshot(runId, options = {}) {
+  // macOS, Linux and Android capture through their own tools; the record shape
+  // is identical so vision checks and evidence keep working off Windows.
+  if (!IS_WINDOWS) return portableLiveScreenshot(runId, options);
   const file = path.join(CAPTURES, `${uid('cap')}.png`);
   const maxWidth = Math.max(0, Math.min(4096, Number(options.maxWidth) || 0));
   const quality = Math.max(30, Math.min(95, Number(options.quality) || 80));
@@ -2538,7 +2559,175 @@ function frameReadouts(parsed = null) {
   return raw.slice(0, 2).map(frameReadout).filter(Boolean);
 }
 
-export function playbackVerdict(parsed = null, { minConfidence = 0.7 } = {}) {
+const mediaDurations = new Map();
+const MEDIA_FILE = /\.(mp4|m4v|webm|mkv|mov|avi|ogv|mpg|mpeg|wmv)$/i;
+
+// A weaker verification must not be silent: every reason the media length is
+// unavailable is logged once, so a run whose total was never cross-checked is
+// visible in the console instead of looking like a full check.
+const durationNotes = new Set();
+
+function noteNoDuration(message) {
+  if (durationNotes.has(message)) return;
+  durationNotes.add(message);
+  console.warn(`[playback] ${message}`);
+}
+
+function probeMediaSeconds(file) {
+  return new Promise((resolve) => {
+    execFile(
+      FFPROBE,
+      ['-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', file],
+      { timeout: 8000, windowsHide: true },
+      (error, stdout) => {
+        if (error) {
+          if (error.code === 'ENOENT') {
+            noteNoDuration('ffprobe is not installed, so the readout total is not cross-checked against the media file.');
+          } else {
+            noteNoDuration(
+              `ffprobe could not read the media duration (${String(error.code || error.message).slice(0, 80)}), so the readout total is not cross-checked.`
+            );
+          }
+          return resolve(null);
+        }
+        const seconds = Number(String(stdout || '').trim());
+        if (!Number.isFinite(seconds) || seconds <= 0) {
+          noteNoDuration('ffprobe returned no usable duration, so the readout total is not cross-checked.');
+          return resolve(null);
+        }
+        resolve(Math.round(seconds * 10) / 10);
+      }
+    );
+  });
+}
+
+/**
+ * The real length of the media this run opened, in seconds, or null when it
+ * cannot be read. A known duration lets a readout's total be checked against
+ * the file itself instead of trusting whatever number the model transcribed.
+ */
+export async function mediaDurationSeconds(run = null) {
+  const seen = new Set();
+  const candidates = [];
+  for (const step of run?.steps || []) {
+    const params = step?.params || {};
+    for (const value of [params.target, params.url, ...(Array.isArray(params.args) ? params.args : [])]) {
+      const text = String(value ?? '').trim();
+      if (!MEDIA_FILE.test(text) || seen.has(text)) continue;
+      seen.add(text);
+      candidates.push(text);
+    }
+  }
+  if (!candidates.length) {
+    noteNoDuration('this run names no media file, so the readout total is not cross-checked against a file length.');
+    return null;
+  }
+  for (const file of candidates) {
+    let absolute;
+    try {
+      absolute = path.isAbsolute(file) ? file : path.join(DATA, file);
+      if (!fs.existsSync(absolute)) {
+        noteNoDuration(`the media file ${absolute} is missing, so the readout total is not cross-checked.`);
+        continue;
+      }
+      const key = `${absolute}:${fs.statSync(absolute).mtimeMs}`;
+      if (mediaDurations.has(key)) return mediaDurations.get(key);
+      const seconds = await probeMediaSeconds(absolute);
+      if (seconds) {
+        mediaDurations.set(key, seconds);
+        return seconds;
+      }
+    } catch {
+      // An unreadable file is not evidence either way; the check continues
+      // without the extra corroboration.
+    }
+  }
+  return null;
+}
+
+/**
+ * Visible windows stacked above the named player that cover a meaningful part
+ * of it. A security prompt or dialog sitting on the player makes the crop a
+ * picture of the dialog: the model then reads numbers from the wrong place,
+ * which is how a clip at 00:43 was reported at 02:36 / 02:36.
+ */
+export async function coveringWindows(title = '', { minOverlap = 0.15 } = {}) {
+  const target = String(title || '').trim();
+  if (!target) return [];
+  const script = `
+$ErrorActionPreference = 'Stop'
+Add-Type -TypeDefinition @'
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Runtime.InteropServices;
+using System.Text;
+public class SightlineCover {
+  [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc cb, IntPtr p);
+  delegate bool EnumProc(IntPtr h, IntPtr p);
+  [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
+  [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr h, out RECT r);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
+  [DllImport("user32.dll")] static extern int GetWindowTextLength(IntPtr h);
+  [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+  [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }
+  static string Title(IntPtr h) { int n = GetWindowTextLength(h); var sb = new StringBuilder(n + 2); GetWindowText(h, sb, sb.Capacity); return sb.ToString(); }
+  public static string[] Above(string needle, double minOverlap) {
+    var windows = new List<IntPtr>();
+    EnumWindows(delegate(IntPtr h, IntPtr p) { if (IsWindowVisible(h) && GetWindowTextLength(h) > 0) windows.Add(h); return true; }, IntPtr.Zero);
+    int index = -1;
+    for (int i = 0; i < windows.Count; i++) {
+      if (Title(windows[i]).IndexOf(needle, StringComparison.OrdinalIgnoreCase) >= 0) { index = i; break; }
+    }
+    if (index <= 0) return new string[0];
+    RECT player;
+    if (!GetWindowRect(windows[index], out player)) return new string[0];
+    double area = Math.Max(1, (double)(player.Right - player.Left) * (player.Bottom - player.Top));
+    uint playerPid;
+    GetWindowThreadProcessId(windows[index], out playerPid);
+    var found = new List<string>();
+    for (int i = 0; i < index; i++) {
+      RECT r;
+      if (!GetWindowRect(windows[i], out r)) continue;
+      int w = Math.Min(player.Right, r.Right) - Math.Max(player.Left, r.Left);
+      int h = Math.Min(player.Bottom, r.Bottom) - Math.Max(player.Top, r.Top);
+      if (w <= 0 || h <= 0) continue;
+      if ((double)w * h / area < minOverlap) continue;
+      uint pid;
+      GetWindowThreadProcessId(windows[i], out pid);
+      // The player's own windows (a separate video output, a tool panel) are
+      // part of the player, not something covering it.
+      if (pid == playerPid) continue;
+      string proc = "";
+      try { proc = Process.GetProcessById((int)pid).ProcessName; } catch { }
+      found.Add(Title(windows[i]) + "\t" + proc);
+      if (found.Count >= 4) break;
+    }
+    return found.ToArray();
+  }
+}
+'@
+  [SightlineCover]::Above(${psQuote(target)}, ${Number(minOverlap) || 0.15}) | ForEach-Object { Write-Output $_ }
+`;
+  const res = await runPowerShell(script, 20000);
+  if (!res.ok) {
+    // A scan that cannot run must not be mistaken for "nothing covers the
+    // player", so it is reported even though the check continues.
+    console.warn('[cover] window scan failed:', String(res.stderr || '').slice(0, 200));
+    return [];
+  }
+  return String(res.stdout || '')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const [windowTitle, process] = line.split('\t');
+      return { title: String(windowTitle || '').trim(), process: String(process || '').trim() };
+    })
+    .filter((entry) => entry.title);
+}
+
+export function playbackVerdict(parsed = null, { minConfidence = 0.7, expectedDuration = null } = {}) {
   const raw = parsed?.confidence != null ? Number(parsed.confidence) : null;
   const confidence = Number.isFinite(raw) ? Math.round((raw > 1 ? raw / 100 : raw) * 100) : null;
   const state = String(parsed?.state || '').toLowerCase();
@@ -2565,14 +2754,26 @@ export function playbackVerdict(parsed = null, { minConfidence = 0.7 } = {}) {
     perFrame.every(
       (frame) => Math.abs(frame.duration - frame.elapsed) <= 2 && Math.abs(frame.duration - times[1]) <= 2
     );
-  const atDuration = claimedAtDuration && corroboratedEnd;
+  // When the media file's real length is known, the transcribed total has to
+  // match it: a model that invents "02:36 / 02:36" for a 52s clip is caught
+  // even if it invents the same number in both frames.
+  const mediaSeconds = Number(expectedDuration) > 0 ? Number(expectedDuration) : null;
+  const durationMatchesMedia = mediaSeconds == null || times.length < 2 || Math.abs(times[1] - mediaSeconds) <= 2;
+  // A readout in frame 2 that is not at its own end contradicts a finish claim:
+  // that is a clip that looped or restarted, not one that finished.
+  const frameEndClaim = perFrame.length >= 2 ? Math.abs(perFrame[1].duration - perFrame[1].elapsed) <= 2 : null;
+  const atDuration = claimedAtDuration && corroboratedEnd && durationMatchesMedia;
   const uncorroboratedEnd = claimedAtDuration && !atDuration;
   // A player that never loaded its media cannot pass just because the model
   // said so: an idle/logo screen at 0:00 is not playback.
   const neverStarted = state === 'not_started' && !atDuration;
   const playing = parsed?.playing === true && !neverStarted;
   const progressed = parsed?.progressed === true || parsed?.advanced === true;
-  const finished = !neverStarted && (parsed?.finished === true || state === 'ended' || atDuration);
+  const finished =
+    !neverStarted &&
+    durationMatchesMedia &&
+    frameEndClaim !== false &&
+    (parsed?.finished === true || state === 'ended' || atDuration);
   const started = !neverStarted && (parsed?.started === true || progressed || atDuration);
   const passFlag = Boolean(parsed && (parsed.pass === true || parsed.ok === true || parsed.verified === true));
   const confident = confidence == null || confidence >= minConfidence * 100;
@@ -2586,7 +2787,11 @@ export function playbackVerdict(parsed = null, { minConfidence = 0.7 } = {}) {
   if (!pass) {
     if (!parsed) reason = 'the playback check returned no verdict';
     else if (!confident) reason = `confidence ${confidence}% is below the ${Math.round(minConfidence * 100)}% threshold`;
+    else if (claimedAtDuration && !durationMatchesMedia)
+      reason = `the readout's total does not match the media file's ${mediaSeconds}s`;
     else if (uncorroboratedEnd) reason = 'the readout at the full duration was not confirmed in both frames';
+    else if (frameEndClaim === false && (parsed?.finished === true || state === 'ended'))
+      reason = 'the second frame is not at the end of the media, so it restarted instead of finishing';
     else if (state === 'not_started') reason = 'the video never started';
     else if (state === 'paused') reason = 'the video is paused part-way through';
     else if (state === 'buffering') reason = 'the video is buffering';
@@ -2607,6 +2812,8 @@ export function playbackVerdict(parsed = null, { minConfidence = 0.7 } = {}) {
     atDuration,
     claimedAtDuration,
     corroboratedEnd,
+    durationMatchesMedia,
+    mediaSeconds,
     reason,
   };
 }
@@ -2631,6 +2838,61 @@ export function playbackHistoryShots(run = null, { exclude = [], limit = 3 } = {
   return shots;
 }
 
+/**
+ * Map a point in a vision image back to absolute screen coordinates. The vision
+ * image is a resized crop of the screen, so the crop's origin and scale decide
+ * where the model's pixel actually is.
+ */
+function visionPointToScreen(shot, control) {
+  if (!control || control.visible === false) return null;
+  const x = Number(control.x);
+  const y = Number(control.y);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+  const vision = shot?.vision;
+  if (!vision || !vision.width || !vision.height || !vision.cropWidth || !vision.cropHeight) return null;
+  const screenX = Math.round(vision.cropX + x * (vision.cropWidth / vision.width));
+  const screenY = Math.round(vision.cropY + y * (vision.cropHeight / vision.height));
+  // A point outside the captured region is not a control this step can click.
+  if (screenX < vision.cropX || screenY < vision.cropY) return null;
+  if (screenX > vision.cropX + vision.cropWidth || screenY > vision.cropY + vision.cropHeight) return null;
+  return { x: screenX, y: screenY };
+}
+
+/**
+ * Show the player's controls the way a person would: raise the window, park the
+ * pointer over the picture and let hover controls fade in before looking again.
+ */
+async function revealPlayerControls(step, shot, ctx) {
+  const p = step.params || {};
+  const title = str(p.title, '');
+  if (title) {
+    try {
+      await executeStep(
+        { type: 'focusWindow', name: `Focus ${title} before looking for its controls`, params: { title }, timeoutMs: 10000 },
+        ctx
+      );
+    } catch {
+      // The window may already be in front; the picture is read either way.
+    }
+  }
+  const vision = shot?.vision;
+  if (vision?.cropWidth) {
+    try {
+      await executeStep(
+        {
+          type: 'move',
+          name: 'Hover over the player to reveal its controls',
+          params: { x: vision.cropX + Math.round(vision.cropWidth / 2), y: vision.cropY + Math.round(vision.cropHeight * 0.6) },
+        },
+        ctx
+      );
+    } catch {
+      // Hovering is best effort; the recapture below is what decides.
+    }
+  }
+  await new Promise((resolve) => setTimeout(resolve, 800));
+}
+
 export async function executeStep(step, ctx) {
   let p = step.params || {};
   const live = Boolean(ctx.live);
@@ -2644,9 +2906,10 @@ export async function executeStep(step, ctx) {
     // so relative saved paths are resolved before they are handed to the app.
     const resolveFile = (value) => {
       const text = String(value == null ? '' : value);
-      if (!text || /^[a-zA-Z]:[\\/]/.test(text) || text.startsWith('\\\\')) return text;
+      if (!text) return text;
+      if (/^[a-zA-Z]:[\\/]/.test(text) || text.startsWith('\\\\')) return windowsPath(text);
       try {
-        return fs.existsSync(text) ? path.resolve(text) : text;
+        return fs.existsSync(text) ? windowsPath(path.resolve(text)) : text;
       } catch {
         return text;
       }
@@ -3897,6 +4160,21 @@ try {
         { evidence }
       );
     }
+    // A dialog on top of the player makes the crop a picture of the dialog, and
+    // a model reading a covered player can transcribe a convincing readout that
+    // does not exist. This runs before the model sees the frames.
+    if (targetWindow) {
+      const covering = await coveringWindows(targetWindow);
+      const cover = covering[0];
+      if (cover) {
+        throw Object.assign(
+          new Error(
+            `Playback check stopped early: “${cover.title}”${cover.process ? ` (${cover.process})` : ''} covers “${targetWindow}”, so the two frames are not clean pictures of the player.`
+          ),
+          { evidence }
+        );
+      }
+    }
     const prompts = playbackCheckPrompts({ expected, question: str(p.question).trim(), gap });
     const reply = await chat(
       [
@@ -3925,7 +4203,10 @@ try {
     }
     const parsed = parseJsonLoose(reply.content);
     const minConfidence = Math.max(0, Math.min(1, Number(p.minConfidence ?? 0.7)));
-    const verdict = playbackVerdict(parsed, { minConfidence });
+    // The media file's own length, when it is known, is an independent total
+    // that the transcription has to agree with.
+    const mediaSeconds = await mediaDurationSeconds(ctx.run);
+    const verdict = playbackVerdict(parsed, { minConfidence, expectedDuration: mediaSeconds });
     const observed = String(parsed?.observed || parsed?.reason || reply.content || '').slice(0, 700);
     const mismatch = String(parsed?.mismatch || '').slice(0, 400);
 
@@ -3954,7 +4235,7 @@ try {
         );
         if (historyReply.ok) {
           const historyParsed = parseJsonLoose(historyReply.content);
-          const historyVerdict = playbackVerdict(historyParsed, { minConfidence });
+          const historyVerdict = playbackVerdict(historyParsed, { minConfidence, expectedDuration: mediaSeconds });
           const samePlayer = historyParsed?.samePlayer !== false && historyParsed?.same_player !== false;
           if (historyVerdict.pass && samePlayer) {
             history = { prior, parsed: historyParsed, verdict: historyVerdict };
@@ -3982,21 +4263,35 @@ try {
       error.evidence = evidence;
       throw error;
     }
+    // A pass whose total was never cross-checked against the file is weaker, and
+    // says so on the step instead of reading like a full check.
+    const weaker = mediaSeconds == null ? ' The media length was unavailable, so the readout total was not cross-checked.' : '';
     if (history) {
       return {
         output: `Playback verified from this run's screenshot history${history.verdict.confidence != null ? ` (${history.verdict.confidence}%)` : ''}: ${
           String(history.parsed?.observed || history.parsed?.reason || '').slice(0, 500) || 'the earlier frame shows the video in progress'
-        } [earlier ${history.prior.path}]`,
+        } [earlier ${history.prior.path}].${weaker}`,
         evidence,
-        playback: { source: 'history', state: history.verdict.state, finished: history.verdict.finished },
+        playback: {
+          source: 'history',
+          state: history.verdict.state,
+          finished: history.verdict.finished,
+          crossChecked: mediaSeconds != null,
+        },
       };
     }
     return {
-      output: verdict.completed
-        ? `Playback finished${verdict.confidence != null ? ` (${verdict.confidence}%)` : ''}: the video played to its end. ${observed}`
-        : `Playback advancing${verdict.confidence != null ? ` (${verdict.confidence}%)` : ''}: ${observed}`,
+      output:
+        (verdict.completed
+          ? `Playback finished${verdict.confidence != null ? ` (${verdict.confidence}%)` : ''}: the video played to its end. ${observed}`
+          : `Playback advancing${verdict.confidence != null ? ` (${verdict.confidence}%)` : ''}: ${observed}`) + weaker,
       evidence,
-      playback: { source: 'frames', state: verdict.state, finished: verdict.completed },
+      playback: {
+        source: 'frames',
+        state: verdict.state,
+        finished: verdict.completed,
+        crossChecked: mediaSeconds != null,
+      },
     };
   }
 
@@ -4009,7 +4304,8 @@ try {
     const system =
       'You are a strict video state checker. You are shown TWO live desktop screenshots taken in order, frame 1 then frame 2. ' +
       'Decide whether the video is actively playing, paused, or unknown. ' +
-      'Return JSON only: {"state":"playing|paused|unknown","playing":true|false,"progressed":true|false,"confidence":0-1,"observed":"what is visible in each frame"}. ' +
+      'Return JSON only: {"state":"playing|paused|unknown","playing":true|false,"progressed":true|false,"confidence":0-1,"playControl":{"visible":true|false,"x":0,"y":0},"observed":"what is visible in each frame"}. ' +
+      'In playControl give the pixel centre of the play/pause control in frame 2 when one is visible; set visible to false when the controls are hidden, cut off, or hidden behind another window. ' +
       'Use "playing" only when a watch page/player is visible, a pause control (not a large centre play button) is shown, there is no buffering spinner, progress is beyond 0:00, and the elapsed time or video frame advanced between frame 1 and frame 2. ' +
       'Use "paused" when the frames are effectively identical and a large play overlay or play control is visible. ' +
       'Use "unknown" for another app, a search grid, a blank/loading page, an ad, or anything ambiguous. Never guess.';
@@ -4061,15 +4357,66 @@ try {
       error.evidence = evidence;
       throw error;
     }
-    const res = await runPowerShell(buildScript(step), step.timeoutMs || 20000);
-    if (!res.ok) {
-      const error = new Error(res.stderr || res.stdout || 'Play click failed');
+    // Click the control that is actually on screen. A blind click at the step's
+    // stored coordinates lands on whatever happens to be there when the player
+    // has hidden its controls or another window is in front.
+    let target = visionPointToScreen(second, parsed?.playControl);
+    if (!target) {
+      await revealPlayerControls(step, second, ctx);
+      let retryShot = null;
+      try {
+        retryShot = await liveScreenshot(ctx.runId, visionShot);
+        evidence.push({ kind: 'screenshot', caption: 'Play control after revealing the player controls', ...retryShot });
+      } catch {
+        retryShot = null;
+      }
+      if (retryShot) {
+        const retry = await chat(
+          [
+            {
+              role: 'system',
+              content:
+                'You locate a video player control. Return JSON only: {"visible":true|false,"x":0,"y":0,"observed":"what you see"}. ' +
+                'x and y are the pixel centre of the play/pause control in this image. Use visible:false when no play control can be seen, and never guess coordinates.',
+            },
+            { role: 'user', content: `Expected media window: ${title}.` },
+          ],
+          {
+            images: [modelImage(retryShot)],
+            format: 'json',
+            kind: 'playback-state',
+            timeoutMs: 60000,
+            temperature: 0,
+            numCtx: 2048,
+          }
+        );
+        if (retry.ok) target = visionPointToScreen(retryShot, parseJsonLoose(retry.content));
+      }
+    }
+    if (!target) {
+      const error = new Error(
+        `The play control is not visible on screen, so no click was made at ${num(p.x)},${num(p.y)}. ` +
+          `Bring the player to the front (focusWindow) or exit full screen, then retry. Observed: ${String(
+            parsed?.observed || 'no play button found'
+          ).slice(0, 300)}`
+      );
       error.evidence = evidence;
       throw error;
     }
+    await executeStep(
+      {
+        type: 'click',
+        name: `Click play in ${title}`,
+        params: { x: target.x, y: target.y, button: str(p.button, 'left'), ...(title ? { foreground: title } : {}) },
+        timeoutMs: step.timeoutMs || 20000,
+      },
+      ctx
+    );
     await new Promise((resolve) => setTimeout(resolve, 1200));
     return {
-      output: `Paused player detected; clicked the play control. Verify playback next.`,
+      output: `Paused player detected; clicked the play control inside the player at ${target.x},${target.y}${
+        target.x !== num(p.x) || target.y !== num(p.y) ? ' (adjusted from the step\'s stored point to where the control actually is)' : ''
+      }. Verify playback next.`,
       evidence,
     };
   }
@@ -4357,7 +4704,8 @@ try {
   }
 
   if (!IS_WINDOWS) {
-    throw new Error('Live desktop control requires Windows (PowerShell + Win32 input).');
+    // Clicks, typing, keys, windows and apps run through the platform backend.
+    return executePortableStep(step, ctx);
   }
 
   const foregroundExpectation =

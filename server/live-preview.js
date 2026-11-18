@@ -7,12 +7,18 @@ export const MIN_INTERVAL_MS = 1000;
 export const MAX_INTERVAL_MS = 10000;
 export const DEFAULT_INTERVAL_MS = 2000;
 export const PREVIEW_LEASE_MS = 15000;
-const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
+// A noisy 4K or multi-monitor desktop can exceed 20 MiB even as a PNG.
+const MAX_IMAGE_BYTES = 128 * 1024 * 1024;
+const CAPTURE_TIMEOUT_MS = 30000;
 
 // Isolate the existing capture routine: it creates uniquely named files even on
 // some failures. A private working directory lets us remove all of them without
 // touching captures produced by runs or the live monitor.
-async function captureDesktop(dataDir, signal) {
+export async function captureDesktop(dataDir, signal, {
+  execute = execFile,
+  platform = process.platform,
+  timeoutMs = CAPTURE_TIMEOUT_MS,
+} = {}) {
   const work = path.join(dataDir, 'live-preview-work');
   fs.rmSync(work, { recursive: true, force: true });
   fs.mkdirSync(work, { recursive: true });
@@ -20,18 +26,41 @@ async function captureDesktop(dataDir, signal) {
     const moduleUrl = new URL('./automation.js', import.meta.url).href;
     const script = `import { liveScreenshot } from ${JSON.stringify(moduleUrl)}; await liveScreenshot(null);`;
     await new Promise((resolve, reject) => {
-      const child = execFile(process.execPath, ['--input-type=module', '-e', script], {
+      let finished = false;
+      let workerError = null;
+      let killing = false;
+      let interrupted = false;
+      const settle = () => {
+        if (!finished || killing) return;
+        clearTimeout(timeout);
+        signal.removeEventListener('abort', abort);
+        if (interrupted) reject(new Error('Capture interrupted'));
+        else if (workerError) reject(workerError);
+        else resolve();
+      };
+      const child = execute(process.execPath, ['--input-type=module', '-e', script], {
         cwd: work, windowsHide: true, maxBuffer: 1024 * 1024,
       }, (error) => {
-        signal.removeEventListener('abort', abort);
-        error ? reject(error) : resolve();
+        finished = true;
+        workerError = error;
+        settle();
       });
       const abort = () => {
-        // Kill the worker and its PowerShell descendant together on Windows.
-        if (process.platform === 'win32' && child.pid) {
-          execFile('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true }, () => {});
+        if (interrupted || finished) return;
+        interrupted = true;
+        // Wait for taskkill as well as the worker exit before removing the work
+        // directory: PowerShell can still be writing after its parent exits.
+        if (platform === 'win32' && child.pid) {
+          killing = true;
+          execute('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true, timeout: 5000 }, (error) => {
+            if (error) child.kill();
+            killing = false;
+            settle();
+          });
         } else child.kill();
       };
+      const timeout = setTimeout(abort, timeoutMs);
+      timeout.unref?.();
       signal.addEventListener('abort', abort, { once: true });
       if (signal.aborted) abort();
     });

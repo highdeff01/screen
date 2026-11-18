@@ -230,6 +230,17 @@ function statusPill(status, label) {
   return `<span class="pill ${esc(status)}">${esc(text)}</span>`;
 }
 
+/**
+ * A step that still owes a verification check is not finished, even though its
+ * action ran: show it as "checking" until the check answers.
+ */
+function stepDisplayStatus(run, step) {
+  const pending = (run?.pendingVerification || []).some((entry) => entry.stepId === step.id);
+  if (!pending) return step.status;
+  if (step.status === 'passed') return 'verifying';
+  return step.status;
+}
+
 function modeBadge(simulated) {
   return simulated ? '<span class="pill simulated">simulated</span>' : '<span class="pill live">live</span>';
 }
@@ -652,9 +663,24 @@ function renderHeader() {
       ? `Connected to ${ui.data?.settings.endpoint}. Local planner is used when the model is unreachable.`
       : `Cannot reach ${ui.data?.settings.endpoint || 'the AI endpoint'}. Build and run still work with the local planner.`;
   }
+  const platform = ui.data?.platform || {};
   const plat = $('#platform-tag');
   if (plat && ui.data) {
-    plat.textContent = ui.data.platform.windows ? 'windows · powershell' : 'non-windows · simulated only';
+    const label = String(platform.label || platform.platform || 'desktop').toLowerCase();
+    plat.textContent = platform.available ? `${label} · live` : `${label} · simulated only`;
+    plat.title = platform.available
+      ? `${platform.input || 'input'} · capture: ${platform.capture || 'unknown'}`
+      : String(platform.reason || 'no live backend');
+  }
+  // A console without a live backend cannot drive this screen at all, so it
+  // says so above every view instead of only when someone tries a live run.
+  const banner = $('#platform-banner');
+  if (banner && ui.data) {
+    banner.hidden = platform.available !== false;
+    const detail = $('#platform-banner-detail');
+    if (detail && platform.available === false) {
+      detail.textContent = `${platform.reason || 'no live backend'} · pid ${platform.pid ?? '?'} · ${location.origin}`;
+    }
   }
   const counts = ui.data?.counts;
   $('#badge-suggestions').textContent = counts?.suggestions ? String(counts.suggestions) : '';
@@ -890,7 +916,8 @@ function renderRunTray() {
     </div>
     <div class="tray-meter" title="${settled}/${total} steps settled"><i style="width:${pct}%"></i></div>
     <div class="tray-status">${statusPill(run.status, run.status)}<span class="small">${esc(control)}</span></div>
-    <div class="tray-step"><b>${esc(step || (active ? 'waiting for the next step' : 'run finished'))}</b><span class="dim small">${settled}/${total} steps · ${Number(run.passed || 0)} passed · ${Number(run.failed || 0)} failed · ${Number(run.evidenceCount || 0)} evidence</span></div>
+    <div class="tray-step"><b>${esc(step || (active ? 'waiting for the next step' : 'run finished'))}</b><span class="dim small">${settled}/${total} steps · ${Number(run.passed || 0)} passed${Number(run.awaitingChecks) > 0 ? ` (${Number(run.awaitingChecks)} still checking)` : ''} · ${Number(run.failed || 0)} failed · ${Number(run.evidenceCount || 0)} evidence</span></div>
+    ${run.presence?.holding ? `<div class="dim small" title="The run is waiting so it does not take the desktop while you work.">waiting for the desktop · ${esc(run.presence.reason || 'the user is active')}${Number(run.presence.deferredMs) > 0 ? ` · held ${Math.round(Number(run.presence.deferredMs) / 1000)}s` : ''}</div>` : ''}
     ${ui.trayExpanded ? `<div class="tray-detail">
       ${next ? `<div><span class="dim">Next</span> ${esc(next)}</div>` : ''}
       ${run.position ? `<div><span class="dim">Position</span> ${Number(run.position.stepNumber) || 0}/${Number(run.position.total) || total} · ${esc(run.position.phase || '')}</div>` : ''}
@@ -961,7 +988,7 @@ function renderBuilder() {
   return (
     head +
     `<div class="builder-grid">${rail}${renderBuilderMain(wf, lastRun, sim)}${renderBuilderRail(wf)}</div>` +
-    `<p class="builder-footnote">Desktop actions are executed with PowerShell 5.1 and Win32 SendInput. Simulated runs validate the workflow shape without touching the desktop; live input steps can require a matching foreground window so they refuse to act in the background. “Verify screen” captures fresh pixels and asks the vision model whether the visible app/page and state actually match before the run continues. Coordinates are absolute virtual-screen pixels.</p>`
+    `<p class="builder-footnote">Live desktop actions use the available backend on the machine running this console. Simulated runs validate the workflow shape without touching the desktop; live input steps can require a matching foreground window so they refuse to act in the background. “Verify screen” captures fresh pixels and asks the vision model whether the visible app/page and state actually match before the run continues. Coordinates are absolute virtual-screen pixels.</p>`
   );
 }
 
@@ -1497,7 +1524,7 @@ function renderLivePreview() {
     <div class="side-card-head"><h3>Screen preview</h3><span class="pill ${state.active && state.detail ? 'live' : 'simulated'}">${state.active ? (state.detail ? 'on' : 'unconfirmed') : state.uncertain ? 'unconfirmed' : 'off'}</span></div>
     <div class="side-card-body">
       <p class="muted small" style="margin-bottom:8px">Opt-in and read-only: refreshed 2D screenshots, not true 3D. This shows the computer running Sightline, not a remote desktop. Capture stops when you leave this view or the viewer disconnects.</p>
-      <button class="btn btn-sm ${canStop ? 'btn-ghost' : 'btn-primary'}" data-act="live-preview" data-mode="${canStop ? 'stop' : 'start'}" aria-disabled="${state.busy}">${state.busy ? 'Please wait…' : canStop ? 'Stop preview' : 'Start preview'}</button>
+      <button class="btn btn-sm ${canStop ? 'btn-ghost' : 'btn-primary'}" data-act="live-preview" data-mode="${canStop ? 'stop' : 'start'}" ${state.busy ? 'disabled' : ''}>${state.busy ? 'Please wait…' : canStop ? 'Stop preview' : 'Start preview'}</button>
       <div class="preview-output section-gap">${renderPreviewOutput()}</div>
     </div>
   </div>`;
@@ -1865,7 +1892,8 @@ function renderRunDetail(run) {
         <ul class="timeline">
           ${full.steps
             .map((s, i) => {
-              const glyph = s.status === 'passed' ? '✓' : s.status === 'failed' ? '✕' : s.status === 'running' ? '◌' : s.status === 'skipped' ? '–' : '·';
+              const shown = stepDisplayStatus(full, s);
+              const glyph = shown === 'passed' ? '✓' : shown === 'failed' ? '✕' : shown === 'verifying' ? '◔' : shown === 'running' ? '◌' : shown === 'skipped' ? '–' : '·';
               const stepEvidence = (full.evidence || []).filter((e) => e.stepId === s.id);
               return `<li class="tl-item ${esc(s.status)}">
                 <span class="tl-marker">${glyph}</span>
@@ -1873,7 +1901,7 @@ function renderRunDetail(run) {
                   <div class="tl-top">
                     <span class="tl-name">${i + 1}. ${esc(s.name)}</span>
                     <span class="type-chip">${esc(s.type)}</span>
-                    ${statusPill(s.status)}
+                    ${statusPill(shown, shown === 'verifying' ? 'checking' : undefined)}
                     ${s.optional ? '<span class="badge">optional</span>' : ''}
                     <span class="tl-meta">${s.attempts > 1 ? `${s.attempts} attempts · ` : ''}${fmtDur(s.ms)}</span>
                   </div>
@@ -3397,6 +3425,7 @@ function renderPresentation() {
           </div>
           <div class="hint-box small">
             <b>Now:</b> ${esc(liveStep || (liveActive ? 'waiting for the next step' : 'run finished'))}${liveNext ? `<br><b>Next:</b> ${esc(liveNext)}` : ''}
+            ${liveRun.presence?.holding ? `<br><b>Hold:</b> ${esc(liveRun.presence.reason || 'waiting for the desktop')}${Number(liveRun.presence.deferredMs) > 0 ? ` · held ${Math.round(Number(liveRun.presence.deferredMs) / 1000)}s` : ''}` : ''}
             ${liveRun.position ? `<br><span class="dim">position ${Number(liveRun.position.stepNumber) || 0}/${Number(liveRun.position.total) || liveRun.total || 0} · ${esc(liveRun.position.phase || '')}</span>` : ''}
           </div>
           ${liveFacts.length ? `<div class="stack" style="gap:4px">${liveFacts.map((fact) => `<div class="cc-event"><span class="badge">${esc(fact.level || 'note')}</span><span class="small">${esc(fact.message || '')}</span></div>`).join('')}</div>` : ''}
@@ -4615,7 +4644,7 @@ function renderPython() {
       </div>
       <div>
         <h4 class="mini-head">Desktop executor</h4>
-        <p class="small muted">PowerShell 5.1 + Win32 SendInput on this machine. Simulated runs validate without input; live runs move the real pointer.</p>
+        <p class="small muted">Live input uses the available backend on this machine. Simulated runs validate without input; live runs move the real pointer.</p>
       </div>
       <div>
         <h4 class="mini-head">Local console API</h4>
@@ -8349,11 +8378,16 @@ document.addEventListener('keydown', (event) => {
 /* ------------------------------------------------------------------ boot */
 async function boot() {
   ui.captures = [];
-  await loadAuth();
-  await loadCaptures();
-  await refresh();
-  await loadHealth();
-  await loadChat();
+  render();
+  // Optional startup requests must not hold the primary console view hostage.
+  loadAuth();
+  loadHealth();
+  const renderAfterLoad = () => {
+    const focused = document.activeElement;
+    if (ui.data && !ui.modal && !(focused && /INPUT|TEXTAREA|SELECT/.test(focused.tagName))) render();
+  };
+  loadCaptures().then(renderAfterLoad);
+  loadChat().then(renderAfterLoad);
   const pollState = async () => {
     const focused = document.activeElement;
     const typing = focused && /INPUT|TEXTAREA|SELECT/.test(focused.tagName);
@@ -8362,10 +8396,10 @@ async function boot() {
     }
     const counts = ui.data?.counts || {};
     const busy = Number(counts.activeRuns || 0) + Number(counts.missionsActive || 0);
-    const delay = document.hidden ? 8000 : busy ? 1500 : 3000;
+    const delay = document.hidden ? 8000 : busy ? 500 : 2000;
     setTimeout(pollState, delay);
   };
-  setTimeout(pollState, 1800);
+  pollState();
   setInterval(loadHealth, 60000);
   setInterval(async () => {
     if (!ui.data?.live?.running) return;

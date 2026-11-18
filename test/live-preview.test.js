@@ -6,7 +6,7 @@ import path from 'node:path';
 import net from 'node:net';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { createLivePreview } from '../server/live-preview.js';
+import { captureDesktop, createLivePreview } from '../server/live-preview.js';
 
 function harness(t, options = {}) {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'preview-test-'));
@@ -181,6 +181,68 @@ test('capture completing after the deadline is discarded even if lease timer is 
   assert.match(preview.state().reason, /heartbeat timed out/i);
   assert.equal(jobs.length, 0);
   assert.deepEqual(fs.readdirSync(dataDir), []);
+});
+
+test('large high-resolution desktop captures are not rejected at 20 MiB', async (t) => {
+  const pixels = Buffer.alloc(21 * 1024 * 1024, 42);
+  const { preview, run, dataDir } = harness(t, { capture: async () => pixels });
+  preview.start();
+  await run();
+  assert.equal(preview.state().running, true);
+  assert.equal(fs.statSync(path.join(dataDir, 'live-preview.png')).size, pixels.length);
+  preview.stop();
+});
+
+test('worker timeout kills the Windows process tree before cleaning its work directory', async (t) => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'preview-worker-'));
+  t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+  const work = path.join(dataDir, 'live-preview-work');
+  let workerDone;
+  let killDone;
+  let workerKills = 0;
+  const commands = [];
+  const execute = (command, args, options, callback) => {
+    commands.push({ command, args, options });
+    if (command === 'taskkill') {
+      killDone = callback;
+      // The parent can exit before taskkill finishes with its descendants.
+      workerDone(new Error('terminated'));
+      return {};
+    }
+    workerDone = callback;
+    return { pid: 123, kill: () => { workerKills++; } };
+  };
+  const capture = captureDesktop(dataDir, new AbortController().signal, { execute, platform: 'win32', timeoutMs: 5 });
+  // Keep the event loop alive while the unref'ed timeout triggers.
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(commands.length, 2);
+  assert.deepEqual(commands[1].args, ['/PID', '123', '/T', '/F']);
+  assert.equal(fs.existsSync(work), true, 'work remains until descendants are terminated');
+  killDone(null);
+  await assert.rejects(capture, /interrupted/);
+  assert.equal(fs.existsSync(work), false);
+  assert.equal(workerKills, 0);
+});
+
+test('failed taskkill falls back to terminating the capture worker', async (t) => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'preview-worker-'));
+  t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+  let workerDone;
+  let fallbackKills = 0;
+  const execute = (command, _args, _options, callback) => {
+    if (command === 'taskkill') {
+      setImmediate(() => callback(new Error('taskkill failed')));
+      return {};
+    }
+    workerDone = callback;
+    return { pid: 123, kill: () => { fallbackKills++; setImmediate(() => workerDone(new Error('terminated'))); } };
+  };
+  const controller = new AbortController();
+  const capture = captureDesktop(dataDir, controller.signal, { execute, platform: 'win32' });
+  controller.abort();
+  await assert.rejects(capture, /interrupted/);
+  assert.equal(fallbackKills, 1);
+  assert.equal(fs.existsSync(path.join(dataDir, 'live-preview-work')), false);
 });
 
 test('unsupported platforms never capture', async (t) => {
