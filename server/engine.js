@@ -970,10 +970,10 @@ async function priorEffectState(previous, run) {
     }
     return { ok: false, detail: `no ${checks[0].label} window is open` };
   }
-  if (['writeTextFile', 'downloadMedia', 'recordVideo'].includes(previous.type)) {
-    const outputVar = String(previous.params?.outputVar || '').trim();
-    const remembered = outputVar ? run?.variables?.[outputVar] : '';
-    const display = String(remembered || run?.variables?.savedTextFile || '').trim();
+  // Every step that writes a file is re-read the way the silent verifier reads
+  // it, so a repair never blames the next step for a file the previous one lost.
+  if (silentChecksFor(previous).includes('file')) {
+    const display = recordedOutputPath(run, previous);
     if (!display) return null;
     const absolute = resolveCheckFile(display);
     return absolute && fs.existsSync(absolute)
@@ -2407,26 +2407,30 @@ export function queuedCount() {
 }
 
 /**
- * The file a step actually wrote, read from the run's own records: the output
- * variable first, then the recorded file list, then the step's own filename.
- * Using the params alone made a downloaded file look missing because the step
- * names a url and a folder, never the final path.
+ * The file a step actually wrote, read from the run's own records. Every writer
+ * stores its output in one variable (`savedTextFile`, `savedFile`, ...) even
+ * when the step names none; reading the params alone made a downloaded file
+ * look missing because the step names a url and a folder, never the final path.
  */
+const OUTPUT_VAR = {
+  writeTextFile: 'savedTextFile',
+  downloadMedia: 'savedFile',
+  saveImage: 'savedImage',
+  recordVideo: 'savedVideo',
+};
+
 function recordedOutputPath(run, step) {
   const params = step?.params || {};
-  const outputVar = String(params.outputVar || '').trim();
+  const outputVar = String(params.outputVar || OUTPUT_VAR[step?.type] || '').trim();
   const remembered = outputVar ? String(run?.variables?.[outputVar] || '').trim() : '';
   if (remembered) return remembered;
-  const filename = String(params.filename || params.path || params.outputPath || '').trim();
+  // Older runs kept the file only in the run's file list or in the step's name.
+  const filename = String(params.filename || params.path || '').trim();
   const files = Array.isArray(run?.files) ? run.files : [];
   const recorded = files.find(
-    (file) =>
-      (filename && file.filename === filename) ||
-      (params.url && file.url === params.url) ||
-      (params.urlVar && run?.variables?.[params.urlVar] === file.url)
+    (file) => (filename && file.filename === filename) || (params.url && file.url === params.url)
   );
-  if (recorded?.path) return recorded.path;
-  return String(run?.variables?.savedTextFile || run?.variables?.savedFile || filename || '').trim();
+  return String(recorded?.path || filename).trim();
 }
 
 /**

@@ -15,7 +15,11 @@ import { findMission } from './missions.js';
 export const ACTIVE_MISSION_STATUSES = ['queued', 'planning', 'running', 'verifying', 'reviewing', 'replanning'];
 const BLOCKED_TRIGGERS = ['mission', 'shadow', 'shortcut-replay', 'presentation-audit'];
 
-const clamp = (value, min, max) => Math.min(max, Math.max(min, Number(value) || min));
+/** Integer setting inside [min, max]; null/undefined/garbage fall back to the default. */
+const clamp = (value, min, max, fallback = min) => {
+  const number = Number(value ?? NaN);
+  return Number.isFinite(number) ? Math.min(max, Math.max(min, Math.round(number))) : fallback;
+};
 
 function settings() {
   return db().settings || {};
@@ -26,8 +30,8 @@ export function escalationConfig() {
   const s = settings();
   return {
     enabled: s.autoForwardFailures !== false,
-    minFailures: clamp(s.autoEscalateMinFailures ?? 2, 1, 10),
-    dailyCap: clamp(s.autoEscalateDailyCap ?? 3, 0, 25),
+    minFailures: clamp(s.autoEscalateMinFailures, 1, 10, 2),
+    dailyCap: clamp(s.autoEscalateDailyCap, 0, 25, 3),
   };
 }
 
@@ -108,10 +112,7 @@ export function escalationDecision(run, { recoveryQueued = false, at = null } = 
  * "failed run → mission" builder and `start` is startMission(); both are
  * injected so a test can assert the decision without launching a real mission.
  */
-export function escalateFailedRun(
-  run,
-  { recoveryQueued = false, forward, start, at = null } = {}
-) {
+export function escalateFailedRun(run, { recoveryQueued = false, forward, start, at = null } = {}) {
   if (typeof forward !== 'function' || typeof start !== 'function') {
     throw new Error('escalateFailedRun needs the forward and start functions');
   }
@@ -137,10 +138,12 @@ export function escalationCandidates() {
   const missions = db().missions || [];
   const seen = new Set();
   const candidates = [];
-  const workflowIds = new Set((db().workflows || []).map((workflow) => workflow.id));
+  const workflows = new Map((db().workflows || []).map((workflow) => [workflow.id, workflow]));
   for (const run of db().runs) {
     if (run.status !== 'failed') continue;
-    if (!workflowIds.has(run.workflowId)) continue;
+    // A deleted workflow cannot be forwarded, so its failures are not offered.
+    const workflow = workflows.get(run.workflowId);
+    if (!workflow) continue;
     if (BLOCKED_TRIGGERS.includes(run.trigger)) continue;
     if (run.forwardedMissionId && missions.some((mission) => mission.id === run.forwardedMissionId)) continue;
     if (seen.has(run.workflowId)) continue;
@@ -149,7 +152,7 @@ export function escalationCandidates() {
     candidates.push({
       runId: run.id,
       workflowId: run.workflowId,
-      workflowName: run.workflowName,
+      workflowName: workflow.name || run.workflowName,
       failedAt: run.completedAt || run.createdAt || null,
       dryRun: Boolean(run.dryRun),
       streak: failureStreak(run.workflowId),
@@ -186,7 +189,7 @@ export function escalateBacklog({ limit = 3, forward, start } = {}) {
   const config = escalationConfig();
   const today = escalatedToday();
   const room = Math.max(0, config.dailyCap - today);
-  const wanted = Math.min(Math.max(1, Number(limit) || 3), room, 10);
+  const wanted = Math.min(clamp(limit, 1, 10, 3), room);
   const result = { started: [], skipped: [], room, remaining: room };
   if (wanted <= 0) {
     result.skipped.push({ reason: `the daily cap of ${config.dailyCap} mission(s) is reached` });
