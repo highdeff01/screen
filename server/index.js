@@ -37,7 +37,9 @@ import { getRetryBudget, setRetryBudget } from './retry-budget.js';
 import { prepareRecovery, finalizeRecoveryPack, applyRecoveryPack, listRecoveryPacks, findRecoveryPack, reconcileStuckRecoveryPacks } from './run-recovery.js';
 import { activePresenter, listPositionMemory, presenterUserInput } from './foreground-presenter.js';
 import { latestMonitorSuggestions, monitorState, startLiveMonitor, stopLiveMonitor } from './live-monitor.js';
+import { livePreview } from './live-preview.js';
 import { findSimulation, listSimulations, simulationSummary, startSimulation } from './screenshot-sim.js';
+import { prepareObservationReview } from './observation-review.js';
 import {
   companionState,
   scanCompanion,
@@ -138,7 +140,9 @@ import {
 } from './engine.js';
 
 const PORT = Number(process.env.PORT) || 4317;
-const HOST = '127.0.0.1';
+// The desktop-control API stays loopback-only by default, especially on Windows.
+// This explicit Linux-only flag is for isolated sandbox previews, not remote control.
+const HOST = process.platform !== 'win32' && process.argv.includes('--sandbox-preview') ? '0.0.0.0' : '127.0.0.1';
 const PUBLIC = path.join(ROOT, 'public');
 const PYTHON = path.join(DATA, 'python');
 fs.mkdirSync(PYTHON, { recursive: true });
@@ -476,6 +480,26 @@ route('GET', /^\/api\/state$/, async (req, res) => sendJson(res, 200, buildState
 route('GET', /^\/api\/health$/, async (req, res) => {
   const h = await health();
   sendJson(res, 200, { ok: true, ...h, platform: process.platform, windows: IS_WINDOWS });
+});
+
+route('GET', /^\/api\/live\/preview$/, async (req, res) => sendJson(res, 200, { ok: true, preview: livePreview.state() }));
+route('POST', /^\/api\/live\/preview$/, async (req, res) => {
+  // Same-origin browsers or local non-browser clients only, like the loopback API.
+  if (req.headers.origin) {
+    try {
+      const origin = new URL(req.headers.origin);
+      if (!['http:', 'https:'].includes(origin.protocol) || origin.host !== req.headers.host) return fail(res, 403, 'Origin not allowed');
+    } catch { return fail(res, 403, 'Origin not allowed'); }
+  }
+  let body;
+  try { body = await readBody(req); } catch { return fail(res, 400, 'Invalid request body'); }
+  if (!body || typeof body !== 'object' || !['start', 'stop', 'heartbeat'].includes(body.action)) return fail(res, 400, 'action must be start, stop or heartbeat');
+  try {
+    const preview = body.action === 'stop' ? livePreview.stop() : body.action === 'heartbeat' ? livePreview.heartbeat() : livePreview.start({ intervalMs: body.intervalMs });
+    return sendJson(res, 200, { ok: true, preview });
+  } catch {
+    return fail(res, 400, 'intervalMs must be a finite number');
+  }
 });
 
 route('GET', /^\/api\/live\/monitor$/, async (req, res) => sendJson(res, 200, { ok: true, monitor: monitorState() }));
@@ -1656,6 +1680,26 @@ route('GET', /^\/api\/simulations\/([^/]+)$/, async (req, res, [id]) => {
   const record = findSimulation(id);
   if (!record) return fail(res, 404, 'Simulation not found');
   sendJson(res, 200, { ok: true, simulation: simulationSummary(record) });
+});
+
+// Only stored records are reviewed; monitor events are global, not run-correlated.
+route('GET', /^\/api\/observation-review$/, async (req, res, _params, url) => {
+  res.setHeader('Cache-Control', 'no-store');
+  const params = url.searchParams;
+  const validId = (id) => typeof id === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(id);
+  if ([...params.keys()].some((key) => !['simulationId', 'proposalId'].includes(key)) ||
+      params.getAll('simulationId').length !== 1 || params.getAll('proposalId').length > 1 ||
+      !validId(params.get('simulationId')) || (params.has('proposalId') && !validId(params.get('proposalId')))) {
+    return fail(res, 400, 'A valid simulationId and optional proposalId are required');
+  }
+  const simulation = findSimulation(params.get('simulationId'));
+  if (!simulation) return fail(res, 404, 'Simulation not found');
+  const proposal = params.has('proposalId') ? findProposal(params.get('proposalId')) : null;
+  if (params.has('proposalId') && !proposal) return fail(res, 404, 'Proposal not found');
+  if (proposal && (!simulation.workflowId || !proposal.workflowId || simulation.workflowId !== proposal.workflowId)) {
+    return fail(res, 409, 'Simulation and proposal must belong to the same workflow');
+  }
+  sendJson(res, 200, { ok: true, ...prepareObservationReview({ monitor: monitorState(), simulation, proposal }) });
 });
 
 route('POST', /^\/api\/runs\/([^/]+)\/verify-silent$/, async (req, res, [id]) => {
@@ -2971,6 +3015,7 @@ function shutdown() {
   console.log('\nShutting down…');
   stopAmbient();
   stopAgents();
+  livePreview.stop();
   flush();
   server.close(() => process.exit(0));
   setTimeout(() => process.exit(0), 1500);
