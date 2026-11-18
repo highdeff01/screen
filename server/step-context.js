@@ -93,6 +93,18 @@ function matchesTarget(window, target = '') {
   );
 }
 
+/**
+ * Did a launch produce a window that was not already on the desktop? A launch
+ * that leaves the same document in front never opened the tab or window the
+ * flow asked for, so a later typing step must not use it.
+ */
+export function launchProducedNewWindow({ windows = [], after = '' } = {}) {
+  const norm = (value) => String(value || '').toLowerCase().replace(/\s+/g, ' ').trim();
+  const target = norm(after);
+  if (!target) return false;
+  return !(windows || []).map(norm).filter(Boolean).includes(target);
+}
+
 /** The state a successful step should leave behind, in one sentence. */
 export function expectationFor(step = {}) {
   const p = step.params || {};
@@ -133,7 +145,14 @@ export function assessStep({ step = {}, screen = null, goal = '', history = [] }
   const guard = String(p.foreground || p.window || p.title || '').trim();
   const result = {
     stepType: step.type || '',
-    state: { title: fg.title, process: fg.process, dialog: fg.dialog, kind: fg.kind, dialogs: dialogs.map((entry) => entry.title) },
+    state: {
+      title: fg.title,
+      process: fg.process,
+      dialog: fg.dialog,
+      kind: fg.kind,
+      dialogs: dialogs.map((entry) => entry.title),
+      windows: (screen?.windows || []).map((entry) => String(entry?.title || '')).filter(Boolean),
+    },
     alreadySatisfied: false,
     skipReason: '',
     inProgress: false,

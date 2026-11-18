@@ -7,6 +7,7 @@ import {
   decidePreview,
   describeSurroundings,
   expectationFor,
+  launchProducedNewWindow,
   reviewPrevious,
   userTiming,
 } from '../server/step-context.js';
@@ -50,6 +51,17 @@ test('a launch continues a dialog the flow is already in, but not a plain open w
     screen: { foreground: { title: 'notes.txt - Notepad', process: 'notepad' }, windows: [] },
   });
   assert.equal(openDocument.alreadySatisfied, false);
+});
+
+test('a launch that leaves an existing document in front did not open a window', () => {
+  assert.equal(
+    launchProducedNewWindow({ windows: ['knack convo.txt - Notepad'], after: 'knack convo.txt - Notepad' }),
+    false,
+    'the same title after a launch means nothing new was opened'
+  );
+  assert.equal(launchProducedNewWindow({ windows: ['knack convo.txt - Notepad'], after: 'Untitled - Notepad' }), true);
+  assert.equal(launchProducedNewWindow({ windows: [], after: 'Untitled - Notepad' }), true);
+  assert.equal(launchProducedNewWindow({ windows: ['x'], after: '' }), false);
 });
 
 test('an expectation is verified, never skipped for looking satisfied', () => {

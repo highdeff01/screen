@@ -16,7 +16,7 @@ import {
   silentCheck,
   resolveCheckFile,
 } from './automation.js';
-import { assessStep, reviewPrevious } from './step-context.js';
+import { assessStep, launchProducedNewWindow, reviewPrevious } from './step-context.js';
 import { classifyPresence, holdDecision, learnHold, completionFor, isFocusStealing, silentChecksFor } from './presence.js';
 import { beginRunObservation, endRunObservation } from './app-observer.js';
 import { expectsScreenChange, windowChecksFor, resumePlan, corroboratesNoChange, lookupWindowFor, screenChangeVerdict } from './step-effects.js';
@@ -1510,6 +1510,19 @@ async function executeRun(runId) {
       } catch (err) {
         pushLog(run, 'warn', `Pre-step window check failed: ${err.message}`, step.id);
       }
+      // A launch that only re-raised an already-open document is not a new
+      // window: typing into it would overwrite the operator's own work.
+      if (['type', 'key', 'clipboard'].includes(step.type) && !String(step.params?.foreground || '').trim()) {
+        const adopted = [...(run.steps || [])].reverse().find((entry) => entry.launch?.adopted);
+        if (adopted) {
+          step.status = 'skipped';
+          step.output = `Skipped: “${adopted.launch.target}” was already showing “${adopted.launch.after}”, so the launch did not open a new window; ${step.type} would have landed in the existing document.`;
+          recordLedger(run, step);
+          pushLog(run, 'warn', step.output, step.id);
+          persist();
+          continue;
+        }
+      }
       await perceiveStep(step, run, workflow, getTool);
       if (step.perception?.guardFailed) {
         step.status = 'skipped';
@@ -1672,6 +1685,28 @@ async function executeRun(runId) {
             const pause = Math.max(0, Number(run.policy?.pauseBeforeRetryMs || 0));
             await waitBeforeRetry(run, pause ? Math.min(pause, 10000) : 300);
           }
+        }
+      }
+      if (succeeded && step.type === 'launchApp') {
+        // A launch that only re-raised a window already on the desktop did not
+        // open the window the flow asked for. Remembering that lets a later
+        // typing step refuse to write into the operator’s existing document.
+        const target = String(step.params?.target || step.params?.title || step.params?.app || '').trim();
+        const windowsBefore = step.context?.state?.windows || [];
+        const after = (await readForegroundWindow().catch(() => null))?.title || '';
+        step.launch = {
+          target,
+          before: windowsBefore.slice(0, 8),
+          after,
+          adopted: windowsBefore.length > 0 && !launchProducedNewWindow({ windows: windowsBefore, after }),
+        };
+        if (step.launch.adopted) {
+          pushLog(
+            run,
+            'warn',
+            `“${target}” was already showing “${after}”; the launch did not open a new window, so typing will not use the existing document.`,
+            step.id
+          );
         }
       }
       if (run.cancelRequested && !succeeded) cancelled = true;
