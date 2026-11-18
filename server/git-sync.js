@@ -150,6 +150,60 @@ async function defaultVerify(sha) {
 }
 
 /**
+ * Stage HEAD on auto/<branch> and, when the suite has passed on that exact
+ * commit, fast-forward the real branch to it. Used after a fresh commit and
+ * also when a clean tree still holds commits nobody pushed — a restart between
+ * committing and verifying, or a push that failed, would otherwise leave them
+ * ahead forever.
+ */
+async function stageAndPromote({ run, deps = {}, settings = {}, branch, head }) {
+  const autoBranch = `auto/${branch}`;
+  state.autoBranch = autoBranch;
+  const staged = await run(['push', '--force', 'origin', `HEAD:refs/heads/${autoBranch}`], 120000);
+  if (!staged.ok) {
+    state.status = 'stage-failed';
+    state.lastError = staged.stderr || staged.stdout || `git push to ${autoBranch} failed.`;
+    return gitSyncStatus();
+  }
+  state.autoStaged = head;
+
+  // The gate. `force` is the operator's explicit "push anyway"; an injected
+  // `run` without `verify` is a unit test of the git plumbing, which keeps the
+  // old path so those decisions stay testable without a suite.
+  const gate = settings.autoSyncGated !== false && !deps.force && Boolean(deps.verify || !deps.run);
+  if (gate) {
+    const verdict = await verifyHead(head, deps);
+    if (verdict.deferred) {
+      state.status = 'verifying';
+      state.lastError = `${autoBranch} has ${head.slice(0, 7)}; the suite is running, so ${branch} waits for the next check.`;
+      return gitSyncStatus();
+    }
+    if (!verdict.ok) {
+      state.status = 'held';
+      state.held = { sha: head, at: now(), ok: false, fail: verdict.fail ?? null, tests: verdict.tests || [] };
+      state.lastError = `${verdict.fail ?? '?'} failing test(s) on ${head.slice(0, 7)}; ${autoBranch} has the commit and ${branch} is held back until the suite passes${
+        verdict.tests?.length ? ` (first: ${verdict.tests[0]})` : ''
+      }.`;
+      return gitSyncStatus();
+    }
+    state.held = { sha: head, at: now(), ok: true };
+  }
+
+  const push = await run(['push', 'origin', `HEAD:refs/heads/${branch}`], 120000);
+  if (!push.ok) {
+    state.status = 'push-failed';
+    state.lastError = push.stderr || push.stdout || 'git push failed.';
+    return gitSyncStatus();
+  }
+  state.status = 'pushed';
+  state.lastError = '';
+  state.ahead = 0;
+  state.lastSyncAt = now();
+  state.lastStatusHash = '';
+  return gitSyncStatus();
+}
+
+/**
  * One check. Returns the status object; `deps.run` replaces git for tests and
  * `deps.force` commits without waiting for a second identical observation.
  */
@@ -184,6 +238,8 @@ export async function checkAndSync(deps = {}) {
       return gitSyncStatus();
     }
     if (!parsed.count) {
+      state.pending = 0;
+      state.files = [];
       state.status = 'clean';
       state.lastError = '';
       state.lastStatusHash = '';
@@ -192,6 +248,13 @@ export async function checkAndSync(deps = {}) {
         const [ahead, behind] = String(counts.stdout).split(/\s+/).map((value) => Number(value) || 0);
         state.ahead = ahead;
         state.behind = behind;
+      }
+      if (state.behind > 0) return gitSyncStatus();
+      if (state.ahead > 0) {
+        const branch = (await run(['rev-parse', '--abbrev-ref', 'HEAD'])).stdout || 'main';
+        const head = (await run(['rev-parse', 'HEAD'])).stdout.trim();
+        state.branch = branch;
+        return stageAndPromote({ run, deps, settings, branch, head });
       }
       return gitSyncStatus();
     }
@@ -221,20 +284,6 @@ export async function checkAndSync(deps = {}) {
     state.lastCommit = commit.ok ? String(commit.stdout).split('\n')[0] : state.lastCommit;
     const head = (await run(['rev-parse', 'HEAD'])).stdout.trim();
 
-    // Every automatic commit lands on auto/<branch> first. That branch is a
-    // conveyor: only this loop writes it, and it may be rewritten. main moves
-    // only by the fast-forward push below, and only after the suite has seen
-    // this exact commit.
-    const autoBranch = `auto/${branch}`;
-    state.autoBranch = autoBranch;
-    const staged = await run(['push', '--force', 'origin', `HEAD:refs/heads/${autoBranch}`], 120000);
-    if (!staged.ok) {
-      state.status = 'stage-failed';
-      state.lastError = staged.stderr || staged.stdout || `git push to ${autoBranch} failed.`;
-      return gitSyncStatus();
-    }
-    state.autoStaged = head;
-
     const fetched = await run(['fetch', 'origin', branch], 60000);
     if (fetched.ok) {
       const counts = await run(['rev-list', '--left-right', '--count', `HEAD...origin/${branch}`]);
@@ -250,40 +299,7 @@ export async function checkAndSync(deps = {}) {
       return gitSyncStatus();
     }
 
-    // The gate. `force` is the operator's explicit "push anyway"; an injected
-    // `run` without `verify` is a unit test of the git plumbing, which keeps
-    // the old path so those decisions stay testable without a suite.
-    const gate = settings.autoSyncGated !== false && !deps.force && Boolean(deps.verify || !deps.run);
-    if (gate) {
-      const verdict = await verifyHead(head, deps);
-      if (verdict.deferred) {
-        state.status = 'verifying';
-        state.lastError = `${autoBranch} has ${head.slice(0, 7)}; the suite is running, so ${branch} waits for the next check.`;
-        return gitSyncStatus();
-      }
-      if (!verdict.ok) {
-        state.status = 'held';
-        state.held = { sha: head, at: now(), ok: false, fail: verdict.fail ?? null, tests: verdict.tests || [] };
-        state.lastError = `${verdict.fail ?? '?'} failing test(s) on ${head.slice(0, 7)}; ${autoBranch} has the commit and ${branch} is held back until the suite passes${
-          verdict.tests?.length ? ` (first: ${verdict.tests[0]})` : ''
-        }.`;
-        return gitSyncStatus();
-      }
-      state.held = { sha: head, at: now(), ok: true };
-    }
-
-    const push = await run(['push', 'origin', `HEAD:refs/heads/${branch}`], 120000);
-    if (!push.ok) {
-      state.status = 'push-failed';
-      state.lastError = push.stderr || push.stdout || 'git push failed.';
-      return gitSyncStatus();
-    }
-    state.status = 'pushed';
-    state.lastError = '';
-    state.ahead = 0;
-    state.lastSyncAt = now();
-    state.lastStatusHash = '';
-    return gitSyncStatus();
+    return stageAndPromote({ run, deps, settings, branch, head });
   } catch (err) {
     state.status = 'error';
     state.lastError = err.message;

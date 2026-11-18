@@ -139,6 +139,39 @@ test('a verifier that throws holds main instead of pushing', async () => {
   assert.deepEqual(mainPushes(git.calls), []);
 });
 
+test('a clean tree with unpushed commits is verified and promoted', async () => {
+  // The restart case: the commit is local and already on auto/main, the tree is
+  // clean, and nothing has pushed it. It must not sit ahead forever.
+  const git = fakeGit({ dirty: '' });
+  const seen = [];
+  const status = await sync.checkAndSync({
+    run: git.run,
+    verify: async (sha) => {
+      seen.push(sha);
+      return { ok: true };
+    },
+  });
+  assert.equal(status.status, 'pushed');
+  assert.deepEqual(seen, [HEAD]);
+  assert.equal(autoPushes(git.calls).length, 1);
+  assert.deepEqual(mainPushes(git.calls), ['push origin HEAD:refs/heads/main']);
+});
+
+test('a clean tree with failing commits holds main without re-running the suite', async () => {
+  const git = fakeGit({ dirty: '' });
+  let verifications = 0;
+  const verify = async () => {
+    verifications += 1;
+    return { ok: false, fail: 3, failingTests: ['x'] };
+  };
+  const first = await sync.checkAndSync({ run: git.run, verify });
+  assert.equal(first.status, 'held');
+  assert.deepEqual(mainPushes(git.calls), []);
+  const second = await sync.checkAndSync({ run: git.run, verify });
+  assert.equal(second.status, 'held');
+  assert.equal(verifications, 1);
+});
+
 test('a suite that is already running defers the promotion', async () => {
   const git = fakeGit();
   let verifications = 0;
