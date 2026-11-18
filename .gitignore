@@ -12,3 +12,5 @@ node_modules/
 fix-display.ps1
 force-rollback.ps1
 graphicsdrivers-backup.reg
+# The Python environment for the Respan Gateway (requirements.txt).
+.venv/
