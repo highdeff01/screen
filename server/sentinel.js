@@ -24,6 +24,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { DATA, db, logActivity, now, persist, ROOT, uid } from './store.js';
 import { addNote } from './handoff.js';
+import { agentActivity, sendContinuation } from './agent-awareness.js';
 
 const MUST_CHECK_DIR = 'must-check';
 const OUTPUT_LIMIT = 8000;
@@ -589,6 +590,16 @@ function queueFailure(run, settings) {
     tags: ['must-check', 'auto-test'],
     text: `Auto-test failed: ${(run.failingTests || []).slice(0, 3).join('; ') || `${run.fail} failing`}. Queued for repair${report ? `; report in ${report}` : ''}.`,
   });
+  // The working agents get a continuation addressed to them: what broke, where
+  // the report is, and the instruction to fix and re-run.
+  try {
+    sendContinuation({
+      from: 'sentinel',
+      reason: 'auto-test failed',
+      detail: `${(run.failingTests || [`${run.fail} failing`]).slice(0, 3).join('; ')}${report ? ` — report in ${report}` : ''}; fix, then run npm test`,
+      tags: ['auto-test'],
+    });
+  } catch { /* notes must never break the test path */ }
   persist();
   writeRepairQueue();
   if (settings.autoPlan !== false) {
@@ -729,6 +740,15 @@ function noteChange(file) {
 export async function settle(deps = {}) {
   if (!state.pending.size || state.busy) return sentinelStatus();
   if (!deps.force && Date.now() < state.cooldownUntil) return sentinelStatus();
+  // An AI actively editing the app means half-written files: stretch the
+  // cooldown rather than testing mid-edit. "Run now" still bypasses this.
+  if (!deps.force) {
+    const activity = agentActivity();
+    if (activity.active && state.cooldownUntil < Date.now() + 5 * 60 * 1000) {
+      state.cooldownUntil = Date.now() + 5 * 60 * 1000;
+    }
+    if (activity.active) return sentinelStatus();
+  }
   state.pending.clear();
   return runSentinelNow(deps);
 }

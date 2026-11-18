@@ -5964,6 +5964,18 @@ function renderRelay() {
     </section>
 
     <section class="card">
+      <div class="card-head"><h3>AIs working now</h3><span class="dim small">${(() => { const a = ui.data?.agentsWorking || {}; return a.active ? 'active' : 'none detected'; })()}</span></div>
+      <div class="card-body">
+        ${(() => {
+          const a = ui.data?.agentsWorking || {};
+          if (!a.active) return '<p class="muted small" style="margin:0">No agent is editing the app right now. Working agents can announce themselves: <span class="mono">POST /api/agents/heartbeat {name, task}</span>, and sign out with <span class="mono">/api/agents/done</span>.</p>';
+          return `<div class="stack" style="gap:6px">${(a.agents || []).map((agent) => `<div class="row wrap" style="gap:8px;align-items:center"><span class="badge okbadge">working</span><strong class="small">${esc(agent.name)}</strong><span class="small dim">${esc(agent.task || 'no task given')} · ${fmtTime(agent.at)}</span></div>`).join('')}${(a.signals || []).length ? `<p class="small dim" style="margin-top:4px">Signals: ${a.signals.map((s) => esc(s)).join(' · ')}</p>` : ''}${(a.files || []).length ? `<p class="small dim mono" style="margin-top:2px">${(a.files || []).slice(0, 8).map((f) => esc(f)).join(', ')}</p>` : ''}</div>`;
+        })()}
+        <p class="small dim" style="margin-top:8px">While agents are editing, the Sentinel stretches its auto-test cooldown so it never tests half-written files, and failures are sent to the working agents as continuation messages.</p>
+      </div>
+    </section>
+
+    <section class="card">
       <div class="card-head"><h3>Action log</h3><span class="dim small">${(() => { const al = ui.data?.actionLog || {}; return al.open ? `${al.open} open${al.triaged ? ` · ${al.triaged} with suggestions` : ''}` : 'clear'; })()}</span></div>
       <div class="card-body">
         <p class="small dim" style="margin-top:0">Every UI action, click and error is reported here and deduplicated. A recurring problem is written once into <span class="mono">must-check/</span> — the folder auto-sync carries to GitHub — and the pipeline drafts an AI suggestion for it. Nothing is auto-applied to source files.</p>
@@ -5975,6 +5987,8 @@ function renderRelay() {
               <span class="small dim">${item.count}× · ${fmtTime(item.lastAt)}${item.pattern ? ` · known: ${esc(item.pattern.id)}` : ''}</span>
               <span class="spacer"></span>
               <button class="btn btn-sm" data-act="alog-triage" data-id="${esc(item.id)}" title="Ask the model for a fix suggestion">${item.suggestion ? 'Re-suggest' : 'AI suggestion'}</button>
+              ${item.suggestion ? `<button class="btn btn-sm btn-primary" data-act="alog-implement" data-id="${esc(item.id)}" title="Turn the suggestion into reviewable workflow steps">Implement</button>` : ''}
+              ${item.implementation?.steps?.length ? `<span class="small dim">→ ${item.implementation.steps.length} step(s) drafted</span>` : ''}
               <button class="btn btn-sm ${item.pattern?.fix ? '' : 'btn-ghost'}" data-act="alog-fix" data-id="${esc(item.id)}" title="Mark handled / apply the known safe fix">Mark fixed</button>
               <button class="btn btn-sm btn-ghost" data-act="alog-dismiss" data-id="${esc(item.id)}">Dismiss</button>
             </div>
@@ -6782,6 +6796,14 @@ async function runAction(name, ds, el) {
     case 'alog-dismiss': {
       const res = await api(`/api/action-log/${encodeURIComponent(ds.id)}/dismiss`, { method: 'POST', body: {} });
       if (!res.ok) return toast(res.error, 'error');
+      await refresh();
+      render();
+      break;
+    }
+    case 'alog-implement': {
+      toast('Turning the suggestion into workflow steps…');
+      const res = await api(`/api/action-log/${encodeURIComponent(ds.id)}/implement`, { method: 'POST', body: {} });
+      toast(res.message || res.error || 'Done', res.ok ? 'ok' : 'error');
       await refresh();
       render();
       break;
