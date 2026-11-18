@@ -170,6 +170,11 @@ function fail(res, code, message) {
   sendJson(res, code, { ok: false, error: message });
 }
 
+/** A refusal that names the platform, so a cloud or Linux console is obvious. */
+function liveNeedsWindows() {
+  return `Live control requires Windows; this console is running on ${process.platform} (pid ${process.pid}).`;
+}
+
 function forwardRunToControlCenter(run, { auto = false } = {}) {
   if (!run || !['failed', 'needs_review'].includes(run.status)) {
     throw new Error('Only failed or needs-review runs can be forwarded.');
@@ -776,7 +781,7 @@ route('POST', /^\/api\/shortcuts\/habits\/([^/]+)\/replay$/, async (req, res, [i
     if (habit.reviewReason === 'app-update') {
       return fail(res, 400, 'The app changed. Re-approve the updated candidate before replaying this shortcut.');
     }
-    if (!IS_WINDOWS) return fail(res, 400, 'Live replay requires Windows');
+    if (!IS_WINDOWS) return fail(res, 400, liveNeedsWindows());
     const step = {
       id: uid('stp'),
       type: 'key',
@@ -1093,7 +1098,7 @@ route('POST', /^\/api\/missions$/, async (req, res) => {
   const body = await readBody(req);
   const workflow = db().workflows.find((entry) => entry.id === body.workflowId);
   if (!workflow) return fail(res, 400, 'Pick a workflow for the mission');
-  if (body.mode === 'live' && !IS_WINDOWS) return fail(res, 400, 'Live control requires Windows');
+  if (body.mode === 'live' && !IS_WINDOWS) return fail(res, 400, liveNeedsWindows());
   let autoPlan = null;
   try {
     autoPlan = await ensureWorkflowSteps(workflow, body.goal);
@@ -1621,7 +1626,7 @@ route('POST', /^\/api\/workflows\/([^/]+)\/runs$/, async (req, res, [id]) => {
   if (wf.status === 'archived') return fail(res, 400, 'Archived workflows cannot run');
   const body = await readBody(req);
   const dryRun = body.mode ? body.mode !== 'live' : Boolean(db().settings.dryRun);
-  if (body.mode === 'live' && !IS_WINDOWS) return fail(res, 400, 'Live control requires Windows');
+  if (body.mode === 'live' && !IS_WINDOWS) return fail(res, 400, liveNeedsWindows());
   let autoPlan = null;
   try {
     autoPlan = await ensureWorkflowSteps(wf, body.goal || wf.description || wf.name);
@@ -2965,6 +2970,13 @@ server.listen(PORT, HOST, () => {
   setInterval(scanElementLinks, 5000).unref?.();
   console.log(`Sightline console running at http://${HOST}:${PORT}`);
   console.log(`Data: ${DATA}`);
+  // Say which kind of console this is: a live run refused on a different
+  // machine looks identical to a bug on this one without it.
+  console.log(
+    IS_WINDOWS
+      ? `Platform: ${process.platform} — live desktop control is available.`
+      : `Platform: ${process.platform} — live desktop control is unavailable; runs are simulated only.`
+  );
 });
 
 function shutdown() {
