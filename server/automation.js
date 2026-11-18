@@ -2336,6 +2336,28 @@ if ($fg -ne [IntPtr]::Zero) {
 }
 
 /**
+ * The on-disk file a run recorded. Output paths are stored relative to the
+ * project root ("data/media/clip.mp4"), but older runs and hand-written steps
+ * keep a bare name, so every place a step writes is tried before calling it
+ * missing.
+ */
+export function resolveCheckFile(filePath) {
+  const raw = String(filePath || '').trim();
+  if (!raw) return '';
+  if (path.isAbsolute(raw)) return raw;
+  const rooted = path.resolve(ROOT, raw);
+  if (fs.existsSync(rooted)) return rooted;
+  const candidates = [
+    path.join(DATA, raw),
+    path.join(DATA, 'media', raw),
+    path.join(DATA, 'files', raw),
+    path.join(DATA, 'videos', raw),
+    path.resolve(raw),
+  ];
+  return candidates.find((candidate) => fs.existsSync(candidate)) || rooted;
+}
+
+/**
  * Read-only evidence for a step that already ran, used to finish verification
  * quietly while the user keeps working (no focus change, no input).
  */
@@ -2366,9 +2388,10 @@ export async function silentCheck(kind, { title = '', process = '', path: filePa
     case 'file':
     case 'exe': {
       if (!filePath) return { ok: false, detail: 'no file path recorded' };
-      const exists = fs.existsSync(filePath);
-      const size = exists ? fs.statSync(filePath).size : 0;
-      return { ok: exists && size > 0, detail: exists ? `${filePath} (${size} bytes)` : `${filePath} is missing` };
+      const resolved = resolveCheckFile(filePath);
+      const exists = Boolean(resolved) && fs.existsSync(resolved);
+      const size = exists ? fs.statSync(resolved).size : 0;
+      return { ok: exists && size > 0, detail: exists ? `${resolved} (${size} bytes)` : `${resolved || filePath} is missing` };
     }
     case 'clipboard': {
       const text = await readClipboardText();

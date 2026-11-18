@@ -14,6 +14,7 @@ import {
   readPresence,
   readForegroundWindow,
   silentCheck,
+  resolveCheckFile,
 } from './automation.js';
 import { assessStep, reviewPrevious } from './step-context.js';
 import { classifyPresence, holdDecision, learnHold, completionFor, isFocusStealing, silentChecksFor } from './presence.js';
@@ -974,9 +975,9 @@ async function priorEffectState(previous, run) {
     const remembered = outputVar ? run?.variables?.[outputVar] : '';
     const display = String(remembered || run?.variables?.savedTextFile || '').trim();
     if (!display) return null;
-    const absolute = path.isAbsolute(display) ? display : path.join(process.cwd(), display);
-    return fs.existsSync(absolute)
-      ? { ok: true, detail: display }
+    const absolute = resolveCheckFile(display);
+    return absolute && fs.existsSync(absolute)
+      ? { ok: true, detail: absolute }
       : { ok: false, detail: `${display} is missing` };
   }
   return null;
@@ -2406,6 +2407,29 @@ export function queuedCount() {
 }
 
 /**
+ * The file a step actually wrote, read from the run's own records: the output
+ * variable first, then the recorded file list, then the step's own filename.
+ * Using the params alone made a downloaded file look missing because the step
+ * names a url and a folder, never the final path.
+ */
+function recordedOutputPath(run, step) {
+  const params = step?.params || {};
+  const outputVar = String(params.outputVar || '').trim();
+  const remembered = outputVar ? String(run?.variables?.[outputVar] || '').trim() : '';
+  if (remembered) return remembered;
+  const filename = String(params.filename || params.path || params.outputPath || '').trim();
+  const files = Array.isArray(run?.files) ? run.files : [];
+  const recorded = files.find(
+    (file) =>
+      (filename && file.filename === filename) ||
+      (params.url && file.url === params.url) ||
+      (params.urlVar && run?.variables?.[params.urlVar] === file.url)
+  );
+  if (recorded?.path) return recorded.path;
+  return String(run?.variables?.savedTextFile || run?.variables?.savedFile || filename || '').trim();
+}
+
+/**
  * Finish the verification a run still owes without touching the desktop: only
  * read-only checks (window/process/file/clipboard) run here, so this is safe
  * while the user is working. Interactive checks stay on `pendingVerification`.
@@ -2425,7 +2449,7 @@ export async function verifyRunSilently(runId) {
         result = await silentCheck(check, {
           title: target,
           process: String(step.params?.process || step.params?.target || ''),
-          path: String(step.params?.path || step.params?.outputPath || step.params?.filename || ''),
+          path: recordedOutputPath(run, step),
         });
       } catch (err) {
         result = { ok: false, detail: err.message };
