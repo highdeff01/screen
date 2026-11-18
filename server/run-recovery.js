@@ -419,7 +419,8 @@ export async function prepareRecovery(
       log(pack, 'warn', 'plan', `Reading the desktop for the revision failed: ${err.message}`);
     }
   }
-  const revision = await withTimeout(
+  const aiRevisionEnabled = typeof ask === 'function' || d.settings.replanAi !== false;
+  const revision = aiRevisionEnabled ? await withTimeout(
     revisePlan({
       ...(typeof ask === 'function' ? { ask } : {}),
       workflow,
@@ -440,9 +441,11 @@ export async function prepareRecovery(
     }),
     60000,
     'AI plan revision'
-  ).catch((err) => ({ error: err.message }));
+  ).catch((err) => ({ error: err.message })) : null;
   if (revision?.error) {
     log(pack, 'warn', 'plan', `AI plan revision unavailable: ${revision.error}`);
+  } else if (revision?.skipped) {
+    log(pack, 'info', 'plan', 'AI plan revision is turned off in settings.');
   } else if (revision?.steps?.length) {
     pack.aiRevision = {
       decision: revision.decision,

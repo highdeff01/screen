@@ -52,6 +52,7 @@ function fixture() {
 test('a closed app gets an open prerequisite and a five-stage recovery pack', async () => {
   const { workflow, run } = fixture();
   const d = store.db();
+  d.settings.replanAi = false;
   d.workflows = [workflow];
   d.runs = [run];
   d.recoveryPacks = [];
@@ -91,6 +92,7 @@ test('a closed app gets an open prerequisite and a five-stage recovery pack', as
 
 test('the AI revision becomes a tested candidate that resumes after the passed steps', async () => {
   const d = store.db();
+  d.settings.replanAi = false;
   d.settings.replanDesktop = false;
   const workflow = {
     id: 'wf_replan_notepad',
@@ -180,6 +182,7 @@ test('ensureOpenPrerequisites fixes a fresh plan that starts with focusWindow', 
 
 test('a missing tool is not mistaken for a closed app', async () => {
   const d = store.db();
+  d.settings.replanAi = false;
   const workflow = {
     id: 'wf_tool_failure',
     name: 'Tool failure probe',
@@ -213,6 +216,7 @@ test('a missing tool is not mistaken for a closed app', async () => {
 
 test('a stuck planning pack is downgraded without approving a retry', () => {
   const d = store.db();
+  d.settings.replanAi = false;
   const old = new Date(Date.now() - 10 * 60 * 1000).toISOString();
   d.runs = [{ id: 'run_stuck_planning', status: 'failed', recovery: { packId: 'rcp_stuck', status: 'planning' } }];
   d.recoveryPacks = [
