@@ -172,10 +172,16 @@ export function startPipeline({ intervalMs } = {}) {
   return pipelineStatus();
 }
 
-/** Wait until every started job has settled (used by tests and "run now"). */
+/** Wait until every job in the queue has settled (tests and "run now"). */
 export async function drain() {
-  while (state.running.size) {
-    await Promise.all([...state.running.values()]);
+  const p = pipeline();
+  // The scheduler only starts work when a slot is free, so keep ticking until
+  // both the queue and the running set are empty. A job that fails is removed
+  // from the queue, so the loop always shrinks.
+  for (;;) {
+    if (!p.queue.length && !state.running.size) break;
+    tick();
+    if (state.running.size) await Promise.all([...state.running.values()]);
   }
   return pipelineStatus();
 }

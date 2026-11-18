@@ -34,7 +34,7 @@ function scripted(rules) {
       calls.push(`${path.basename(cwd)}$ ${line}`);
       const rule = rules.find(([fragment]) => line.includes(fragment));
       if (line.startsWith('clone ')) {
-        const target = args[3] === '.' ? cwd : args[3];
+        const target = args[args.length - 1] === '.' ? cwd : args[args.length - 1];
         fs.mkdirSync(path.join(target, '.git'), { recursive: true });
       }
       const reply = rule ? rule[1] : { ok: true, stdout: '', stderr: '' };
@@ -98,8 +98,9 @@ test('a receive goes to review, and approving applies the files with backups', a
   const link = relay.relayStatus().links[0];
   const staging = path.join(process.cwd(), 'data', 'relay', link.id);
   // The staging clone "received" a new version of the file from the remote.
-  fs.mkdirSync(staging, { recursive: true });
+  fs.mkdirSync(path.join(staging, 'notes'), { recursive: true });
   fs.writeFileSync(path.join(staging, 'report.md'), 'updated by the other app');
+  fs.writeFileSync(path.join(staging, 'notes', 'new.md'), 'a brand new file');
   const { run } = scripted([
     ['diff --name-only', { ok: true, stdout: 'report.md\nnotes/new.md' }],
     ['rev-parse origin/main', { ok: true, stdout: 'abc123def' }],

@@ -31,13 +31,14 @@ test('a request needs a question and is listed open, newest first', () => {
 });
 
 test('answering settles the request and the asker reads the answer back', async () => {
+  const before = inbox.listInbox({ status: 'open' }).length;
   const item = inbox.ask({ question: 'Keep the temp branch?', from: 'merger' });
   assert.throws(() => inbox.answerRequest(item.id, { answer: '  ' }), /needs some text/);
   assert.throws(() => inbox.answerRequest('nope', { answer: 'x' }), /Request not found/);
   const answered = inbox.answerRequest(item.id, { answer: 'yes, keep it', by: 'Dan' });
   assert.equal(answered.status, 'answered');
   assert.equal(answered.answeredBy, 'Dan');
-  assert.equal(inbox.listInbox({ status: 'open' }).length, 0, 'answered requests leave the open list');
+  assert.equal(inbox.listInbox({ status: 'open' }).length, before, 'answered requests leave the open list');
   // The waiting side sees the answer without polling forever.
   const waited = await inbox.waitRequest(item.id, { timeoutMs: 2000 });
   assert.equal(waited.item.answer, 'yes, keep it');

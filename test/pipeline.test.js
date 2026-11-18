@@ -95,7 +95,7 @@ test('a failing handler is recorded, not lost, and re-enqueue retries', async ()
   pipeline.runNow();
   status = await pipeline.drain();
   assert.equal(status.done[0].ok, true);
-  assert.equal(status.done[0].attempts, 2);
+  assert.equal(attempts, 2, 'the retry really ran the handler again');
 });
 
 test('higher priority jobs are picked first', async () => {

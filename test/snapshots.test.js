@@ -31,10 +31,13 @@ after(async () => {
   }
 });
 
-test('snapshots need a git repository', async () => {
-  const result = await snapshots.createSnapshot('no repo here');
+test('snapshots refuse to run without a repository', async () => {
+  const notARepo = async () => ({ ok: false, code: 128, stdout: '', stderr: 'fatal: not a git repository' });
+  const result = await snapshots.createSnapshot('no repo here', { run: notARepo });
   assert.equal(result.ok, false);
   assert.equal(result.status, 'not-a-repo');
+  // The temp folder is nested inside the project's worktree, so give it its own
+  // repository to keep every later git command inside the sandbox.
   await git(['init']);
   await git(['config', 'user.email', 'test@example.com']);
   await git(['config', 'user.name', 'Test']);
