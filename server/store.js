@@ -47,8 +47,8 @@ function seed() {
       aiSuggestions: true,
       requireToolApproval: true,
       agentTickMs: 5000,
-      // Commit and push this console's own source whenever it changes.
-      autoSync: true,
+      // Explicit opt-in: sync tracked working-tree changes outside data/.
+      autoSync: false,
       autoSyncIntervalMs: 20000,
       visionEnabled: true,
       visualChecks: true,

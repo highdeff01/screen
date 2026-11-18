@@ -46,6 +46,21 @@ const BLOCKED = [
   { test: /^\/api\/(git|commands|handoff)(\/|$)/i, method: /^(POST|PUT|PATCH|DELETE)$/i, why: "git changes, notes and custom commands only work on the console's own machine" },
 ];
 
+// Keep this list in sync with the read-only review views, not the entire API.
+// In particular, files/raw is also used for evidence images, but accepts local
+// paths and must not be exposed to a shared visitor. Unknown routes fail closed.
+// Some seemingly read-only routes are excluded too: workflow-memory can persist
+// a backfill, presentation detail can persist a profile, and health/models call
+// the configured model server. Listing shortcuts can also reconcile and persist
+// local shortcut state. Shared review data itself remains trusted-link access.
+const SAFE_READS = [
+  /^\/$/,
+  /^\/(index\.html|app\.js|styles\.css)$/,
+  /^\/api\/(state|auth\/status|examples|captures|companion|continuity)$/,
+  /^\/api\/runs\/[^/]+(?:\/simulations)?$/,
+  /^\/api\/missions(?:\/[^/]+(?:\/presentation)?)?$/,
+];
+
 const RUN_PATH = /^\/api\/(workflows\/[^/]+\/runs|missions)$/;
 
 /** First non-loopback IPv4 address, so the link is usable on the LAN. */
@@ -161,8 +176,9 @@ async function handle(req, res) {
 
   const method = req.method || 'GET';
   const rule = blocked(url.pathname, method);
+  const approvedRead = ['GET', 'HEAD'].includes(method) && SAFE_READS.some((pattern) => pattern.test(url.pathname));
   const approvedPost = method === 'POST' && RUN_PATH.test(url.pathname);
-  if (rule || (!['GET', 'HEAD'].includes(method) && !approvedPost)) {
+  if (rule || (!approvedRead && !approvedPost)) {
     const why = rule?.why || 'this action is not available through a share link';
     // Drain the refused body and close the socket: a keep-alive client that is
     // still uploading would otherwise see ECONNRESET instead of this 403.

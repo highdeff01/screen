@@ -2225,13 +2225,16 @@ route('POST', /^\/api\/workflows\/([^/]+)\/runs$/, async (req, res, [id]) => {
   if (wf.status === 'archived') return fail(res, 400, 'Archived workflows cannot run');
   const body = await readBody(req);
   let dryRun = body.mode ? body.mode !== 'live' : Boolean(db().settings.dryRun);
-  if (body.mode === 'live' && !liveControl().available) {
-    // The person asked for live; a wrong-looking platform (for example a hosted
-    // preview that reports Linux on a Windows machine) no longer bounces them:
-    // the run proceeds in simulated mode and the mismatch is logged for the fixer.
-    dryRun = true;
-    const item = recordAction({ kind: 'run', action: `start-run:${wf.name}`, error: liveRefusal(), detail: { workflowId: wf.id, requestedMode: 'live' } });
-    logActivity('run', `Live refused (${liveControl().reason || 'no backend'}); running simulated instead`, { workflowId: wf.id, itemId: item?.id });
+  let liveFallback = null;
+  if (!dryRun) {
+    const control = liveControl();
+    if (!control.available) {
+      // Keep resolved live requests moving in simulation when no backend is available.
+      dryRun = true;
+      liveFallback = liveRefusal();
+      const item = recordAction({ kind: 'run', action: `start-run:${wf.name}`, error: liveFallback, detail: { workflowId: wf.id, requestedMode: 'live' } });
+      logActivity('run', `Live refused (${control.reason || 'no backend'}); running simulated instead`, { workflowId: wf.id, itemId: item?.id });
+    }
   }
   let autoPlan = null;
   try {
@@ -2240,7 +2243,7 @@ route('POST', /^\/api\/workflows\/([^/]+)\/runs$/, async (req, res, [id]) => {
     return fail(res, 400, `Could not auto-create steps: ${err.message}`);
   }
   const run = createRun(wf, { trigger: body.trigger || 'manual', dryRun });
-  sendJson(res, 200, { ok: true, run: findRun(run.id), autoPlan, liveFallback: dryRun && body.mode === 'live' ? liveRefusal() : null });
+  sendJson(res, 200, { ok: true, run: findRun(run.id), autoPlan, liveFallback });
 });
 
 route('GET', /^\/api\/runs\/([^/]+)$/, async (req, res, [id]) => {

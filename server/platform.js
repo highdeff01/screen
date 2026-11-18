@@ -363,18 +363,23 @@ export function detectBackend({ env = process.env, platform = HOST } = {}) {
   if (platform === 'linux') {
     const capture = captureToolFor('linux', env);
     const input = commandOnPath('xdotool', env) ? LINUX_INPUT[0] : null;
-    // Linux is a live backend with or without the optional X11 helpers. A step
-    // that needs a missing one fails there, with its own install hint, instead
-    // of refusing the whole run up front.
+    // Pointer, keys and window operations use xdotool, even when a Wayland
+    // session is present. XWayland works when it supplies an X11 DISPLAY;
+    // ydotool and grim alone are not sufficient for this backend.
+    const display = Boolean(String(env.DISPLAY || '').trim());
+    const missing = [];
+    if (!display) missing.push('an X11 DISPLAY (including XWayland)');
+    if (!input) missing.push('xdotool on PATH for input');
+    if (!capture) missing.push('an X11 screenshot tool on PATH (such as scrot or maim)');
     return {
       id: 'linux',
       label: 'Linux',
-      available: true,
-      reason: '',
+      available: missing.length === 0,
+      reason: missing.length ? `Linux live control needs ${missing.join(', ')}.` : '',
       capture: capture || 'no screenshot tool',
       input: input ? input.label : 'no input tool (xdotool)',
-      captureReady: Boolean(capture),
-      inputReady: Boolean(input),
+      captureReady: display && Boolean(capture),
+      inputReady: display && Boolean(input),
       mobile: false,
       target: 'desktop',
     };

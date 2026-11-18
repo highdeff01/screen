@@ -1,19 +1,17 @@
 /**
- * Automatic sync of this console's own source to GitHub.
+ * Opt-in synchronization of this console's working tree to origin.
  *
- * The console lives in a git working tree; when that tree changes, this loop
- * commits and pushes to the configured remote so the repository matches the
- * machine. It is deliberately conservative:
+ * It stages modifications and deletions of already tracked files under the
+ * console root, except data/ (runtime state, tokens and captures). It never
+ * adds untracked files, even if they are not ignored. Files already tracked
+ * elsewhere may still contain secrets: review the repository before enabling.
+ * Any pre-existing staged changes or conflicts stop the sync for manual review,
+ * including changes in data/. Existing commits may also be pushed to origin.
  *
- *   - the tree must be unchanged for two consecutive checks (no half-written
- *     files, no committing while an editor is still saving)
- *   - a conflicted tree is never committed; it reports and stops
- *   - if the remote has moved, it commits locally and reports `behind` instead
- *     of inventing a merge
- *   - `data/` stays untracked (it holds tokens and captures) because git ignores
- *     it, and the loop only ever runs `git add -A` inside the repo
- *
- * Everything is injectable so the decisions can be tested without a repo.
+ * Two identical status observations are required, but status does not detect
+ * content edits to an already modified file. If origin moved, the local commit
+ * is kept without a push. Failed pushes require a manual retry when the tree is
+ * clean. Git and the settle wait are injectable for testing.
  */
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -52,7 +50,8 @@ function runGit(args, timeoutMs = 30000) {
         resolve({
           ok: !error,
           code: error?.code ?? 0,
-          stdout: String(stdout || '').trim(),
+          // Porcelain status uses the first column; do not trim leading spaces.
+          stdout: String(stdout || '').trimEnd(),
           stderr: String(stderr || '').trim(),
         });
       }
@@ -72,7 +71,7 @@ export function parseStatus(text) {
 }
 
 export function gitSyncStatus() {
-  const enabled = db().settings.autoSync !== false;
+  const enabled = db().settings?.autoSync === true;
   return {
     enabled,
     running: Boolean(state.timer),
@@ -104,7 +103,7 @@ function commitMessage(files) {
 export async function checkAndSync(deps = {}) {
   const run = deps.run || runGit;
   const settings = db().settings || {};
-  if (settings.autoSync === false) {
+  if (settings.autoSync !== true) {
     state.status = 'disabled';
     return gitSyncStatus();
   }
@@ -121,16 +120,38 @@ export async function checkAndSync(deps = {}) {
       return gitSyncStatus();
     }
 
-    const status = await run(['status', '--porcelain']);
+    // Inspect the entire index first: git commit would include *all* staged
+    // entries, including newly added or ignored files outside our sync scope.
+    const fullStatus = await run(['status', '--porcelain', '--untracked-files=no']);
+    if (!fullStatus.ok) {
+      state.status = 'error';
+      state.lastError = fullStatus.stderr || 'git status failed.';
+      return gitSyncStatus();
+    }
+    const full = parseStatus(fullStatus.stdout);
+    if (full.conflicts.length) {
+      state.lastStatusHash = '';
+      state.status = 'conflict';
+      state.lastError = `${full.conflicts.length} conflicted file(s) need a manual merge: ${full.files.slice(0, 4).join(', ')}.`;
+      return gitSyncStatus();
+    }
+    if (full.lines.some((line) => line[0] !== ' ')) {
+      state.lastStatusHash = '';
+      state.status = 'staged';
+      state.lastError = 'Staged changes need a manual commit or unstage before auto-sync.';
+      return gitSyncStatus();
+    }
+
+    const scope = ['.', ':(exclude)data'];
+    const status = await run(['status', '--porcelain', '--untracked-files=no', '--', ...scope]);
+    if (!status.ok) {
+      state.status = 'error';
+      state.lastError = status.stderr || 'git status failed.';
+      return gitSyncStatus();
+    }
     const parsed = parseStatus(status.stdout);
     state.pending = parsed.count;
     state.files = parsed.files;
-
-    if (parsed.conflicts.length) {
-      state.status = 'conflict';
-      state.lastError = `${parsed.conflicts.length} conflicted file(s) need a manual merge: ${parsed.files.slice(0, 4).join(', ')}.`;
-      return gitSyncStatus();
-    }
     if (!parsed.count) {
       state.status = 'clean';
       state.lastError = '';
@@ -152,7 +173,7 @@ export async function checkAndSync(deps = {}) {
       return gitSyncStatus();
     }
 
-    const add = await run(['add', '-A']);
+    const add = await run(['add', '-u', '--', ...scope]);
     if (!add.ok) {
       state.status = 'error';
       state.lastError = add.stderr || 'git add failed.';
@@ -169,14 +190,20 @@ export async function checkAndSync(deps = {}) {
     state.lastCommit = commit.ok ? String(commit.stdout).split('\n')[0] : state.lastCommit;
 
     const fetched = await run(['fetch', 'origin', branch], 60000);
-    if (fetched.ok) {
-      const counts = await run(['rev-list', '--left-right', '--count', `HEAD...origin/${branch}`]);
-      if (counts.ok) {
-        const [ahead, behind] = String(counts.stdout).split(/\s+/).map((value) => Number(value) || 0);
-        state.ahead = ahead;
-        state.behind = behind;
-      }
+    if (!fetched.ok) {
+      state.status = 'push-failed';
+      state.lastError = fetched.stderr || fetched.stdout || 'git fetch failed; commit kept locally, no push.';
+      return gitSyncStatus();
     }
+    const counts = await run(['rev-list', '--left-right', '--count', `HEAD...origin/${branch}`]);
+    const countMatch = counts.ok && String(counts.stdout).trim().match(/^(\d+)\s+(\d+)$/);
+    if (!countMatch) {
+      state.status = 'push-failed';
+      state.lastError = counts.stderr || 'Could not compare with origin; commit kept locally, no push.';
+      return gitSyncStatus();
+    }
+    state.ahead = Number(countMatch[1]);
+    state.behind = Number(countMatch[2]);
     if (state.behind > 0) {
       state.status = 'behind';
       state.lastError = `origin/${branch} has ${state.behind} commit(s) that are not local; commit kept locally, no push. Merge when convenient.`;
