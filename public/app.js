@@ -3967,7 +3967,7 @@ function renderCommandCenter() {
     ? missions
         .map(
           (m) => `<button class="cc-mission ${m.id === ui.selectedMission ? 'active' : ''}" data-act="mission-select" data-id="${m.id}">
-            <div class="row" style="gap:6px"><strong>${esc(m.workflowName)}</strong><span class="spacer"></span>${statusPill(m.status)}</div>
+            <div class="row" style="gap:6px"><strong>${esc(m.workflowName)}</strong>${m.trigger === 'failure' ? '<span class="badge">auto</span>' : ''}<span class="spacer"></span>${statusPill(m.status)}</div>
             <p class="small" style="margin-top:3px">${esc(String(m.goal).slice(0, 120))}</p>
             <span class="dim small">${m.attempts}/${m.maxAttempts} attempts · ${m.eventCount} events · ${fmtTime(m.createdAt)}</span>
           </button>`
@@ -4301,6 +4301,36 @@ function renderCommandCenter() {
     </div>
   </div>`;
 
+  const escalation = d.escalation || {};
+  const escalationCard = `
+  <div class="hint-box small">
+    <div class="row wrap" style="gap:8px;align-items:center">
+      <strong>Auto-escalation ${escalation.enabled ? 'on' : 'off'}</strong>
+      <span class="dim">${escalation.enabled
+        ? `${esc(String(escalation.minFailures ?? 2))} consecutive failures · ${esc(String(escalation.today ?? 0))}/${esc(
+            String(escalation.dailyCap ?? 3)
+          )} started today · auto-recovery runs first`
+        : 'failures stay in Test runs until you forward one'}</span>
+      <span class="spacer"></span>
+      ${escalation.candidateCount
+        ? `<button class="btn btn-sm btn-primary" data-act="escalate-backlog" data-limit="${Math.max(
+            1,
+            Math.min(3, Number(escalation.remaining) || 3)
+          )}">Send ${escalation.candidateCount} failure(s) to the Command Center</button>`
+        : '<span class="dim small">No unclaimed failures.</span>'}
+    </div>
+    ${escalation.candidates?.length
+      ? `<div class="small" style="margin-top:6px">${escalation.candidates
+          .slice(0, 4)
+          .map(
+            (candidate) =>
+              `<span class="badge">${esc(candidate.workflowName)} · ${esc(String(candidate.streak || 1))}×${candidate.dryRun ? ' · simulated' : ''}</span>`
+          )
+          .join(' ')}</div>`
+      : ''}
+    <div class="dim small" style="margin-top:5px">A mission is only started once the automatic repair has had its try, one per workflow at a time, and never more than the daily cap. Change the threshold or cap in Settings.</div>
+  </div>`;
+
   return `
   <div class="page-head">
     <div>
@@ -4314,6 +4344,7 @@ function renderCommandCenter() {
     </div>
   </div>
   ${composer}
+  ${escalationCard}
   ${continuityCard}
   <div class="cc-layout">
     <aside class="cc-list">
@@ -4835,7 +4866,15 @@ function settingsFields(s) {
     } /> Send mission captures to a vision model</label>
     <label class="check" style="margin-bottom:6px"><input type="checkbox" data-scope="settings" data-key="autoForwardFailures" ${
       s.autoForwardFailures ? 'checked' : ''
-    } /> Automatically start Control Center repair when a run fails (the supervisor diagnoses and can update the workflow)</label>
+    } /> Send repeated failures to the Command Center automatically (after the auto-recovery stage has had its try)</label>
+    <div class="field-row">
+      <label class="field"><span>Escalate after (consecutive failures)</span><input type="number" min="1" max="10" value="${Number(
+        s.autoEscalateMinFailures ?? 2
+      )}" data-scope="settings" data-key="autoEscalateMinFailures" /></label>
+      <label class="field"><span>Auto-start cap per day</span><input type="number" min="0" max="25" value="${Number(
+        s.autoEscalateDailyCap ?? 3
+      )}" data-scope="settings" data-key="autoEscalateDailyCap" /><span class="help">Only the missions this policy starts count toward the cap.</span></label>
+    </div>
     <label class="check" style="margin-bottom:6px"><input type="checkbox" data-scope="settings" data-key="autoProposeFailures" ${
       s.autoProposeFailures === true ? 'checked' : ''
     } /> Auto-propose a repair after a failed or needs-review run</label>
@@ -7905,6 +7944,23 @@ async function runAction(name, ds, el) {
       }
       break;
     }
+    case 'escalate-backlog': {
+      const res = await api('/api/control-center/escalate', {
+        method: 'POST',
+        body: { limit: Number(ds.limit) || 3 },
+      });
+      if (!res.ok) return toast(res.error, 'error');
+      const started = res.result?.started?.length || 0;
+      const skipped = res.result?.skipped?.length || 0;
+      toast(
+        started
+          ? `Started ${started} mission(s)${skipped ? ` · ${skipped} skipped` : ''}`
+          : res.result?.skipped?.[0]?.reason || 'Nothing to escalate',
+        started ? 'ok' : 'error'
+      );
+      await refresh();
+      break;
+    }
     case 'mission-action': {
       const id = ds.id;
       const cmd = ds.cmd;
@@ -7989,6 +8045,8 @@ async function runAction(name, ds, el) {
         autoActEnabled: settings.autoActEnabled === true,
         autoActThreshold: Number(settings.autoActThreshold || 80),
         autoForwardFailures: settings.autoForwardFailures === true,
+        autoEscalateMinFailures: Number(settings.autoEscalateMinFailures || 2),
+        autoEscalateDailyCap: Number(settings.autoEscalateDailyCap ?? 3),
         autoProposeFailures: settings.autoProposeFailures === true,
         autoRecoverFailures: settings.autoRecoverFailures !== false,
         recoveryMaxAttempts: Number(settings.recoveryMaxAttempts || 2),

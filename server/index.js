@@ -26,6 +26,7 @@ import { liveControl } from './platform.js';
 import { loopStatus, reviewPendingVerifications, startVerificationLoop, stopVerificationLoop } from './verification-loop.js';
 import { checkAndSync, gitSyncStatus, startAutoSync, stopAutoSync } from './git-sync.js';
 import { shareStatus, startShare, stopShare } from './share.js';
+import { escalateBacklog, escalateFailedRun, escalationStatus } from './auto-escalation.js';
 import { chatWithProjectMemory, getHistory, clearHistory, health, parseJsonLoose, chat, listModels, getMemoryStats, summarizeConversation } from './llm.js';
 import { estimateTokens } from './context.js';
 import { readTextChunk, writeTextChunk, digestForSummary, isTextFile } from './longfiles.js';
@@ -372,6 +373,7 @@ function buildState() {
     verificationLoop: loopStatus(),
     gitSync: gitSyncStatus(),
     share: shareStatus(),
+    escalation: escalationStatus(),
     notes: d.notes.slice(0, 60).map(({ body, ...rest }) => ({
       ...rest,
       preview: body.split('\n').filter(Boolean).slice(0, 3).join(' ').slice(0, 180),
@@ -512,6 +514,26 @@ route('POST', /^\/api\/git-sync\/now$/, async (req, res) => {
 
 route('GET', /^\/api\/share$/, async (req, res) => {
   sendJson(res, 200, { ok: true, share: shareStatus({ includeToken: true }) });
+});
+
+// Automatic Command Center usage: the policy, and the operator's one-click
+// "send these failures to a mission" action.
+route('GET', /^\/api\/control-center\/escalation$/, async (req, res) => {
+  sendJson(res, 200, { ok: true, escalation: escalationStatus() });
+});
+
+route('POST', /^\/api\/control-center\/escalate$/, async (req, res) => {
+  const body = await readBody(req);
+  try {
+    const result = escalateBacklog({
+      limit: Number(body.limit) || 3,
+      forward: forwardRunToControlCenter,
+      start: startMission,
+    });
+    sendJson(res, 200, { ok: true, result, escalation: escalationStatus() });
+  } catch (err) {
+    fail(res, 400, err.message);
+  }
 });
 
 route('POST', /^\/api\/share\/start$/, async (req, res) => {
@@ -2731,6 +2753,12 @@ route('PATCH', /^\/api\/settings$/, async (req, res) => {
     s.autoActThreshold = Math.max(1, Math.min(100, Number(body.autoActThreshold) || 80));
   }
   if (body.autoForwardFailures !== undefined) s.autoForwardFailures = Boolean(body.autoForwardFailures);
+  if (body.autoEscalateMinFailures !== undefined) {
+    s.autoEscalateMinFailures = Math.max(1, Math.min(10, Number(body.autoEscalateMinFailures) || 2));
+  }
+  if (body.autoEscalateDailyCap !== undefined) {
+    s.autoEscalateDailyCap = Math.max(0, Math.min(25, Number(body.autoEscalateDailyCap) || 3));
+  }
   if (body.autoProposeFailures !== undefined) s.autoProposeFailures = Boolean(body.autoProposeFailures);
   if (body.autoRecoverFailures !== undefined) s.autoRecoverFailures = Boolean(body.autoRecoverFailures);
   if (body.recoveryMaxAttempts !== undefined) {
@@ -3061,13 +3089,24 @@ setRunFinishedHook(async (run) => {
       persist();
     }
   }
-  if (db().settings.autoForwardFailures && !recoveryQueued && run.status === 'failed' && run.trigger !== 'mission' && !run.forwardedMissionId) {
+  if (run.status === 'failed') {
+    // The policy decides whether this failure is worth a mission; the reason is
+    // kept on the run so a failure that stayed out of the Command Center says why.
     try {
-      const mission = forwardRunToControlCenter(run, { auto: true });
-      startMission(mission.id);
-      logActivity('run', `Started Control Center repair for ${run.id} as ${mission.id}`, { runId: run.id, missionId: mission.id });
+      const outcome = escalateFailedRun(run, {
+        recoveryQueued,
+        forward: forwardRunToControlCenter,
+        start: startMission,
+      });
+      run.escalation = {
+        at: now(),
+        escalated: Boolean(outcome.mission),
+        missionId: outcome.mission?.id || null,
+        reason: outcome.decision?.reason || '',
+      };
+      persist();
     } catch (err) {
-      run.log.push({ at: now(), level: 'warn', message: `Auto-forward failed: ${err.message}` });
+      run.log.push({ at: now(), level: 'warn', message: `Auto-escalation failed: ${err.message}` });
       persist();
     }
   }

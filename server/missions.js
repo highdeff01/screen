@@ -84,6 +84,7 @@ export function missionSummary(mission) {
     workflowId: mission.workflowId,
     workflowName: mission.workflowName,
     mode: mission.mode,
+    trigger: mission.trigger,
     status: mission.status,
     stage: mission.stage,
     paused: Boolean(mission.paused),

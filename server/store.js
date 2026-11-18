@@ -59,7 +59,10 @@ function seed() {
       visualTesterTimeoutMs: 25000,
       autoActEnabled: false,
       autoActThreshold: 80,
-      autoForwardFailures: false,
+      // Send failures to the Command Center once they repeat, bounded by the cap.
+      autoForwardFailures: true,
+      autoEscalateMinFailures: 2,
+      autoEscalateDailyCap: 3,
       autoProposeFailures: false,
       autoRecoverFailures: true,
       recoveryMaxAttempts: 2,
