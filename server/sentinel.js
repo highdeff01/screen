@@ -93,7 +93,7 @@ export function parseTestOutput(text) {
   const lines = String(text || '').split('\n');
   const grab = (label) => {
     const match = [...lines].reverse().find((line) => line.includes(`ℹ ${label}`));
-    const value = match && String(match.match(new RegExp(`ℹ ${label}\\s+(\\d+)`)) || [])[1];
+    const value = match ? (String(match).match(new RegExp(`ℹ ${label}\\s+(\\d+)`)) || [])[1] : undefined;
     return value === undefined ? null : Number(value);
   };
   const failing = [];
@@ -156,6 +156,9 @@ export async function runSentinelNow(deps = {}) {
       durationMs: Number(result.durationMs) || null,
     };
     const d = db();
+    if (!d.sentinel || typeof d.sentinel !== 'object') d.sentinel = { runs: [], failures: [] };
+    if (!Array.isArray(d.sentinel.runs)) d.sentinel.runs = [];
+    if (!Array.isArray(d.sentinel.failures)) d.sentinel.failures = [];
     d.sentinel.runs.push(run);
     if (d.sentinel.runs.length > RUN_LIMIT) d.sentinel.runs.splice(0, d.sentinel.runs.length - RUN_LIMIT);
     state.lastRun = { ...run, output: run.output.slice(-600) };

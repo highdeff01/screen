@@ -76,7 +76,7 @@ test('a failing run is queued, reported to must-check and left as a note', async
   assert.equal(reports.length, 1);
   const body = fs.readFileSync(path.join(dir, reports[0]), 'utf8');
   assert.match(body, /boot renders state without waiting/);
-  assert.match(body, failure.id, 'the report carries the queue id');
+  assert.ok(body.includes(failure.id), 'the report carries the queue id');
 
   // A handoff note was left for the next agent.
   const handoff = await load('server/handoff.js');
