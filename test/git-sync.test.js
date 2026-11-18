@@ -95,7 +95,10 @@ test('conflicts are reported and never committed', async () => {
 
 test('a remote that moved is not overwritten', async () => {
   const git = fakeGit({
-    'rev-parse': { ok: true, stdout: 'true' },
+    'rev-parse': (args) => ({
+      ok: true,
+      stdout: args.includes('--abbrev-ref') ? 'main' : args.includes('--is-inside-work-tree') ? 'true' : 'def4560',
+    }),
     status: { ok: true, stdout: ' M README.md' },
     commit: { ok: true, stdout: '[main def456] Auto-sync console changes' },
     fetch: { ok: true, stdout: '' },

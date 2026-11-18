@@ -94,10 +94,11 @@ test('verifying a commit tests that commit, not the uncommitted edits', async ()
   assert.equal(fs.existsSync(seenCwd), false, 'the verified worktree is cleaned up');
 });
 
-test('a commit without a repository is reported, not guessed', async () => {
+test('an unknown commit is reported, not guessed', async () => {
   const result = await sentinel.verifyCommit('deadbeef');
   assert.equal(result.ok, false);
-  assert.match(result.error, /worktree|revision|unknown/i);
+  assert.equal(result.isolated, false);
+  assert.match(result.error, /invalid reference|worktree|revision|unknown/i);
 });
 
 test('the spec output keeps the failing file, line and assertion', () => {

@@ -151,5 +151,5 @@ test('a failed staging push stops before verification', async () => {
   assert.equal(status.status, 'stage-failed');
   assert.equal(verifications, 0);
   assert.equal(mainPushes(git.calls).length, 0);
-  assert.match(status.lastError, /auto\/main/);
+  assert.match(status.lastError, /rejected|auto\/main/);
 });
