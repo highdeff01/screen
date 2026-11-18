@@ -12,6 +12,11 @@ import { readScreenContext } from './automation.js';
 const MAX_PACKS = 80;
 const MAX_PLAN_STEPS = 40;
 const PLAN_TIMEOUT_MS = 45000;
+// A failed revision (offline model, timeout, unusable reply) is remembered for a
+// short while: the next pack skips the multi-second desktop capture it would
+// only have fed to a model that is not answering.
+const AI_OUTAGE_MS = 120000;
+let aiOutageUntil = 0;
 
 const AGENT_ADVICE = {
   supervisor: 'Rebuild from the operator intent, not from the failed step order.',
@@ -284,7 +289,14 @@ function consultControlPanel(workflow, goal, target) {
  */
 export async function prepareRecovery(
   run,
-  { plan = planSteps, maxDepth = null, force = false, ask = null, desktop: desktopInput = undefined } = {}
+  {
+    plan = planSteps,
+    maxDepth = null,
+    force = false,
+    ask = null,
+    desktop: desktopInput = undefined,
+    screen = null,
+  } = {}
 ) {
   if (!run) return null;
   const previousPack = run.recoveryPackId ? findRecoveryPack(run.recoveryPackId) : null;
@@ -411,15 +423,26 @@ export async function prepareRecovery(
     0,
     aiSteps.findIndex((step) => step.id === failedRuntime?.id || (step.name && step.name === failedRuntime?.name))
   );
+  // The desktop capture is the revision's most expensive input and nothing else
+  // in a pack uses it, so it only runs when the revision will actually run: not
+  // when replanAi is off, not while a recent revision failure says the model is
+  // unreachable, and not when the operator or a dry run turned capture off.
+  const aiRevisionEnabled = typeof ask === 'function' || d.settings.replanAi !== false;
+  const readDesktop = typeof screen === 'function' ? screen : readScreenContext;
   let desktop = desktopInput === undefined ? {} : desktopInput || {};
-  if (desktopInput === undefined && !run.dryRun && d.settings.replanDesktop !== false) {
-    try {
-      desktop = await withTimeout(readScreenContext(), 8000, 'Desktop read');
-    } catch (err) {
-      log(pack, 'warn', 'plan', `Reading the desktop for the revision failed: ${err.message}`);
+  if (desktopInput === undefined) {
+    if (!aiRevisionEnabled) {
+      log(pack, 'info', 'plan', 'AI plan revision is turned off in settings; the desktop was not read.');
+    } else if (Date.now() < aiOutageUntil) {
+      log(pack, 'info', 'plan', 'The AI revision failed moments ago; skipping the desktop read until the model answers again.');
+    } else if (!run.dryRun && d.settings.replanDesktop !== false) {
+      try {
+        desktop = await withTimeout(readDesktop(), 8000, 'Desktop read');
+      } catch (err) {
+        log(pack, 'warn', 'plan', `Reading the desktop for the revision failed: ${err.message}`);
+      }
     }
   }
-  const aiRevisionEnabled = typeof ask === 'function' || d.settings.replanAi !== false;
   const revision = aiRevisionEnabled ? await withTimeout(
     revisePlan({
       ...(typeof ask === 'function' ? { ask } : {}),
@@ -443,10 +466,12 @@ export async function prepareRecovery(
     'AI plan revision'
   ).catch((err) => ({ error: err.message })) : null;
   if (revision?.error) {
+    aiOutageUntil = Date.now() + AI_OUTAGE_MS;
     log(pack, 'warn', 'plan', `AI plan revision unavailable: ${revision.error}`);
   } else if (revision?.skipped) {
     log(pack, 'info', 'plan', 'AI plan revision is turned off in settings.');
   } else if (revision?.steps?.length) {
+    aiOutageUntil = 0;
     pack.aiRevision = {
       decision: revision.decision,
       note: revision.note,

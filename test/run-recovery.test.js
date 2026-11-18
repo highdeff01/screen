@@ -239,3 +239,62 @@ test('a stuck planning pack is downgraded without approving a retry', () => {
   assert.equal(recovery.reconcileStuckRecoveryPacks({ staleMs: 1000 }), false);
   store.flush();
 });
+
+test('the desktop is not captured when the AI revision is off', async () => {
+  const d = store.db();
+  d.settings.replanAi = false;
+  d.settings.replanDesktop = true;
+  const { workflow, run } = fixture();
+  run.id = 'run_no_revision';
+  d.workflows = [workflow];
+  d.runs = [run];
+  d.recoveryPacks = [];
+  let reads = 0;
+  const outcome = await recovery.prepareRecovery(run, {
+    plan: async () => ({
+      steps: [{ type: 'type', name: 'Ask Kiro', params: { text: 'hello', foreground: 'Kiro' } }],
+      confidence: 0.8,
+    }),
+    screen: async () => {
+      reads += 1;
+      return { foreground: { title: 'Untitled - Notepad', process: 'notepad' }, windows: [] };
+    },
+  });
+  assert.ok(outcome?.pack);
+  assert.equal(reads, 0, 'no window capture when the revision will not run');
+  assert.ok(outcome.pack.logs.some((entry) => /desktop was not read/.test(entry.message)));
+  store.flush();
+});
+
+test('a revision that cannot reach the model skips the next desktop capture', async () => {
+  const d = store.db();
+  d.settings.replanAi = true;
+  d.settings.replanDesktop = true;
+  const first = fixture();
+  first.run.id = 'run_unreachable_model';
+  d.workflows = [first.workflow];
+  d.runs = [first.run];
+  d.recoveryPacks = [];
+  let reads = 0;
+  const screen = async () => {
+    reads += 1;
+    return { foreground: { title: 'Kiro', process: 'kiro' }, windows: [] };
+  };
+  const ask = async () => {
+    throw new Error('Request timed out');
+  };
+  const one = await recovery.prepareRecovery(first.run, { plan: async () => null, screen, ask });
+  assert.equal(reads, 1, 'the first attempt still looks at the desktop before calling the model');
+  assert.ok(one.pack.logs.some((entry) => /AI plan revision unavailable: Request timed out/.test(entry.message)));
+
+  const second = fixture();
+  second.run.id = 'run_unreachable_model_2';
+  d.runs.push(second.run);
+  const two = await recovery.prepareRecovery(second.run, { plan: async () => null, screen, ask });
+  assert.equal(reads, 1, 'the model is known to be unreachable, so the desktop is not captured again');
+  assert.ok(two.pack.logs.some((entry) => /skipping the desktop read/.test(entry.message)));
+
+  d.settings.replanAi = false;
+  d.settings.replanDesktop = false;
+  store.flush();
+});
