@@ -8819,6 +8819,11 @@ async function queueRun(id, mode) {
       body: { mode, trigger: 'manual' },
     });
     if (!res.ok) return toast(res.error || 'The run could not be queued', 'error');
+    if (res.liveFallback) {
+      // The live backend refused (usually a hosted preview reporting the wrong
+      // platform); the run proceeds simulated and the mismatch is logged for the fixer.
+      toast(`Live was refused (${String(res.liveFallback).slice(0, 80)}) — the run is going ahead simulated. Logged to must-check.`, 'error');
+    } else {
     const holdReason = ui.data?.settings?.presenceEnabled !== false && mode === 'live';
     toast(
       mode === 'live'
@@ -9043,6 +9048,7 @@ document.addEventListener('click', (event) => {
   if (!target) return;
   const act = target.dataset.act;
   if (act === 'select-step' && event.target.closest('.step-actions')) return;
+  noteUiAction(act);
   runAction(act, target.dataset, target);
 });
 
