@@ -1,23 +1,16 @@
 {
   "version": 1,
   "by": "sentinel",
-  "updatedAt": "2026-11-18T21:34:19.628Z",
-  "head": "fa50815f874c",
+  "updatedAt": "2026-11-18T21:38:21.893Z",
+  "head": "4692847ed227",
   "lastRun": {
-    "at": "2026-11-18T21:34:19.626Z",
-    "ok": false,
-    "tests": 442,
-    "pass": 432,
-    "fail": 6,
+    "at": "2026-11-18T21:38:21.893Z",
+    "ok": true,
+    "tests": 441,
+    "pass": 437,
+    "fail": 0,
     "isolated": true,
-    "failingTests": [
-      "the engine executes an AI replacement and records the repair (20229.4369ms)",
-      "a repair that opens another app is adopted by the presenter and verifier (25054.5991ms)",
-      "the engine rewrites the remainder after an irreparable action and still passes (20046.0026ms)",
-      "C:\\Users\\Dan\\.config\\freebuff-desktop\\local-projects\\40af3ced-48bf-4a9d-a8b7-cb42815bab8f\\data\\worktrees\\sentinel-1795037572898-15988\\test\\agent-replan.test.js (282.6912ms)",
-      "three real failing runs pause the shared budget and reset re-enables the scheduler (5058.6145ms)",
-      "C:\\Users\\Dan\\.config\\freebuff-desktop\\local-projects\\40af3ced-48bf-4a9d-a8b7-cb42815bab8f\\data\\worktrees\\sentinel-1795037572898-15988\\test\\presentation-live.test.js (132.2276ms)"
-    ]
+    "failingTests": []
   },
   "open": 2,
   "items": [
