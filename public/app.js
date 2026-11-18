@@ -26,6 +26,7 @@ const ui = {
   control: { x: 400, y: 300, text: 'Hello from Sightline', title: 'Notepad', amount: 3 },
   controlOut: null,
   controlErr: false,
+  preview: { active: false, busy: false, uncertain: false, detail: null, message: '', timer: null, generation: 0 },
   runFilter: 'all',
   selectedRun: null,
   runDetailOpen: false,
@@ -40,6 +41,10 @@ const ui = {
   trayDismissed: '',
   sim: null,
   simBusy: false,
+  observationReview: null,
+  observationReviewBusy: false,
+  observationProposal: { simulationId: '', proposalId: '' },
+  reviewProposalTarget: null,
   captureFilter: 'all',
   toolTab: 'tools',
   toolOutput: null,
@@ -978,7 +983,7 @@ function renderBuilder() {
   return (
     head +
     `<div class="builder-grid">${rail}${renderBuilderMain(wf, lastRun, sim)}${renderBuilderRail(wf)}</div>` +
-    `<p class="builder-footnote">Desktop actions are executed with PowerShell 5.1 and Win32 SendInput. Simulated runs validate the workflow shape without touching the desktop; live input steps can require a matching foreground window so they refuse to act in the background. “Verify screen” captures fresh pixels and asks the vision model whether the visible app/page and state actually match before the run continues. Coordinates are absolute virtual-screen pixels.</p>`
+    `<p class="builder-footnote">Live desktop actions use the available backend on the machine running this console. Simulated runs validate the workflow shape without touching the desktop; live input steps can require a matching foreground window so they refuse to act in the background. “Verify screen” captures fresh pixels and asks the vision model whether the visible app/page and state actually match before the run continues. Coordinates are absolute virtual-screen pixels.</p>`
   );
 }
 
@@ -1298,7 +1303,7 @@ function renderCopilot(wf, suggestions) {
   const plan = ui.planPreview;
   const research = ui.planResearch;
   const proposals = [...(ui.data.proposals || [])]
-    .sort((a, b) => Number(a.status !== 'pending') - Number(b.status !== 'pending'))
+    .sort((a, b) => Number(b.id === ui.reviewProposalTarget) - Number(a.id === ui.reviewProposalTarget) || Number(a.status !== 'pending') - Number(b.status !== 'pending'))
     .slice(0, 4);
   return `
   <div class="side-card">
@@ -1494,7 +1499,125 @@ function renderControlPanel() {
       ${ui.controlOut ? `<pre class="console-out section-gap ${ui.controlErr ? 'err' : ''}">${esc(ui.controlOut)}</pre>` : ''}
     </div>
   </div>
-  ${renderLiveWatch()}`;
+  ${renderLiveWatch()}
+  ${renderLivePreview()}`;
+}
+
+function renderPreviewOutput() {
+  const state = ui.preview;
+  const preview = state.detail;
+  const image = state.active && preview?.running && preview.available !== false && !preview.error && preview.imagePath;
+  const status = state.message || (state.active ? (image ? 'Preview is running.' : 'Waiting for a screenshot…') : 'Preview is off.');
+  return `<p class="small ${state.message ? 'preview-error' : 'dim'}" role="status">${esc(status)}</p>
+    <div class="preview-image">${image ? `<figure class="preview-frame"><img src="/api/files/raw?path=${encodeURIComponent(preview.imagePath)}&t=${encodeURIComponent(preview.cacheKey)}" alt="Latest read-only screenshot of the desktop" data-preview-image /><figcaption class="dim small">Captured ${esc(fmtTime(preview.capturedAt))} · refresh interval ${esc(preview.intervalMs || 2000)} ms</figcaption></figure>` : ''}</div>`;
+}
+
+function renderLivePreview() {
+  const state = ui.preview;
+  const canStop = state.active || state.uncertain;
+  return `<div class="side-card section-gap" id="live-preview-card">
+    <div class="side-card-head"><h3>Screen preview</h3><span class="pill ${state.active && state.detail ? 'live' : 'simulated'}">${state.active ? (state.detail ? 'on' : 'unconfirmed') : state.uncertain ? 'unconfirmed' : 'off'}</span></div>
+    <div class="side-card-body">
+      <p class="muted small" style="margin-bottom:8px">Opt-in and read-only: refreshed 2D screenshots, not true 3D. This shows the computer running Sightline, not a remote desktop. Capture stops when you leave this view or the viewer disconnects.</p>
+      <button class="btn btn-sm ${canStop ? 'btn-ghost' : 'btn-primary'}" data-act="live-preview" data-mode="${canStop ? 'stop' : 'start'}" ${state.busy ? 'disabled' : ''}>${state.busy ? 'Please wait…' : canStop ? 'Stop preview' : 'Start preview'}</button>
+      <div class="preview-output section-gap">${renderPreviewOutput()}</div>
+    </div>
+  </div>`;
+}
+
+function updatePreviewCard(full = false) {
+  const card = document.getElementById('live-preview-card');
+  if (!card) return;
+  if (full) {
+    const focused = card.contains(document.activeElement);
+    card.outerHTML = renderLivePreview();
+    if (focused) document.querySelector('#live-preview-card button:not(:disabled)')?.focus();
+  } else {
+    const output = card.querySelector('.preview-output');
+    if (!output) return;
+    const next = document.createElement('div');
+    next.innerHTML = renderPreviewOutput();
+    const status = output.querySelector('[role="status"]');
+    const nextStatus = next.querySelector('[role="status"]');
+    if (status.textContent !== nextStatus.textContent) status.textContent = nextStatus.textContent;
+    status.className = nextStatus.className;
+    const image = output.querySelector('.preview-image');
+    const nextImage = next.querySelector('.preview-image');
+    if (image.innerHTML !== nextImage.innerHTML) image.innerHTML = nextImage.innerHTML;
+    const pill = card.querySelector('.side-card-head .pill');
+    pill.className = `pill ${ui.preview.detail ? 'live' : 'simulated'}`;
+    pill.textContent = ui.preview.detail ? 'on' : 'unconfirmed';
+  }
+}
+
+function previewDetail(preview) {
+  return { ...preview, cacheKey: preview.capturedAt || Date.now() };
+}
+
+function schedulePreviewPoll() {
+  const state = ui.preview;
+  if (!state.active) return;
+  const interval = Number(state.detail?.intervalMs) || 2000;
+  state.timer = setTimeout(pollPreview, Math.max(500, Math.min(interval, 5000)));
+}
+
+async function pollPreview() {
+  const state = ui.preview;
+  const generation = state.generation;
+  if (!state.active) return;
+  if (!document.getElementById('live-preview-card') || document.hidden) {
+    await changeLivePreview('stop');
+    return;
+  }
+  const res = await api('/api/live/preview', { method: 'POST', body: { action: 'heartbeat' } });
+  if (!state.active || generation !== state.generation) return;
+  if (!res.ok || !res.preview) {
+    state.detail = null;
+    state.message = `Preview status unavailable: ${res.error || 'Unexpected response'}. Capture may still be running; use Stop preview.`;
+  } else {
+    state.detail = previewDetail(res.preview);
+    if (!res.preview.running) {
+      state.active = false;
+      state.message = res.preview.error || res.preview.reason || 'Preview stopped.';
+      updatePreviewCard(true);
+      return;
+    }
+    state.message = res.preview.error || (res.preview.available === false ? res.preview.reason || 'Preview is unavailable.' : '');
+  }
+  updatePreviewCard();
+  schedulePreviewPoll();
+}
+
+async function changeLivePreview(action) {
+  const state = ui.preview;
+  if (state.busy) return;
+  state.generation += 1;
+  clearTimeout(state.timer);
+  state.active = false;
+  state.detail = null;
+  state.busy = true;
+  state.message = action === 'stop' ? 'Stopping preview…' : 'Starting preview…';
+  updatePreviewCard(true);
+  const res = await api('/api/live/preview', { method: 'POST', body: { action, intervalMs: 2000 } });
+  state.busy = false;
+  const preview = res.preview;
+  if (!res.ok || !preview) {
+    state.uncertain = true;
+    state.message = `Could not confirm preview ${action}: ${res.error || preview?.error || preview?.reason || 'Unexpected response'}. Try Stop preview to ensure capture is stopped.`;
+  } else if (action === 'stop') {
+    state.uncertain = Boolean(preview.running);
+    state.message = state.uncertain ? 'Preview may still be running; try Stop preview again.' : 'Preview stopped.';
+  } else if (!preview.running || preview.available === false) {
+    state.uncertain = Boolean(preview.running);
+    state.message = preview.error || preview.reason || 'Preview could not be started on this system.';
+  } else {
+    state.active = true;
+    state.uncertain = false;
+    state.detail = previewDetail(preview);
+    state.message = preview.error || '';
+    schedulePreviewPoll();
+  }
+  updatePreviewCard(true);
 }
 
 function renderLiveWatch() {
@@ -1727,6 +1850,7 @@ function renderRunDetail(run) {
   }">${full.review?.status === 'reviewed' ? 'Reopen review' : '✓ Mark reviewed'}</button>
       </div>
     </div>
+    <div class="card"><div class="card-head"><h3>Screenshot check review</h3><button class="btn btn-sm" data-act="run-simulate" data-id="${esc(full.id)}" ${ui.simBusy ? 'disabled' : ''}>Screenshot check</button></div><div class="card-body">${renderSimulationCard(ui.sim?.runId === full.id ? ui.sim.record : null) || '<p class="muted small">No screenshot check loaded for this run.</p>'}</div></div>
 
     ${
       failedSteps.length
@@ -3240,6 +3364,11 @@ function renderSimulationCard(sim) {
   const stepBadge = (value) =>
     value === 'confirmed' ? 'okbadge' : value === 'mismatch' || value === 'unreadable' || value === 'failed_with_change' ? 'warnbadge' : '';
   const rows = (sim.breakdown || []).slice(0, 8);
+  const proposals = (ui.data.proposals || []).filter((proposal) => proposal.workflowId === sim.workflowId);
+  const review = ui.observationReview?.simulationId === sim.id ? ui.observationReview.result : null;
+  const profile = review?.profile;
+  const staticReview = review?.proposalReview;
+  const list = (items) => items.length ? `<ul class="rule-list">${items.map((item) => `<li>${esc(item.detail)}</li>`).join('')}</ul>` : '<span class="dim">None reported.</span>';
   return `<div class="hint-box small sim-card">
     <div class="row wrap" style="gap:6px">
       <b>Screenshot check</b>
@@ -3257,6 +3386,18 @@ function renderSimulationCard(sim) {
       .slice(0, 4)
       .map((item) => `<div class="dim small">• ${esc(item)}</div>`)
       .join('')}</div>` : ''}
+    <div class="section-gap"><b>Evidence profile</b>
+      <p class="dim small">Read-only, local review of stored records. Monitor events are global and may contain sensitive window titles and capture paths; they are not tied to this run. No model or desktop action is used.</p>
+      <label class="field"><span>Optional recent workflow proposal</span><select id="observation-proposal" data-scope="observation-proposal" data-id="${esc(sim.id)}" ${ui.observationReviewBusy ? 'disabled' : ''}><option value="">No proposal</option>${proposals.map((proposal) => `<option value="${esc(proposal.id)}" ${ui.observationProposal.simulationId === sim.id && ui.observationProposal.proposalId === proposal.id ? 'selected' : ''}>${esc(proposal.id)} · ${esc(proposal.status)}</option>`).join('')}</select></label>
+      <button class="btn btn-sm" data-act="observation-review" data-id="${esc(sim.id)}" ${ui.observationReviewBusy ? 'disabled' : ''}>${ui.observationReviewBusy ? 'Loading…' : 'Load evidence profile'}</button>
+      ${profile ? `<div class="stack" style="gap:6px;margin-top:8px">
+        <div><b>Provenance:</b> simulation ${esc(profile.provenance.simulation?.id || '—')} · run ${esc(profile.provenance.simulation?.runId || '—')} · ${esc(profile.provenance.simulation?.status || 'unknown')} · ${esc(profile.provenance.simulation?.mode || 'unknown mode')} · ${esc(profile.provenance.simulation?.method || 'unknown method')}<br>Monitor ${profile.provenance.monitor?.running ? 'running' : 'not running'} · ${profile.observations.monitor.length} event(s), ${profile.observations.steps.length} step(s) · omitted ${profile.truncation.monitorEventsOmitted} event(s), ${profile.truncation.simulationStepsOmitted} step(s).</div>
+        <div><b>Missing evidence</b>${list(profile.missingEvidence)}</div>
+        <div><b>Uncertainty and limitations</b>${list(profile.uncertainty)}</div>
+        <div><b>Suggested next steps</b>${list(profile.proposedNextSteps)}</div>
+        ${staticReview ? `<div><b>Bounded static proposal check: ${esc(staticReview.staticTest.status)}</b><ul class="rule-list">${staticReview.staticTest.checks.map((check) => `<li>${check.ok ? '✓' : '✕'} ${esc(check.label)}${check.warningOnly ? ' (warning only)' : ''}</li>`).join('')}</ul>${staticReview.staticTest.failures.map((failure) => `<div>${esc(failure.name || 'Step')}: ${esc(failure.reason)}</div>`).join('')}<p class="dim small">${esc(staticReview.limitations)} Omitted: ${staticReview.truncation.stepsOmitted} steps, ${staticReview.truncation.preflightOmitted} preflight checks, ${staticReview.truncation.lintIssuesOmitted} lint issues.</p><button class="btn btn-sm btn-ghost" data-act="observation-proposal-open" data-id="${esc(staticReview.proposalId)}" data-workflow="${esc(sim.workflowId)}">Open proposal in workflow for separate review / approval</button></div>` : ''}
+      </div>` : ''}
+    </div>
   </div>`;
 }
 
@@ -4521,7 +4662,7 @@ function renderPython() {
       </div>
       <div>
         <h4 class="mini-head">Desktop executor</h4>
-        <p class="small muted">PowerShell 5.1 + Win32 SendInput on this machine. Simulated runs validate without input; live runs move the real pointer.</p>
+        <p class="small muted">Live input uses the available backend on this machine. Simulated runs validate without input; live runs move the real pointer.</p>
       </div>
       <div>
         <h4 class="mini-head">Local console API</h4>
@@ -5681,10 +5822,17 @@ async function loadModels(force) {
 }
 
 async function loadRun(id) {
+  const changed = ui.runDetail?.id !== id || !ui.runDetailOpen;
   ui.selectedRun = id;
   ui.runDetailOpen = true;
   const res = await api(`/api/runs/${encodeURIComponent(id)}`);
+  if (ui.selectedRun !== id) return;
   ui.runDetail = res.ok ? { ...res.run, recoveryPack: res.recoveryPack || null } : null;
+  if (changed && !ui.simBusy) {
+    const simulations = await api(`/api/runs/${encodeURIComponent(id)}/simulations`);
+    if (ui.selectedRun !== id) return;
+    ui.sim = simulations.ok && simulations.simulations?.length ? { runId: id, record: simulations.simulations[0] } : null;
+  }
   if (ui.runDetail) ui.reviewComment = ui.runDetail.review?.comment || '';
   render();
 }
@@ -6054,6 +6202,9 @@ async function runAction(name, ds, el) {
       if (ds.tab === 'copilot') await loadChat();
       render();
       break;
+    case 'live-preview':
+      await changeLivePreview(ds.mode === 'stop' ? 'stop' : 'start');
+      break;
     case 'live-watch': {
       const mode = ds.mode === 'stop' ? 'stop' : 'start';
       const res = await api('/api/live/monitor', { method: 'POST', body: { action: mode } });
@@ -6419,6 +6570,36 @@ async function runAction(name, ds, el) {
     case 'tray-dismiss': {
       ui.trayDismissed = ds.id || '';
       render();
+      break;
+    }
+    case 'observation-review': {
+      if (ui.observationReviewBusy) return;
+      const proposalId = document.getElementById('observation-proposal')?.value || '';
+      const query = new URLSearchParams({ simulationId: ds.id });
+      if (proposalId) query.set('proposalId', proposalId);
+      ui.observationReviewBusy = true;
+      render();
+      const res = await api(`/api/observation-review?${query}`);
+      ui.observationReviewBusy = false;
+      if (!res.ok) {
+        ui.observationReview = null;
+        render();
+        return toast(res.error || 'Could not load evidence profile', 'error');
+      }
+      ui.observationReview = { simulationId: ds.id, result: res };
+      render();
+      break;
+    }
+    case 'observation-proposal-open': {
+      ui.reviewProposalTarget = ds.id;
+      ui.view = 'builder';
+      ui.selectedWorkflow = ds.workflow;
+      ui.selectedStep = null;
+      ui.draft = null;
+      ui.paletteAt = null;
+      ui.runDetail = null;
+      ui.railTab = 'copilot';
+      await refresh();
       break;
     }
     case 'run-simulate': {
@@ -7882,6 +8063,13 @@ async function queueRun(id, mode) {
 }
 
 /* ------------------------------------------------------------------ events */
+document.addEventListener('error', (event) => {
+  if (!event.target.matches?.('[data-preview-image]') || !ui.preview.active) return;
+  if (ui.preview.detail) ui.preview.detail.imagePath = null;
+  ui.preview.message = 'The preview screenshot could not be loaded. Retrying while preview is active.';
+  updatePreviewCard();
+}, true);
+
 document.addEventListener('click', (event) => {
   if (event.target.hasAttribute?.('data-modal-backdrop')) return closeModal();
   if (event.target.hasAttribute?.('data-lightbox-backdrop')) return closeModal();
@@ -8088,6 +8276,12 @@ document.addEventListener('change', (event) => {
   const key = el.dataset.key;
   const value = el.type === 'checkbox' ? el.checked : el.value;
 
+  if (scope === 'observation-proposal') {
+    ui.observationProposal = { simulationId: el.dataset.id, proposalId: value };
+    ui.observationReview = null;
+    render();
+    return;
+  }
   if (scope === 'linkform') {
     ui.linkForm[key] = el.type === 'checkbox' ? el.checked : el.type === 'number' ? Number(el.value) : el.value;
     return;
@@ -8298,11 +8492,16 @@ document.addEventListener('keydown', (event) => {
 /* ------------------------------------------------------------------ boot */
 async function boot() {
   ui.captures = [];
-  await loadAuth();
-  await loadCaptures();
-  await refresh();
-  await loadHealth();
-  await loadChat();
+  render();
+  // Optional startup requests must not hold the primary console view hostage.
+  loadAuth();
+  loadHealth();
+  const renderAfterLoad = () => {
+    const focused = document.activeElement;
+    if (ui.data && !ui.modal && !(focused && /INPUT|TEXTAREA|SELECT/.test(focused.tagName))) render();
+  };
+  loadCaptures().then(renderAfterLoad);
+  loadChat().then(renderAfterLoad);
   const pollState = async () => {
     const focused = document.activeElement;
     const typing = focused && /INPUT|TEXTAREA|SELECT/.test(focused.tagName);
@@ -8314,7 +8513,7 @@ async function boot() {
     const delay = document.hidden ? 8000 : busy ? 500 : 2000;
     setTimeout(pollState, delay);
   };
-  setTimeout(pollState, 400);
+  pollState();
   setInterval(loadHealth, 60000);
   setInterval(async () => {
     if (!ui.data?.live?.running) return;

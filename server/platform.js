@@ -9,7 +9,7 @@
  * Everything here is either a pure command builder (so it can be checked without
  * that operating system) or a thin probe of what is installed.
  */
-import { execFile } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -49,7 +49,9 @@ export function commandOnPath(name, env = process.env) {
     for (const ext of exts) {
       try {
         const candidate = path.join(dir, name + ext);
-        if (fs.existsSync(candidate)) return true;
+        if (!fs.statSync(candidate).isFile()) continue;
+        fs.accessSync(candidate, fs.constants.X_OK);
+        return true;
       } catch {
         // An unreadable PATH entry is simply not a hit.
       }
@@ -69,20 +71,33 @@ const LINUX_CAPTURE = [
   { tool: 'import', args: (file) => ['-window', 'root', file] },
 ];
 
-const LINUX_INPUT = [
-  { tool: 'xdotool', label: 'xdotool (X11)' },
-  { tool: 'ydotool', label: 'ydotool (Wayland)' },
-];
+const LINUX_INPUT = [{ tool: 'xdotool', label: 'xdotool (X11)' }];
 
 function firstPresent(candidates, env) {
   return candidates.find((entry) => commandOnPath(entry.tool, env)) || null;
 }
 
-/** A connected adb device, if any. Lets a phone be driven from any host. */
+/** Return a uniquely selected, authorized adb device, not just an installed adb. */
 export function androidDevice({ env = process.env } = {}) {
   if (!commandOnPath('adb', env)) return null;
   const serial = String(env.ANDROID_SERIAL || '').trim();
-  return { serial: serial || '', tool: 'adb' };
+  try {
+    const output = execFileSync('adb', ['devices'], {
+      env, encoding: 'utf8', timeout: 3000, maxBuffer: 1024 * 1024, windowsHide: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    const devices = output.split(/\r?\n/).map((line) => line.trim().split(/\s+/))
+      .filter(([id, state]) => id && state === 'device')
+      .map(([id]) => id);
+    if (serial ? !devices.includes(serial) : devices.length !== 1) return null;
+    // Without -s adb also rejects a mix of online and offline/unauthorized devices.
+    const all = output.split(/\r?\n/).map((line) => line.trim().split(/\s+/))
+      .filter(([, state]) => ['device', 'offline', 'unauthorized'].includes(state));
+    if (!serial && all.length !== 1) return null;
+    return { serial, tool: 'adb' };
+  } catch {
+    return null;
+  }
 }
 
 export const ANDROID_KEYCODES = {
@@ -250,7 +265,9 @@ export function appleKeyScript(chord) {
 /** The tool that will take the screenshot, or '' when none is installed. */
 export function captureToolFor(backend, env = process.env) {
   if (backend === 'darwin') return commandOnPath('screencapture', env) ? 'screencapture' : '';
-  if (backend === 'linux') return firstPresent(LINUX_CAPTURE, env)?.tool || '';
+  // The portable input and window operations use X11. Do not select grim,
+  // which captures Wayland and cannot capture a plain X11 session.
+  if (backend === 'linux') return firstPresent(LINUX_CAPTURE.filter((entry) => entry.tool !== 'grim'), env)?.tool || '';
   return '';
 }
 
@@ -258,10 +275,10 @@ export function captureToolFor(backend, env = process.env) {
 export function captureCommand(backend, file) {
   if (backend === 'darwin') return { cmd: 'screencapture', args: ['-x', file] };
   if (backend === 'linux') {
-    const entry = LINUX_CAPTURE.find((candidate) => commandOnPath(candidate.tool));
+    const entry = LINUX_CAPTURE.find((candidate) => candidate.tool === captureToolFor('linux'));
     if (!entry) {
       throw new Error(
-        'No screenshot tool found. Install grim (Wayland) or one of gnome-screenshot, spectacle, scrot, maim, flameshot, xfce4-screenshooter, imagemagick import (X11).'
+        'No X11 screenshot tool found. Install one of scrot, maim, flameshot, gnome-screenshot, spectacle, xfce4-screenshooter or imagemagick import.'
       );
     }
     return { cmd: entry.tool, args: entry.args(file) };
@@ -276,6 +293,11 @@ export function captureCommand(backend, file) {
 export function detectBackend({ env = process.env, platform = HOST } = {}) {
   const forced = String(env.SIGHTLINE_TARGET || '').trim().toLowerCase();
   if (forced === 'android' || forced === 'mobile') {
+    // The Windows automation dispatcher always uses its native backend.
+    if (platform === 'win32') return {
+      id: 'android', label: 'Android device', available: false, mobile: true, target: forced,
+      reason: 'Android targeting is not supported by the Windows automation dispatcher; use a non-Windows host.',
+    };
     const device = androidDevice({ env });
     return device
       ? {
@@ -318,54 +340,56 @@ export function detectBackend({ env = process.env, platform = HOST } = {}) {
   }
   if (platform === 'darwin') {
     const capture = captureToolFor('darwin', env);
-    const input = commandOnPath('cliclick', env) ? 'cliclick' : 'System Events (AppleScript)';
+    const scripting = commandOnPath('osascript', env);
+    // macOS is a live backend with or without the optional helpers; a step that
+    // needs a missing one fails there, with its own install hint.
     return {
       id: 'darwin',
       label: 'macOS',
       available: true,
       reason: '',
       capture: capture || 'screencapture (not found)',
-      input,
+      input: scripting
+        ? commandOnPath('cliclick', env)
+          ? 'cliclick + System Events (AppleScript)'
+          : 'System Events (AppleScript)'
+        : 'osascript (not found)',
       captureReady: Boolean(capture),
-      inputReady: true,
+      inputReady: scripting,
       mobile: false,
       target: 'desktop',
     };
   }
   if (platform === 'linux') {
     const capture = captureToolFor('linux', env);
-    const input = firstPresent(LINUX_INPUT, env);
+    const input = commandOnPath('xdotool', env) ? LINUX_INPUT[0] : null;
     // Linux is a live backend with or without the optional X11 helpers. A step
-    // that needs one of them fails there, with its own install hint, instead of
-    // refusing the whole run up front.
+    // that needs a missing one fails there, with its own install hint, instead
+    // of refusing the whole run up front.
     return {
       id: 'linux',
       label: 'Linux',
       available: true,
       reason: '',
       capture: capture || 'no screenshot tool',
-      input: input ? input.label : 'no input tool',
+      input: input ? input.label : 'no input tool (xdotool)',
       captureReady: Boolean(capture),
       inputReady: Boolean(input),
       mobile: false,
       target: 'desktop',
     };
   }
-  // FreeBSD and friends: adb can still drive a phone, nothing else here can.
-  const device = androidDevice({ env });
   return {
     id: 'unknown',
     label: platform,
-    available: Boolean(device),
-    mobile: Boolean(device),
-    target: device ? 'android' : 'desktop',
-    capture: device ? 'adb screencap' : 'none',
-    input: device ? 'adb input' : 'none',
-    captureReady: Boolean(device),
-    inputReady: Boolean(device),
-    reason: device
-      ? ''
-      : `Live control is not implemented for ${platform}. Set SIGHTLINE_TARGET=android with adb and a device attached, or run the console on Windows, macOS or Linux.`,
+    available: false,
+    mobile: false,
+    target: 'desktop',
+    capture: 'none',
+    input: 'none',
+    captureReady: false,
+    inputReady: false,
+    reason: `Live control is not implemented for ${platform}. Set SIGHTLINE_TARGET=android with adb and a device attached, or run the console on Windows, macOS or Linux.`,
   };
 }
 

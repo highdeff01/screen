@@ -1,0 +1,11 @@
+# Live screen preview and evidence review
+
+Sightline's screen preview is **opt-in and read-only**. On the Windows computer running the Sightline server, open Control → Screen preview and select **Start preview**. The panel displays periodically refreshed 2D screenshots, not video or 3D depth. Use **Stop preview** to stop it. Leaving the view, hiding the page, or losing the viewer heartbeat stops capture; an idle lease expires after 15 seconds. The temporary preview image is removed on stop. Screen pixels can contain sensitive information, so use the preview only in a trusted local session.
+
+The browser shows the screen of the machine running the server, not necessarily the machine running the browser. Fixa's Linux preview cannot access your Windows desktop. To use live capture and control, run this project locally on Windows in an interactive desktop session. From the project directory, run `npm start`, and open `http://127.0.0.1:4317`. The server binds to localhost by default; do not expose its desktop-control endpoints to a public network. Windows live operation requires testing on that machine; passing simulated tests does not establish that it works on your desktop.
+
+For a workflow's run, start a **Screenshot check** in the presentation/run view, then choose **Load evidence profile**. The profile combines stored screenshot-check results with recent global live-watch events and records missing evidence and limitations. Global monitor events are not necessarily related to that run. Pixel differences cannot prove what a control means or that a goal succeeded. Select an existing proposal to run bounded static precondition checks; this neither executes a workflow nor approves or applies a proposal. Review proposals separately in the workflow UI.
+
+The preview does not provide a remote desktop bridge, human-like awareness, 3D perception, semantic visual detection, or continuous automated model analysis. Existing workflow and live-watch tools operate independently; review outcomes do not automatically retrain a model or mutate workflows.
+
+For isolated non-Windows sandbox previews only, `node server/index.js --sandbox-preview` listens on all interfaces. This flag is disabled on Windows. Do not use it on an untrusted network.
