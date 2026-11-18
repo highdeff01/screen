@@ -224,17 +224,26 @@ export async function overlayWorkingTree(dir, { run } = {}) {
   return { ok: true, copied, removed, skipped, error: '' };
 }
 
-/** Share installed dependencies with the worktree instead of copying them. */
-function linkDependencies(dir) {
-  const source = path.join(ROOT, 'node_modules');
-  const target = path.join(dir, 'node_modules');
-  if (!fs.existsSync(source) || fs.existsSync(target)) return false;
-  try {
-    fs.symlinkSync(source, target, 'junction');
-    return true;
-  } catch {
-    return false;
+/**
+ * Machine-local assets are shared with the worktree instead of copied. They are
+ * gitignored (so they are not in the worktree), yet the suite needs them: the
+ * gateway test runs the project's `.venv` python, and a project with packages
+ * needs its `node_modules`.
+ */
+const LINKED_ASSETS = ['node_modules', '.venv'];
+
+function linkLocalAssets(dir) {
+  const linked = [];
+  for (const name of LINKED_ASSETS) {
+    const source = path.join(ROOT, name);
+    const target = path.join(dir, name);
+    if (!fs.existsSync(source) || fs.existsSync(target)) continue;
+    try {
+      fs.symlinkSync(source, target, 'junction');
+      linked.push(name);
+    } catch { /* a missing link is reported by the run that needed it */ }
   }
+  return linked;
 }
 
 /**
@@ -291,8 +300,8 @@ export async function prepareWorktree({ commit = '', run } = {}) {
     return { ok: false, dir: '', copied: 0, error: added.stderr.trim() || 'git worktree add failed', cleanup: async () => {} };
   }
   const overlay = commit ? { ok: true, copied: 0, removed: 0, skipped: 0 } : await overlayWorkingTree(dir);
-  linkDependencies(dir);
-  return { ok: true, dir, ...overlay, cleanup };
+  const linked = linkLocalAssets(dir);
+  return { ok: true, dir, linked, ...overlay, cleanup };
 }
 
 /* ---------------- the queue file other apps and agents read ---------------- */
