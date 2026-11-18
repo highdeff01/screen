@@ -1,19 +1,67 @@
 {
   "version": 1,
   "by": "sentinel",
-  "updatedAt": "2026-11-18T22:02:26.241Z",
-  "head": "9f778fbfd817",
+  "updatedAt": "2026-11-18T22:03:54.283Z",
+  "head": "a72ea98e411d",
   "lastRun": {
-    "at": "2026-11-18T22:02:26.241Z",
-    "ok": true,
-    "tests": 445,
-    "pass": 441,
-    "fail": 0,
+    "at": "2026-11-18T22:03:54.280Z",
+    "ok": false,
+    "tests": 446,
+    "pass": 438,
+    "fail": 4,
     "isolated": true,
-    "failingTests": []
+    "failingTests": [
+      "a repair that opens another app is adopted by the presenter and verifier (25047.3658ms)",
+      "the engine rewrites the remainder after an irreparable action and still passes (20101.5723ms)",
+      "three real failing runs pause the shared budget and reset re-enables the scheduler (5201.9706ms)",
+      "C:\\Users\\Dan\\.config\\freebuff-desktop\\local-projects\\40af3ced-48bf-4a9d-a8b7-cb42815bab8f\\data\\worktrees\\sentinel-1795039341968-16836\\test\\presentation-live.test.js (176.3747ms)"
+    ]
   },
-  "open": 4,
+  "open": 5,
   "items": [
+    {
+      "id": "sent_mwmo4rvsd0b0ef",
+      "at": "2026-11-18T22:03:54.280Z",
+      "status": "queued",
+      "attempts": 1,
+      "fail": 4,
+      "pass": 438,
+      "tests": [
+        "a repair that opens another app is adopted by the presenter and verifier (25047.3658ms)",
+        "the engine rewrites the remainder after an irreparable action and still passes (20101.5723ms)",
+        "three real failing runs pause the shared budget and reset re-enables the scheduler (5201.9706ms)",
+        "C:\\Users\\Dan\\.config\\freebuff-desktop\\local-projects\\40af3ced-48bf-4a9d-a8b7-cb42815bab8f\\data\\worktrees\\sentinel-1795039341968-16836\\test\\presentation-live.test.js (176.3747ms)"
+      ],
+      "details": [
+        {
+          "name": "a repair that opens another app is adopted by the presenter and verifier",
+          "file": "",
+          "line": null,
+          "message": ""
+        },
+        {
+          "name": "the engine rewrites the remainder after an irreparable action and still passes",
+          "file": "",
+          "line": null,
+          "message": ""
+        },
+        {
+          "name": "three real failing runs pause the shared budget and reset re-enables the scheduler",
+          "file": "",
+          "line": null,
+          "message": ""
+        },
+        {
+          "name": "C:\\Users\\Dan\\.config\\freebuff-desktop\\local-projects\\40af3ced-48bf-4a9d-a8b7-cb42815bab8f\\data\\worktrees\\sentinel-1795039341968-16836\\test\\presentation-live.test.js",
+          "file": "",
+          "line": null,
+          "message": ""
+        }
+      ],
+      "plan": "",
+      "planError": "",
+      "report": "must-check/2026-11-18T22-03-54-a-repair-that-opens-another-app-is-adopt.md"
+    },
     {
       "id": "sent_mwmnxqk5119a92",
       "at": "2026-11-18T21:58:25.973Z",
