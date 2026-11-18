@@ -22,7 +22,7 @@
 import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { db, logActivity, now, persist, ROOT, uid } from './store.js';
+import { DATA, db, logActivity, now, persist, ROOT, uid } from './store.js';
 import { addNote } from './handoff.js';
 
 const MUST_CHECK_DIR = 'must-check';
@@ -46,6 +46,7 @@ const state = {
   lastRun: null,
   lastError: '',
   cooldownUntil: 0,
+  worktreeOk: null,
 };
 
 export function sentinelSettings() {
@@ -58,6 +59,9 @@ export function sentinelSettings() {
   if (!s.testCommand) s.testCommand = 'npm test';
   if (s.autoPlan === undefined) s.autoPlan = true;
   if (s.showWindow === undefined) s.showWindow = false;
+  // The suite runs in a git worktree copy by default, so a half-saved file or a
+  // running console never changes what the tests see.
+  if (s.worktree === undefined) s.worktree = true;
   return s;
 }
 
@@ -75,6 +79,9 @@ export function sentinelStatus() {
     cooldownMs: settings.cooldownMs,
     autoPlan: settings.autoPlan !== false,
     showWindow: settings.showWindow === true,
+    worktree: settings.worktree !== false,
+    worktreeAvailable: state.worktreeOk,
+    queueFile: queueFilePath(),
     lastChangeAt: state.lastChangeAt,
     lastRunAt: state.lastRunAt,
     lastRun: state.lastRun,
@@ -113,11 +120,11 @@ export function parseTestOutput(text) {
 
 /* ---------------- running the suite ---------------- */
 
-function runCommand(command, { timeoutMs = 600000, showWindow = false } = {}) {
+function runCommand(command, { cwd = ROOT, timeoutMs = 600000, showWindow = false } = {}) {
   return new Promise((resolve) => {
     const child = execFile(
       command,
-      { cwd: ROOT, shell: true, timeout: Math.max(5000, timeoutMs), windowsHide: !showWindow, maxBuffer: 32 * 1024 * 1024 },
+      { cwd, shell: true, timeout: Math.max(5000, timeoutMs), windowsHide: !showWindow, maxBuffer: 32 * 1024 * 1024 },
       (error, stdout, stderr) => {
         resolve({
           ok: !error,
