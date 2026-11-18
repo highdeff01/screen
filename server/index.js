@@ -3101,6 +3101,17 @@ function allowedApiOrigin(req) {
   }
 }
 
+// A share link (server/share.js) is for watching this console and queueing
+// simulated runs. Everything that changes state stays on this machine, and the
+// console enforces that itself so a new route is never exposed by a proxy rule.
+const SHARED_RUN_PATH = /^\/api\/(workflows\/[^/]+\/runs|missions)$/;
+
+function sharedMutationBlocked(req, url) {
+  if (req.headers['x-sightline-shared'] !== '1') return false;
+  if (['GET', 'HEAD', 'OPTIONS'].includes(req.method)) return false;
+  return !(req.method === 'POST' && SHARED_RUN_PATH.test(url.pathname));
+}
+
 async function handleApi(req, res, url) {
   for (const r of routes) {
     if (r.method !== req.method) continue;
@@ -3121,6 +3132,13 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
   res.setHeader('Referrer-Policy', 'no-referrer');
   if (url.pathname.startsWith('/api/')) {
+    if (sharedMutationBlocked(req, url)) {
+      return fail(
+        res,
+        403,
+        "Blocked on a share link: git changes, notes, custom commands and other state changes only work on the console's own machine."
+      );
+    }
     if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method) && !allowedApiOrigin(req)) {
       return fail(res, 403, 'Origin not allowed');
     }

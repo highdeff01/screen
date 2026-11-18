@@ -108,6 +108,9 @@ test('share proxy only forwards safe reads and dry executions', async (t) => {
     ['POST', '/api/control'], ['POST', '/api/shortcuts/habits/h/replay'],
     ['POST', '/api/missions/m/resume'], ['POST', '/api/workflows/w/runs/r/retry'],
     ['POST', '/api/tools/t/run'], ['POST', '/api/files/write'],
+    ['POST', '/api/commands/c1/run'], ['DELETE', '/api/commands/c1'],
+    ['POST', '/api/git/pull'], ['POST', '/api/git/conflicts/ai'],
+    ['POST', '/api/git/prs/fetch'], ['POST', '/api/git/merge'], ['PATCH', '/api/handoff'],
     ['PATCH', '/api/settings'], ['PUT', '/api/missions'], ['DELETE', '/api/missions/m'],
     ['OPTIONS', '/api/state'], ['GET', '/api/admin'], ['GET', '/api/tools'],
     ['HEAD', '/api/element-links'], ['GET', '/api/python/file/download'],
@@ -119,6 +122,14 @@ test('share proxy only forwards safe reads and dry executions', async (t) => {
     assert.equal(result.status, 403, `${method} ${path}`);
     assert.equal(received.length, before, `${method} ${path} reached upstream`);
   }
+
+  // Git, note and command mutations name the reason, not just the method gate.
+  const commandRun = await request(port, '/api/commands/c1/run', { method: 'POST', headers: auth, body: '{}' });
+  assert.equal(commandRun.status, 403);
+  assert.match(JSON.parse(commandRun.body).error, /own machine/);
+  const gitMerge = await request(port, '/api/git/merge', { method: 'POST', headers: auth, body: '{}' });
+  assert.equal(gitMerge.status, 403);
+  assert.match(JSON.parse(gitMerge.body).error, /own machine/);
 
   for (const path of ['/api/workflows/wf_1/runs', '/api/missions']) {
     for (const body of ['{"mode":"live","goal":"test"}', '{}', '', '{"mode":"dry"}', '{"mode":"other"}']) {

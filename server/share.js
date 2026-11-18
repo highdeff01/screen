@@ -41,6 +41,9 @@ const BLOCKED = [
   { test: /^\/api\/settings$/i, method: /^(PATCH|PUT|POST)$/i, why: 'settings are read-only through a share link' },
   // This GET changes the ambient clock and invokes PowerShell on Windows.
   { test: /^\/api\/ambient\/refresh$/i, why: 'refresh detection is not available through a share link' },
+  // Git merges, notes and custom commands change this folder or run local programs,
+  // so they stay on the console's own machine even if the method gate above changes.
+  { test: /^\/api\/(git|commands|handoff)(\/|$)/i, method: /^(POST|PUT|PATCH|DELETE)$/i, why: "git changes, notes and custom commands only work on the console's own machine" },
 ];
 
 const RUN_PATH = /^\/api\/(workflows\/[^/]+\/runs|missions)$/;

@@ -88,4 +88,30 @@ test('API mutations require a valid same-host Origin when one is present', { tim
   });
   assert.equal(await shared('https://shared.example'), 200);
   assert.equal(await shared(base), 403);
+
+  // A share-link session may watch this console, but state changes stay local:
+  // the console enforces it itself, so a proxy rule is not the only thing in the way.
+  const asShared = (path, { method = 'POST', body } = {}) => new Promise((resolve, reject) => {
+    const req = http.request(`${base}${path}`, {
+      method, headers: { 'x-sightline-shared': '1', 'content-type': 'application/json' },
+    }, (res) => {
+      let text = '';
+      res.on('data', (chunk) => { text += chunk; });
+      res.on('end', () => resolve({ status: res.statusCode, body: text }));
+    });
+    req.on('error', reject);
+    req.end(body === undefined ? undefined : JSON.stringify(body));
+  });
+  const sharedBefore = (await notes()).length;
+  const sharedNote = await asShared('/api/companion/notes', { body: { text: 'from a share link' } });
+  assert.equal(sharedNote.status, 403);
+  assert.match(JSON.parse(sharedNote.body).error, /share link/);
+  assert.equal((await notes()).length, sharedBefore, 'a shared session stored a note');
+  for (const path of ['/api/git/pull', '/api/git/conflicts/ai', '/api/commands/c1/run']) {
+    assert.equal((await asShared(path)).status, 403, path);
+  }
+  assert.equal((await asShared('/api/no-such-route')).status, 403, 'the guard runs before route matching');
+  assert.equal((await asShared('/api/companion/notes', { method: 'GET' })).status, 200, 'reads still work');
+  const sharedRun = await asShared('/api/workflows/wf_missing/runs', { body: { mode: 'dry' } });
+  assert.notEqual(sharedRun.status, 403, 'the simulated-run path is not blocked by this guard');
 });
