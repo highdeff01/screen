@@ -89,7 +89,7 @@ test('the queue settles: dismiss and retry move the same item', async () => {
   const failure = status.failures.find((f) => f.status === 'queued' || f.status === 'planned');
   const dismissed = sentinel.dismissFailure(failure.id);
   assert.equal(dismissed.status, 'dismissed');
-  await assert.rejects(() => sentinel.dismissFailure('nope'), /Failure not found/);
+  await assert.rejects(async () => sentinel.dismissFailure('nope'), /Failure not found/);
   // A retry re-runs the suite; with a passing stub the run clears the error state.
   const retried = await sentinel.retryFailure(failure.id);
   assert.equal(retried.lastRun.ok, true);
