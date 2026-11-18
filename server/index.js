@@ -42,6 +42,7 @@ import { getRetryBudget, setRetryBudget } from './retry-budget.js';
 import { prepareRecovery, finalizeRecoveryPack, applyRecoveryPack, listRecoveryPacks, findRecoveryPack, reconcileStuckRecoveryPacks } from './run-recovery.js';
 import { activePresenter, listPositionMemory, presenterUserInput } from './foreground-presenter.js';
 import { latestMonitorSuggestions, monitorState, startLiveMonitor, stopLiveMonitor } from './live-monitor.js';
+import { observerState } from './app-observer.js';
 import { livePreview } from './live-preview.js';
 import { findSimulation, listSimulations, simulationSummary, startSimulation } from './screenshot-sim.js';
 import { prepareObservationReview } from './observation-review.js';
@@ -386,6 +387,7 @@ function buildState() {
     recoveryPacks: listRecoveryPacks(20),
     presenter: activePresenter(),
     live: monitorState(),
+    observer: observerState(),
     liveSuggestions: latestMonitorSuggestions(),
     positionMemory: listPositionMemory(8),
     companion: companionState(),
@@ -593,7 +595,7 @@ route('POST', /^\/api\/live\/preview$/, async (req, res) => {
   }
 });
 
-route('GET', /^\/api\/live\/monitor$/, async (req, res) => sendJson(res, 200, { ok: true, monitor: monitorState() }));
+route('GET', /^\/api\/live\/monitor$/, async (req, res) => sendJson(res, 200, { ok: true, monitor: monitorState(), observer: observerState() }));
 route('POST', /^\/api\/live\/monitor$/, async (req, res) => {
   try {
     const body = await readBody(req);

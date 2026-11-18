@@ -18,6 +18,7 @@ import {
 } from './automation.js';
 import { assessStep, reviewPrevious } from './step-context.js';
 import { classifyPresence, holdDecision, learnHold, completionFor, isFocusStealing, silentChecksFor } from './presence.js';
+import { beginRunObservation, endRunObservation } from './app-observer.js';
 import { expectsScreenChange, windowChecksFor, resumePlan, corroboratesNoChange, lookupWindowFor, screenChangeVerdict } from './step-effects.js';
 
 // Per-run adapters supplied by tests so the screen policy can run without a UI.
@@ -194,6 +195,8 @@ export function summary(run) {
     // Steps whose silent checks have not settled yet: they read as passed in the
     // run but must not be presented as finished until those checks answer.
     awaitingChecks: (run.pendingVerification || []).length,
+    // What the observer engine said about this run while it was executing.
+    observations: (run.observations || []).slice(-6),
     // "checking" only while the review loop will actually re-read it; a failed or
     // cancelled run keeps its queued check as history ("unverified").
     verificationState:
@@ -1092,6 +1095,7 @@ async function executeRun(runId) {
   run.startedAt = now();
   persist();
   logActivity('run', `Running "${run.workflowName}" (${run.dryRun ? 'simulated' : 'live'})`, { runId: run.id });
+  beginRunObservation(run);
   try {
     await presenterStart(run, workflow);
   } catch (err) {
@@ -1915,6 +1919,7 @@ async function executeRun(runId) {
   if (run.shadow) delete run.workflowSnapshot;
   persist();
   pushLog(run, run.status === 'failed' ? 'error' : 'info', `Run finished: ${run.status}`);
+  endRunObservation(run);
   logActivity('run', `"${run.workflowName}" finished ${run.status}`, { runId: run.id, status: run.status });
 
   if (runFinishedHook) {

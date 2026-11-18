@@ -2186,7 +2186,7 @@ function resolveTextFile(params = {}) {
 }
 
 /** "0 KB" for a 16-byte file reads like a failure; keep bytes below 1 KB. */
-function sizeLabel(bytes) {
+export function sizeLabel(bytes) {
   const size = Math.max(0, Number(bytes) || 0);
   if (size >= 1024 * 1024) return `${(size / 1024 / 1024).toFixed(1)} MB`;
   if (size >= 1024) return `${Math.round(size / 1024)} KB`;
