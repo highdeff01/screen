@@ -153,6 +153,27 @@ function esc(value) {
   );
 }
 
+/* ------------------------------------------------------------------ boot */
+// Every UI error and every failed server response is reported to the action
+// log, so a recurring problem is deduplicated on the server, written into the
+// synced must-check folder and offered to the fixer — without anyone copying
+// logs around. The last thing the person clicked rides along as context.
+let lastUiAction = '';
+let lastUiActionAt = 0;
+
+function noteUiAction(label) {
+  lastUiAction = String(label || '').slice(0, 120);
+  lastUiActionAt = Date.now();
+}
+
+function reportUiError(error, action = '') {
+  const label = action || lastUiAction || 'unknown';
+  api('/api/action-log/report', {
+    method: 'POST',
+    body: { kind: 'ui', action: label, error: String(error || '').slice(0, 2000), detail: { view: ui.view || '', at: lastUiActionAt, href: location.href } },
+  }).catch(() => {});
+}
+
 async function api(path, options = {}) {
   try {
     const res = await fetch(path, {
@@ -161,8 +182,12 @@ async function api(path, options = {}) {
       body: options.body == null ? undefined : JSON.stringify(options.body),
     });
     const data = await res.json().catch(() => ({ ok: false, error: `Unexpected response (${res.status})` }));
+    if (data && data.ok === false && res.status >= 400 && !/action-log/.test(path)) {
+      reportUiError(data.error || `HTTP ${res.status}`, path);
+    }
     return data;
   } catch (err) {
+    if (!/action-log/.test(path)) reportUiError(err.message, path);
     return { ok: false, error: err.message };
   }
 }
@@ -8826,6 +8851,7 @@ document.addEventListener('click', (event) => {
   if (event.target.hasAttribute?.('data-lightbox-backdrop')) return closeModal();
   const nav = event.target.closest('[data-nav]');
   if (nav) {
+    noteUiAction(`nav:${nav.dataset.nav}`);
     ui.view = nav.dataset.nav;
     if (ui.view === 'runs') ui.runDetailOpen = false;
     if (ui.view === 'captures') loadCaptures();
@@ -9239,6 +9265,9 @@ document.addEventListener('keydown', (event) => {
     if (event.target.dataset.scope === 'chat') runAction('chat-send', {});
   }
 });
+
+window.addEventListener('error', (event) => reportUiError(event.error?.message || event.message || 'script error'));
+window.addEventListener('unhandledrejection', (event) => reportUiError(event.reason?.message || String(event.reason || 'unhandled promise rejection')));
 
 /* ------------------------------------------------------------------ boot */
 async function boot() {

@@ -55,6 +55,7 @@ import { answerRequest, ask, cancelRequest, listInbox, waitRequest } from './inb
 import { drain, enqueue, pipelineStatus, pipelineSettings, registerHandler, runNow as pipelineRunNow, startPipeline, stopPipeline } from './pipeline.js';
 import { createSnapshot, diffSnapshots, restoreSnapshot, snapshotStatus, transferBetween } from './snapshots.js';
 import { addSecondOpinion, lensList } from './second-opinion.js';
+import { actionLogStatus, applyFix, dismissItem, listActionLog, recordAction, triageItem } from './action-log.js';
 import {
   dismissFailure,
   planFailure,
@@ -218,7 +219,14 @@ function sendJson(res, code, payload) {
   res.end(body);
 }
 
-function fail(res, code, message) {
+function fail(res, code, message, detail = null) {
+  if (code >= 400) {
+    // Every server-side error feeds the action log, so a recurring one is
+    // reported into the synced must-check folder for the fixer to read.
+    try {
+      recordAction({ kind: 'server', action: 'http-error', error: message, detail: { code, ...detail } });
+    } catch { /* logging must never break the response */ }
+  }
   sendJson(res, code, { ok: false, error: message });
 }
 
@@ -420,6 +428,7 @@ function buildState() {
     inbox: { open: listInbox({ status: 'open', limit: 12 }), lenses: lensList() },
     pipeline: pipelineStatus(),
     snapshots: snapshotStatus(),
+    actionLog: actionLogStatus(),
     share: shareStatus(),
     escalation: escalationStatus(),
     notes: d.notes.slice(0, 60).map(({ body, ...rest }) => ({
@@ -902,6 +911,46 @@ route('POST', /^\/api\/sentinel\/failures\/([^/]+)\/opinion$/, async (req, res, 
     sendJson(res, 200, await addSecondOpinion('sentinel-failure', id, body.lens || 'skeptic'));
   } catch (err) {
     fail(res, err.message === 'Failure not found' ? 404 : 400, err.message);
+  }
+});
+
+/* ---------------- Action log: app errors reported for the fixer ------------- */
+route('GET', /^\/api\/action-log$/, async (req, res, _params, url) => {
+  sendJson(res, 200, { ok: true, actionLog: actionLogStatus(), items: listActionLog({ status: url.searchParams.get('status') || '', limit: 60 }) });
+});
+
+route('POST', /^\/api\/action-log\/report$/, async (req, res) => {
+  try {
+    const body = await readBody(req);
+    const item = recordAction(body);
+    sendJson(res, 200, { ok: true, item: item && item.id ? { id: item.id, count: item.count, status: item.status } : item });
+  } catch (err) {
+    fail(res, 400, err.message);
+  }
+});
+
+route('POST', /^\/api\/action-log\/([^/]+)\/triage$/, async (req, res, [id]) => {
+  try {
+    sendJson(res, 200, { ok: true, item: await triageItem({ id }) });
+  } catch (err) {
+    fail(res, err.message === 'Item not found' ? 404 : 500, err.message);
+  }
+});
+
+route('POST', /^\/api\/action-log\/([^/]+)\/fix$/, async (req, res, [id]) => {
+  try {
+    const body = await readBody(req);
+    sendJson(res, 200, { ok: true, item: applyFix(id, body) });
+  } catch (err) {
+    fail(res, err.message === 'Item not found' ? 404 : 400, err.message);
+  }
+});
+
+route('POST', /^\/api\/action-log\/([^/]+)\/dismiss$/, async (req, res, [id]) => {
+  try {
+    sendJson(res, 200, { ok: true, item: dismissItem(id) });
+  } catch (err) {
+    fail(res, err.message === 'Item not found' ? 404 : 400, err.message);
   }
 });
 
@@ -2175,8 +2224,15 @@ route('POST', /^\/api\/workflows\/([^/]+)\/runs$/, async (req, res, [id]) => {
   if (!wf) return fail(res, 404, 'Workflow not found');
   if (wf.status === 'archived') return fail(res, 400, 'Archived workflows cannot run');
   const body = await readBody(req);
-  const dryRun = body.mode ? body.mode !== 'live' : Boolean(db().settings.dryRun);
-  if (body.mode === 'live' && !liveControl().available) return fail(res, 400, liveRefusal());
+  let dryRun = body.mode ? body.mode !== 'live' : Boolean(db().settings.dryRun);
+  if (body.mode === 'live' && !liveControl().available) {
+    // The person asked for live; a wrong-looking platform (for example a hosted
+    // preview that reports Linux on a Windows machine) no longer bounces them:
+    // the run proceeds in simulated mode and the mismatch is logged for the fixer.
+    dryRun = true;
+    const item = recordAction({ kind: 'run', action: `start-run:${wf.name}`, error: liveRefusal(), detail: { workflowId: wf.id, requestedMode: 'live' } });
+    logActivity('run', `Live refused (${liveControl().reason || 'no backend'}); running simulated instead`, { workflowId: wf.id, itemId: item?.id });
+  }
   let autoPlan = null;
   try {
     autoPlan = await ensureWorkflowSteps(wf, body.goal || wf.description || wf.name);
@@ -2184,7 +2240,7 @@ route('POST', /^\/api\/workflows\/([^/]+)\/runs$/, async (req, res, [id]) => {
     return fail(res, 400, `Could not auto-create steps: ${err.message}`);
   }
   const run = createRun(wf, { trigger: body.trigger || 'manual', dryRun });
-  sendJson(res, 200, { ok: true, run: findRun(run.id), autoPlan });
+  sendJson(res, 200, { ok: true, run: findRun(run.id), autoPlan, liveFallback: dryRun && body.mode === 'live' ? liveRefusal() : null });
 });
 
 route('GET', /^\/api\/runs\/([^/]+)$/, async (req, res, [id]) => {
@@ -3633,6 +3689,10 @@ server.listen(PORT, HOST, () => {
   registerHandler('relay-opinion', async ({ id }) => {
     const review = await reviewOpinion(id);
     return review?.opinion?.text ? 'Opinion drafted' : 'No opinion available';
+  });
+  registerHandler('error-triage', async ({ id }) => {
+    const item = await triageItem({ id });
+    return item?.suggestion ? 'Suggestion drafted' : 'No suggestion available';
   });
   startPipeline();
   startAmbient();
