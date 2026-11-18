@@ -54,6 +54,7 @@ import {
 import { shareStatus, startShare, stopShare } from './share.js';
 import { escalateBacklog, escalateFailedRun, escalationStatus } from './auto-escalation.js';
 import { chatWithProjectMemory, getHistory, clearHistory, health, parseJsonLoose, chat, listModels, getMemoryStats, summarizeConversation } from './llm.js';
+import { ensureGateway, gatewayStatus, stopGateway } from './gateway.js';
 import { estimateTokens } from './context.js';
 import { readTextChunk, writeTextChunk, digestForSummary, isTextFile } from './longfiles.js';
 import { planSteps, ensureWorkflowSteps, analyzeRun, writeRunNote, addSuggestion, normalizeStep, lintWorkflow } from './planner.js';
@@ -794,6 +795,9 @@ route('GET', /^\/api\/health$/, async (req, res) => {
   const h = await health();
   sendJson(res, 200, { ok: true, ...h, platform: process.platform, windows: IS_WINDOWS, ...liveControl() });
 });
+
+// The local Respan Gateway that fronts the model provider, when it is enabled.
+route('GET', /^\/api\/gateway$/, async (req, res) => sendJson(res, 200, { ok: true, gateway: gatewayStatus() }));
 
 route('GET', /^\/api\/live\/preview$/, async (req, res) => sendJson(res, 200, { ok: true, preview: livePreview.state() }));
 route('POST', /^\/api\/live\/preview$/, async (req, res) => {
@@ -2947,6 +2951,12 @@ route('PATCH', /^\/api\/settings$/, async (req, res) => {
   }
   if (body.model !== undefined) s.model = String(body.model).trim();
   if (body.apiStyle !== undefined) s.apiStyle = body.apiStyle === 'openai' ? 'openai' : 'ollama';
+  if (body.gatewayEnabled !== undefined) s.gatewayEnabled = Boolean(body.gatewayEnabled);
+  if (body.gatewayPort !== undefined) {
+    const port = Number(body.gatewayPort);
+    s.gatewayPort = Number.isFinite(port) ? Math.max(0, Math.min(65535, Math.round(port))) : 0;
+  }
+  if (body.gatewayKeyEnv !== undefined) s.gatewayKeyEnv = String(body.gatewayKeyEnv || '').trim();
   if (body.dryRun !== undefined) s.dryRun = Boolean(body.dryRun);
   if (body.autoSync !== undefined) s.autoSync = Boolean(body.autoSync);
   if (body.autoSyncIntervalMs !== undefined) {
@@ -3016,6 +3026,11 @@ route('PATCH', /^\/api\/settings$/, async (req, res) => {
     s.missionCheckIntervalMs = Math.max(1000, Math.min(60000, Number(body.missionCheckIntervalMs) || 5000));
   }
   if (body.agentTickMs !== undefined) s.agentTickMs = Math.max(3000, Math.min(120000, Number(body.agentTickMs) || 5000));
+  // Enabling, disabling or re-pointing the gateway applies without a restart.
+  if (body.gatewayEnabled !== undefined || body.gatewayPort !== undefined) {
+    if (s.gatewayEnabled) ensureGateway().catch((err) => console.warn(`[gateway] ${err.message}`));
+    else stopGateway();
+  }
   persist();
   logActivity('settings', 'Settings updated');
   sendJson(res, 200, { ok: true, settings: s });
@@ -3390,6 +3405,8 @@ server.listen(PORT, HOST, () => {
   // Watch the project's own files and auto-test them in a separate process.
   startSentinel();
   startAmbient();
+  // Front the model provider with the local Respan Gateway when it is enabled.
+  if (db().settings.gatewayEnabled) ensureGateway().catch((err) => console.warn(`[gateway] ${err.message}`));
   setInterval(scanElementLinks, 5000).unref?.();
   console.log(`Sightline console running at http://${HOST}:${PORT}`);
   console.log(`Data: ${DATA}`);
@@ -3406,6 +3423,7 @@ function shutdown() {
   stopAutoSync();
   stopSentinel();
   stopShare();
+  stopGateway();
   flush();
   server.close(() => process.exit(0));
   setTimeout(() => process.exit(0), 1500);

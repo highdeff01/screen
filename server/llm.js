@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { DATA, HISTORY_FILE, db, persist, recordUsage, ROOT, uid, now, writeFileAtomic } from './store.js';
 import { buildChatContext, estimateTokens, extractiveSummary } from './context.js';
+import { ensureGateway } from './gateway.js';
 
 const LEGACY_HISTORY = path.join(ROOT, 'conversation_history.txt');
 let cachedHistory = null;
@@ -148,10 +149,18 @@ async function readCompletionStream(res, options = {}) {
  */
 export async function chat(messages, options = {}) {
   const settings = db().settings;
-  const endpoint = settings.endpoint;
   const model = options.model || settings.model;
   const timeoutMs = options.timeoutMs || 60000;
-  const openAi = useOpenAi(settings);
+  // The local Respan Gateway fronts the console's own provider when it is
+  // enabled; a gateway that cannot start falls back to the direct endpoint so
+  // the assistant keeps working.
+  const gateway = settings.gatewayEnabled ? await ensureGateway(settings) : null;
+  if (settings.gatewayEnabled && !gateway?.ok) {
+    console.warn(`[llm] gateway unavailable (${gateway?.error || 'not started'}); calling ${settings.endpoint}`);
+  }
+  const viaGateway = Boolean(gateway?.ok);
+  const endpoint = viaGateway ? `${gateway.url}/v1/chat/completions` : settings.endpoint;
+  const openAi = viaGateway || useOpenAi(settings);
   const promptPreview = String(messages[messages.length - 1]?.content || '').slice(0, 160);
 
   // Reasoning models can spend the whole reply budget on hidden thinking and return
@@ -264,6 +273,7 @@ export async function chat(messages, options = {}) {
         kind: options.kind || 'chat',
         model,
         ok: true,
+        via: viaGateway ? 'gateway' : undefined,
         ms,
         prompt: promptPreview,
         reply: content.slice(0, 200),
@@ -287,6 +297,7 @@ export async function chat(messages, options = {}) {
     kind: options.kind || 'chat',
     model,
     ok: false,
+    via: viaGateway ? 'gateway' : undefined,
     ms,
     prompt: promptPreview,
     error: String(lastError).slice(0, 300),

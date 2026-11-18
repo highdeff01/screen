@@ -80,6 +80,10 @@ function seed() {
       continuityFrameMs: 5000,
       continuityAiReview: false,
       apiStyle: 'ollama',
+      // Front the provider above with the local open-source Respan Gateway.
+      gatewayEnabled: false,
+      gatewayPort: 0,
+      gatewayKeyEnv: '',
     },
     admin: {
       username: 'admin',
