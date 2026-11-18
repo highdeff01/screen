@@ -40,6 +40,17 @@ import {
   syncOverview,
 } from './git-sync.js';
 import { addNote, deleteCommand, listCommands, listNotes, runCommand, saveCommand } from './handoff.js';
+import {
+  dismissFailure,
+  planFailure,
+  pushSentinelFix,
+  retryFailure,
+  runSentinelNow,
+  sentinelSettings,
+  sentinelStatus,
+  startSentinel,
+  stopSentinel,
+} from './sentinel.js';
 import { shareStatus, startShare, stopShare } from './share.js';
 import { escalateBacklog, escalateFailedRun, escalationStatus } from './auto-escalation.js';
 import { chatWithProjectMemory, getHistory, clearHistory, health, parseJsonLoose, chat, listModels, getMemoryStats, summarizeConversation } from './llm.js';
@@ -388,6 +399,7 @@ function buildState() {
     runs: d.runs.slice(0, 80).map(summary),
     verificationLoop: loopStatus(),
     gitSync: gitSyncStatus(),
+    sentinel: sentinelStatus(),
     share: shareStatus(),
     escalation: escalationStatus(),
     notes: d.notes.slice(0, 60).map(({ body, ...rest }) => ({
@@ -603,6 +615,71 @@ route('POST', /^\/api\/git\/conflicts\/commit$/, async (req, res) => {
     sendJson(res, 200, await commitMerge());
   } catch (err) {
     fail(res, 400, err.message);
+  }
+});
+
+/* ---------------- Sentinel: watch, auto-test, repair queue ---------------- */
+route('GET', /^\/api\/sentinel$/, async (req, res) => {
+  sendJson(res, 200, { ok: true, sentinel: sentinelStatus(), settings: sentinelSettings() });
+});
+
+route('POST', /^\/api\/sentinel\/run-now$/, async (req, res) => {
+  try {
+    sendJson(res, 200, { ok: true, sentinel: await runSentinelNow() });
+  } catch (err) {
+    fail(res, 500, err.message);
+  }
+});
+
+route('POST', /^\/api\/sentinel\/settings$/, async (req, res) => {
+  try {
+    const body = await readBody(req);
+    const settings = sentinelSettings();
+    if (body.enabled !== undefined) settings.enabled = body.enabled === true;
+    if (body.autoPlan !== undefined) settings.autoPlan = body.autoPlan === true;
+    if (body.showWindow !== undefined) settings.showWindow = body.showWindow === true;
+    if (Number(body.cooldownMs)) settings.cooldownMs = Math.max(5000, Number(body.cooldownMs));
+    if (typeof body.testCommand === 'string' && body.testCommand.trim()) settings.testCommand = body.testCommand.trim().slice(0, 300);
+    persist();
+    // Enabling the watcher from the UI should attach it without a restart.
+    if (settings.enabled) startSentinel();
+    else stopSentinel();
+    sendJson(res, 200, { ok: true, sentinel: sentinelStatus() });
+  } catch (err) {
+    fail(res, 400, err.message);
+  }
+});
+
+route('POST', /^\/api\/sentinel\/failures\/([^/]+)\/plan$/, async (req, res, [id]) => {
+  try {
+    sendJson(res, 200, { ok: true, failure: await planFailure(id) });
+  } catch (err) {
+    fail(res, err.message === 'Failure not found' ? 404 : 500, err.message);
+  }
+});
+
+route('POST', /^\/api\/sentinel\/failures\/([^/]+)\/dismiss$/, async (req, res, [id]) => {
+  try {
+    sendJson(res, 200, { ok: true, failure: dismissFailure(id) });
+  } catch (err) {
+    fail(res, err.message === 'Failure not found' ? 404 : 500, err.message);
+  }
+});
+
+route('POST', /^\/api\/sentinel\/failures\/([^/]+)\/retry$/, async (req, res, [id]) => {
+  try {
+    sendJson(res, 200, { ok: true, sentinel: await retryFailure(id) });
+  } catch (err) {
+    fail(res, err.message === 'Failure not found' ? 404 : 500, err.message);
+  }
+});
+
+route('POST', /^\/api\/sentinel\/push-fix$/, async (req, res) => {
+  try {
+    const body = await readBody(req);
+    sendJson(res, 200, await pushSentinelFix({ message: String(body.message || '').slice(0, 200) }));
+  } catch (err) {
+    fail(res, 500, err.message);
   }
 });
 
@@ -3292,6 +3369,8 @@ server.listen(PORT, HOST, () => {
   startVerificationLoop({ intervalMs: Number(db().settings.verificationReviewMs) || undefined });
   // Keep the GitHub copy of this source current with the machine.
   startAutoSync({ intervalMs: Number(db().settings.autoSyncIntervalMs) || undefined });
+  // Watch the project's own files and auto-test them in a separate process.
+  startSentinel();
   startAmbient();
   setInterval(scanElementLinks, 5000).unref?.();
   console.log(`Sightline console running at http://${HOST}:${PORT}`);
@@ -3307,6 +3386,7 @@ function shutdown() {
   livePreview.stop();
   stopVerificationLoop();
   stopAutoSync();
+  stopSentinel();
   stopShare();
   flush();
   server.close(() => process.exit(0));

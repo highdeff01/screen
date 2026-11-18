@@ -694,6 +694,12 @@ function renderHeader() {
     const c = ui.data?.continuity?.summary;
     continuityBadge.textContent = c?.readyContinuations ? String(c.readyContinuations) : c?.openSuggestions ? String(c.openSuggestions) : '';
   }
+  const sentinelBadge = $('#badge-sentinel');
+  if (sentinelBadge) {
+    const s = ui.data?.sentinel || {};
+    sentinelBadge.textContent = s.openFailures ? String(s.openFailures) : '';
+    sentinelBadge.className = s.openFailures ? 'warnbadge' : '';
+  }
   const adminBtn = $('#admin-btn');
   if (adminBtn) {
     adminBtn.textContent = ui.auth?.authenticated ? `Admin · ${ui.auth.username}` : 'Admin sign-in';
@@ -746,6 +752,7 @@ function render() {
     command: renderCommandCenter,
     presentation: renderPresentation,
     sync: renderSync,
+    sentinel: renderSentinel,
   };
   $('#view').innerHTML = (map[ui.view] || renderBuilder)();
   if (pageY != null) window.scrollTo({ top: pageY, behavior: 'auto' });
