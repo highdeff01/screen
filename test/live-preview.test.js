@@ -265,8 +265,13 @@ test('HTTP endpoints expose state, validate actions and reject cross-origin star
   await new Promise((resolve) => socket.close(resolve));
   const child = spawn(process.execPath, [path.join(root, 'server/index.js')], { cwd: temp, env: { ...process.env, PORT: String(port) }, stdio: 'ignore' });
   t.after(async () => {
-    if (child.exitCode === null) { child.kill(); await once(child, 'exit'); }
-    fs.rmSync(temp, { recursive: true, force: true });
+    if (child.exitCode === null && child.signalCode === null) {
+      const closed = once(child, 'close');
+      child.kill();
+      await Promise.race([closed, new Promise((resolve) => setTimeout(resolve, 3000))]);
+    }
+    // Windows releases the temp folder's handles a moment after the server exits.
+    fs.rmSync(temp, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   });
   const url = `http://127.0.0.1:${port}/api/live/preview`;
   let response;

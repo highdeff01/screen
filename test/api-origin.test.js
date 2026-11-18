@@ -31,7 +31,8 @@ test('API mutations require a valid same-host Origin when one is present', { tim
       child.kill();
       await exited;
     }
-    fs.rmSync(cwd, { recursive: true, force: true });
+    // Windows releases the temp folder's handles a moment after the server exits.
+    fs.rmSync(cwd, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   });
 
   let ready = false;
