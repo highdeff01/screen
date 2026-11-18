@@ -824,8 +824,8 @@ Write-Output ('sent ${repeat}x ' + ${psQuote(shortcuts.join(', '))})`;
         ? `$catalogue = @(${knownExes.map((exe) => psQuote(exe)).join(', ')})
 foreach ($candidate in $catalogue) {
   if (Test-Path -LiteralPath $candidate) {
-    Start-Process -FilePath $candidate${argSuffix}
-    Show-SightlineFront $frontLeaf
+    $launched = Start-Process -FilePath $candidate${argSuffix} -PassThru
+    Show-SightlineFront $frontLeaf $launched.Id
     Write-Output ('launched ' + $candidate)
     exit 0
   }
@@ -840,18 +840,37 @@ $isPath = $target -match '[\\/]' -or $target -match '\.\w+$'
 # never adopted as "already open", and after a launch the real app window is
 # raised instead of leaving whichever window was in front on top.
 $frontLeaf = ${psQuote(knownProcess)}
+$reuseExisting = ${p.reuseExisting === true || p.reuse === true ? 1 : 0}
 if (-not $frontLeaf) { $frontLeaf = $leaf }
 $setupPattern = '(?i)(setup|installer|installing|installation|uninstall|downloading|download|wizard|extracting|updating)'
-function Show-SightlineFront($processLeaf) {
+# Prefer the exact process this launch created: raising “whichever window has
+# that app's name” once brought the operator's own document to the front and
+# the run typed into it. Start-Process -PassThru gives the new process's Id;
+# the fronting waits for that process's window specifically and only falls
+# back to a name search when the launched process never shows one.
+function Show-SightlineFront($processLeaf, $preferPid) {
   if (-not $processLeaf) { return }
   $deadline = (Get-Date).AddSeconds(8)
   $front = $null
   while ((Get-Date) -lt $deadline) {
+    if ($preferPid) {
+      $own = @(Get-Process -Id $preferPid -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 })
+      if ($own.Count) { $front = $own[0]; break }
+    } else {
+      $hits = @(Get-Process | Where-Object { $_.MainWindowHandle -ne 0 -and $_.ProcessName -like ('*' + $processLeaf + '*') })
+      $front = $hits | Where-Object { $_.MainWindowTitle -notmatch $setupPattern } | Sort-Object Id -Descending | Select-Object -First 1
+      if (-not $front) { $front = $hits | Sort-Object Id -Descending | Select-Object -First 1 }
+      if ($front) { break }
+    }
+    Start-Sleep -Milliseconds 300
+  }
+  if (-not $front -and $preferPid) {
+    # Tab-hosted apps (Notepad on Windows 11) hang the new tab on an existing
+    # window's process, so the launched Id never shows its own window. Fall back
+    # to the name search; the app itself activated the new tab on launch.
     $hits = @(Get-Process | Where-Object { $_.MainWindowHandle -ne 0 -and $_.ProcessName -like ('*' + $processLeaf + '*') })
     $front = $hits | Where-Object { $_.MainWindowTitle -notmatch $setupPattern } | Sort-Object Id -Descending | Select-Object -First 1
     if (-not $front) { $front = $hits | Sort-Object Id -Descending | Select-Object -First 1 }
-    if ($front) { break }
-    Start-Sleep -Milliseconds 300
   }
   if (-not $front) { return }
   [void][SightlineInput]::ShowWindow($front.MainWindowHandle, 9)
@@ -861,7 +880,7 @@ function Show-SightlineFront($processLeaf) {
   Start-Sleep -Milliseconds 250
   Write-Output ('front ' + $front.ProcessName + ' :: ' + $front.MainWindowTitle)
 }
-if (-not $isPath -and ${launchArgs.length} -eq 0) {
+if (-not $isPath -and ${launchArgs.length} -eq 0 -and $reuseExisting -eq 1) {
   $existing = @(Get-Process | Where-Object {
     $_.MainWindowHandle -ne 0 -and ($_.ProcessName -like ('*' + $leaf + '*') -or $_.MainWindowTitle -like ('*' + $target + '*'))
   } | Where-Object { $_.MainWindowTitle -notmatch $setupPattern } | Sort-Object Id -Descending)
@@ -887,15 +906,16 @@ if ($windowMatch) {
   exit 0
 }
 if (Test-Path -LiteralPath $target) {
-  Start-Process -FilePath $target${argSuffix}
-  Show-SightlineFront $frontLeaf
+  $launched = Start-Process -FilePath $target${argSuffix} -PassThru
+  Show-SightlineFront $frontLeaf $launched.Id
   Write-Output ('launched ' + $target)
   exit 0
 }
 $startApp = $null
 try { $startApp = Get-StartApps | Where-Object { $_.Name -like ('*' + $target + '*') } | Select-Object -First 1 } catch { }
 if ($startApp) {
-  Start-Process ('shell:AppsFolder\\' + $startApp.AppID)
+  $launched = Start-Process ('shell:AppsFolder\\' + $startApp.AppID) -PassThru
+  Show-SightlineFront $frontLeaf $launched.Id
   Write-Output ('launched ' + $startApp.Name)
   exit 0
 }
@@ -907,14 +927,14 @@ foreach ($root in @("$env:APPDATA\\Microsoft\\Windows\\Start Menu\\Programs", "$
   if ($shortcut) { break }
 }
 if ($shortcut) {
-  Start-Process -FilePath $shortcut.FullName${argSuffix}
-  Show-SightlineFront $frontLeaf
+  $launched = Start-Process -FilePath $shortcut.FullName${argSuffix} -PassThru
+  Show-SightlineFront $frontLeaf $launched.Id
   Write-Output ('launched shortcut ' + $shortcut.BaseName)
   exit 0
 }
 try {
-  Start-Process -FilePath $target${argSuffix}
-  Show-SightlineFront $frontLeaf
+  $launched = Start-Process -FilePath $target${argSuffix} -PassThru
+  Show-SightlineFront $frontLeaf $launched.Id
 } catch {
   throw ('Cannot launch "' + $target + '": it is not an executable, path or installed app. For a window title, use focusWindow. ' + $_.Exception.Message)
 }
@@ -2064,8 +2084,14 @@ async function locateElementOnce({ description, title = '', minConfidence = 0.6 
   const shot = await liveScreenshot(null, {
     maxWidth: VISION_ENABLED ? VISION_MAX_WIDTH : 0,
     quality: VISION_JPEG_QUALITY,
-    crop: VISION_CROP,
+    // A locate over the whole desktop can match a control in another app, which
+    // is how keystrokes end up somewhere the workflow never named. With a named
+    // window the frame is that window alone.
+    crop: title ? 'foreground' : VISION_CROP,
   });
+  if (!frameIsTargetWindow(shot, title)) {
+    return { found: false, reason: `“${title}” is not the window on screen (“${shot.cropTitle}”)`, shot };
+  }
   const cached = locateCache.get(key);
   if (
     LOCATE_CACHE_MS > 0 &&
@@ -2162,6 +2188,15 @@ async function findVisualElement(options = {}) {
   const pending = locateElementOnce(options).finally(() => locateInflight.delete(key));
   locateInflight.set(key, pending);
   return pending;
+}
+
+/** Only the window the step named may be searched for a control. */
+function frameIsTargetWindow(shot, title) {
+  const wanted = String(title || '').toLowerCase().trim();
+  if (!wanted) return true;
+  const captured = String(shot?.cropTitle || '').toLowerCase().trim();
+  if (!captured) return false;
+  return captured.includes(wanted) || wanted.includes(captured);
 }
 
 function resolveTextFile(params = {}) {
@@ -2419,8 +2454,13 @@ export async function previewActionOnce({ step = null, description = '', title =
   const shot = await liveScreenshot(null, {
     maxWidth: VISION_ENABLED ? VISION_MAX_WIDTH : 0,
     quality: VISION_JPEG_QUALITY,
-    crop: VISION_CROP,
+    // Previewing the whole desktop finds “a text area” anywhere; with a named
+    // window only that window is read.
+    crop: title ? 'foreground' : VISION_CROP,
   });
+  if (!frameIsTargetWindow(shot, title)) {
+    return { found: false, reason: `“${title}” is not the window on screen (“${shot.cropTitle}”)`, shot };
+  }
   const view = shot.vision || {
     path: shot.path,
     width: Number(shot.width) || 1920,
@@ -4455,7 +4495,14 @@ try {
     if (!live) return { output: `Simulated: find and click “${requested}” in ${str(p.window, 'the window')}.`, evidence: [] };
     if (!requested) throw new Error('Click element needs a visible control name.');
     const title = str(p.window || p.title);
-    if (title) await executeStep({ type: 'focusWindow', name: 'Focus target window', params: { title }, timeoutMs: 15000 }, ctx);
+    // A control is only meaningful inside the window it belongs to: without one
+    // the search matches whatever looks similar anywhere on the desktop.
+    if (!title) {
+      throw new Error(
+        `“${requested}” needs the window it belongs to (params.window). Without it the search could click a control in another app, so nothing was clicked.`
+      );
+    }
+    await executeStep({ type: 'focusWindow', name: 'Focus target window', params: { title }, timeoutMs: 15000 }, ctx);
 
     const labels = elementLabels(requested);
     const controlTypes = [...new Set([str(p.controlType).trim(), ''])];

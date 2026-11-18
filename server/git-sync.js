@@ -38,6 +38,11 @@ const state = {
   branch: '',
   lastStatusHash: '',
   pausedUntil: 0,
+  autoBranch: '',
+  autoStaged: '',
+  verified: null,
+  verifiedSha: '',
+  held: null,
 };
 
 function runGit(args, timeoutMs = 30000) {
@@ -87,6 +92,10 @@ export function gitSyncStatus() {
     behind: state.behind,
     files: state.files.slice(0, 12),
     branch: state.branch,
+    autoBranch: state.autoBranch,
+    autoStaged: state.autoStaged,
+    verifiedSha: state.verifiedSha,
+    held: state.held,
   };
 }
 
@@ -94,6 +103,108 @@ function commitMessage(files) {
   const shown = files.slice(0, 8).join(', ');
   const more = files.length > 8 ? ` (+${files.length - 8} more)` : '';
   return `Auto-sync console changes\n\n${shown}${more}\n\n${COMMIT_FOOTER}`;
+}
+
+/**
+ * The suite verdict for one commit. Cached per commit; a failing verdict is not
+ * retried for five minutes so a broken tree does not re-run the whole suite on
+ * every twenty-second tick.
+ */
+async function verifyHead(sha, deps = {}) {
+  const cached = state.verified;
+  if (cached && cached.sha === sha && (cached.ok || Date.now() < (cached.retryAt || 0))) return cached;
+  const verify = deps.verify || defaultVerify;
+  let result;
+  try {
+    result = await verify(sha);
+  } catch (err) {
+    result = { ok: false, fail: null, failingTests: [], message: err.message };
+  }
+  const verdict = {
+    sha,
+    ok: Boolean(result?.ok),
+    deferred: Boolean(result?.deferred),
+    at: now(),
+    fail: result?.fail ?? null,
+    tests: Array.isArray(result?.failingTests) ? result.failingTests : [],
+    message: result?.message || '',
+  };
+  if (verdict.deferred) return verdict;
+  if (!verdict.ok) verdict.retryAt = Date.now() + 300000;
+  state.verified = verdict;
+  state.verifiedSha = sha;
+  return verdict;
+}
+
+/**
+ * The real check: the watchdog's verdict on the source as it is now. If it has
+ * not run since the last edit, ask it for one run — never a second suite of our
+ * own, which would compete with it for the machine and make both flaky.
+ */
+async function defaultVerify() {
+  const sentinel = await import('./sentinel.js');
+  if (sentinel.sentinelBusy()) return { ok: false, deferred: true };
+  const fresh = sentinel.lastVerdict();
+  if (fresh) {
+    return { ok: fresh.ok, fail: fresh.fail ?? null, failingTests: fresh.failingTests || [], message: fresh.stale ? 'the last run started before the newest edit' : '' };
+  }
+  const status = await sentinel.runSentinelNow();
+  const run = status.lastRun || {};
+  return { ok: run.ok === true, fail: run.fail ?? null, failingTests: run.failingTests || [] };
+}
+
+/**
+ * Stage HEAD on auto/<branch> and, when the suite has passed on that exact
+ * commit, fast-forward the real branch to it. Used after a fresh commit and
+ * also when a clean tree still holds commits nobody pushed — a restart between
+ * committing and verifying, or a push that failed, would otherwise leave them
+ * ahead forever.
+ */
+async function stageAndPromote({ run, deps = {}, settings = {}, branch, head }) {
+  const autoBranch = `auto/${branch}`;
+  state.autoBranch = autoBranch;
+  const staged = await run(['push', '--force', 'origin', `HEAD:refs/heads/${autoBranch}`], 120000);
+  if (!staged.ok) {
+    state.status = 'stage-failed';
+    state.lastError = staged.stderr || staged.stdout || `git push to ${autoBranch} failed.`;
+    return gitSyncStatus();
+  }
+  state.autoStaged = head;
+
+  // The gate. `force` is the operator's explicit "push anyway"; an injected
+  // `run` without `verify` is a unit test of the git plumbing, which keeps the
+  // old path so those decisions stay testable without a suite.
+  const gate = settings.autoSyncGated !== false && !deps.force && Boolean(deps.verify || !deps.run);
+  if (gate) {
+    const verdict = await verifyHead(head, deps);
+    if (verdict.deferred) {
+      state.status = 'verifying';
+      state.lastError = `${autoBranch} has ${head.slice(0, 7)}; the suite is running, so ${branch} waits for the next check.`;
+      return gitSyncStatus();
+    }
+    if (!verdict.ok) {
+      state.status = 'held';
+      state.held = { sha: head, at: now(), ok: false, fail: verdict.fail ?? null, tests: verdict.tests || [] };
+      state.lastError = `${verdict.fail ?? '?'} failing test(s) on ${head.slice(0, 7)}; ${autoBranch} has the commit and ${branch} is held back until the suite passes${
+        verdict.tests?.length ? ` (first: ${verdict.tests[0]})` : ''
+      }.`;
+      return gitSyncStatus();
+    }
+    state.held = { sha: head, at: now(), ok: true };
+  }
+
+  const push = await run(['push', 'origin', `HEAD:refs/heads/${branch}`], 120000);
+  if (!push.ok) {
+    state.status = 'push-failed';
+    state.lastError = push.stderr || push.stdout || 'git push failed.';
+    return gitSyncStatus();
+  }
+  state.status = 'pushed';
+  state.lastError = '';
+  state.ahead = 0;
+  state.lastSyncAt = now();
+  state.lastStatusHash = '';
+  return gitSyncStatus();
 }
 
 /**
@@ -153,6 +264,8 @@ export async function checkAndSync(deps = {}) {
     state.pending = parsed.count;
     state.files = parsed.files;
     if (!parsed.count) {
+      state.pending = 0;
+      state.files = [];
       state.status = 'clean';
       state.lastError = '';
       state.lastStatusHash = '';
@@ -161,6 +274,13 @@ export async function checkAndSync(deps = {}) {
         const [ahead, behind] = String(counts.stdout).split(/\s+/).map((value) => Number(value) || 0);
         state.ahead = ahead;
         state.behind = behind;
+      }
+      if (state.behind > 0) return gitSyncStatus();
+      if (state.ahead > 0) {
+        const branch = (await run(['rev-parse', '--abbrev-ref', 'HEAD'])).stdout || 'main';
+        const head = (await run(['rev-parse', 'HEAD'])).stdout.trim();
+        state.branch = branch;
+        return stageAndPromote({ run, deps, settings, branch, head });
       }
       return gitSyncStatus();
     }
@@ -188,6 +308,7 @@ export async function checkAndSync(deps = {}) {
     const branch = (await run(['rev-parse', '--abbrev-ref', 'HEAD'])).stdout || 'main';
     state.branch = branch;
     state.lastCommit = commit.ok ? String(commit.stdout).split('\n')[0] : state.lastCommit;
+    const head = (await run(['rev-parse', 'HEAD'])).stdout.trim();
 
     const fetched = await run(['fetch', 'origin', branch], 60000);
     if (!fetched.ok) {
@@ -210,18 +331,7 @@ export async function checkAndSync(deps = {}) {
       return gitSyncStatus();
     }
 
-    const push = await run(['push', 'origin', branch], 120000);
-    if (!push.ok) {
-      state.status = 'push-failed';
-      state.lastError = push.stderr || push.stdout || 'git push failed.';
-      return gitSyncStatus();
-    }
-    state.status = 'pushed';
-    state.lastError = '';
-    state.ahead = 0;
-    state.lastSyncAt = now();
-    state.lastStatusHash = '';
-    return gitSyncStatus();
+    return stageAndPromote({ run, deps, settings, branch, head });
   } catch (err) {
     state.status = 'error';
     state.lastError = err.message;

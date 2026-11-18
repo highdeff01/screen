@@ -157,7 +157,7 @@ function safeDetail(item) {
  * Record one action or error. Returns the (possibly merged) item.
  * `report` set to false records silently (used for suppressed classes).
  */
-export function recordAction({ kind = 'ui', action = '', error = '', detail = null, report = true } = {}) {
+export function recordAction({ kind = 'ui', action = '', error = '', detail = null, report = true, forceReport = false } = {}) {
   const conf = settings();
   if (conf.enabled === false) return null;
   const text = String(error || action || '').trim();
@@ -205,8 +205,8 @@ export function recordAction({ kind = 'ui', action = '', error = '', detail = nu
   }
 
   const threshold = Math.max(1, Number(conf.reportAt) || 2);
-  if (report && item.count >= threshold && !item.reportedAt) {
-    item.reportedAt = now();
+  if (report && (forceReport || (item.count >= threshold && !item.reportedAt))) {
+    item.reportedAt = item.reportedAt || now();
     item.reportFile = writeActionReport(item) || item.reportFile;
     try {
       enqueue({ kind: 'error-triage', payload: { id: item.id }, key: `error-triage:${item.signature}`, priority: 2 });
@@ -265,6 +265,65 @@ export function applyFix(id, { note = '' } = {}) {
   persist();
   logActivity('action-log', `Marked a recurring issue as handled: ${item.error.slice(0, 60)}`, { itemId: item.id });
   return item;
+}
+
+/**
+ * Turn an AI suggestion into something implementable: the model converts the
+ * suggestion into concrete workflow steps for the affected workflow, saved as
+ * a reviewable suggestion on that workflow. Nothing is applied to the workflow
+ * itself — a human or an approving agent accepts it in the builder, and the
+ * suite (or a shadow run) checks the correction afterwards.
+ */
+export async function implementSuggestion(id, deps = {}) {
+  const item = log().find((entry) => entry.id === id);
+  if (!item) throw new Error('Item not found');
+  if (!item.suggestion) throw new Error('This item has no AI suggestion to implement yet — run AI suggestion first.');
+  const detail = item.detail || {};
+  const workflowId = detail.workflowId || null;
+  let ask = deps.chat || null;
+  if (!ask) {
+    const mod = await import('./llm.js');
+    ask = async (messages) => mod.chat(messages, { timeoutMs: 120000 });
+  }
+  let parsed = null;
+  let parseError = '';
+  try {
+    const reply = await ask([
+      {
+        role: 'system',
+        content:
+          'Convert the fix suggestion into workflow steps for the screen-automation console. Reply with JSON only: {"summary":"one line","steps":[{"type":"launchApp|focusWindow|type|key|wait|waitFor|expect|screenshot|click","name":"...","params":{}}]}. Allowed params per type: launchApp {target}, focusWindow {title}, type {text, foreground}, key {keys}, wait {ms}, waitFor {kind, value, mode}, expect {kind, value, mode}, screenshot {caption}, click {x, y}. Keep it minimal and safe; never include steps that delete or overwrite files.',
+      },
+      { role: 'user', content: `Issue: ${item.error}\nSuggestion: ${item.suggestion}\n${detail.workflowId ? `Workflow: ${detail.workflowId}` : ''}` },
+    ]);
+    if (reply?.ok) {
+      const text = String(reply.content || '').trim();
+      const json = text.slice(text.indexOf('{'), text.lastIndexOf('}') + 1);
+      parsed = JSON.parse(json);
+    } else {
+      parseError = reply?.error || 'the model is offline';
+    }
+  } catch (err) {
+    parseError = err.message;
+  }
+  if (!parsed?.steps?.length) {
+    item.implementError = parseError || 'the model returned no usable steps';
+    persist();
+    return { ok: false, status: 'no-steps', message: item.implementError, item };
+  }
+  const { addSuggestion } = await import('./planner.js');
+  const suggestion = addSuggestion(
+    `Fix for “${item.action}”: ${parsed.summary || item.suggestion.slice(0, 120)} — steps: ${parsed.steps.map((s) => s.type).join(' → ')}`,
+    'fix',
+    workflowId,
+    detail.runId || null
+  );
+  item.implementation = { at: now(), summary: parsed.summary || '', steps: parsed.steps, suggestionId: suggestion?.id || null };
+  item.status = 'implementing';
+  if (item.reportedAt) writeActionReport(item);
+  persist();
+  logActivity('action-log', `A fix for a recurring issue became ${parsed.steps.length} reviewable step(s)`, { itemId: item.id });
+  return { ok: true, status: 'proposed', steps: parsed.steps, suggestionId: suggestion?.id || null, message: `${parsed.steps.length} step(s) drafted for review — accept them in the builder, then test.` };
 }
 
 export function dismissItem(id) {

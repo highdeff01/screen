@@ -1888,12 +1888,14 @@ function renderRunDetail(run) {
           ${(full.agentReplans || []).length ? `<div class="hint-box" style="margin-top:8px;border-color:rgba(129,140,248,.35)"><strong>AI repair agent</strong>${full.agentReplans.map((replan) => `<div class="small" style="margin-top:6px"><b>${esc(replan.step)}</b> · ${esc(replan.method)}${replan.confidence != null ? ` · ${Math.round(Number(replan.confidence) * 100)}% confidence` : ''}${replan.diagnosis ? `<div class="dim" style="margin-top:2px">${esc(replan.diagnosis)}</div>` : ''}<div class="dim" style="margin-top:2px">${replan.replacesStep ? 'replaced the failed step' : 'ran prerequisites, then retried'}${(replan.steps || []).length ? ` · ${esc((replan.steps || []).join(' → '))}` : ''}${(replan.remaining || []).length ? ` · rewrote ${replan.remaining.length} remaining step(s)` : ''}</div></div>`).join('')}</div>` : ''}
           ${full.replannedAfterFailure ? `<div class="hint-box" style="margin-top:8px"><strong>AI replanned the remainder</strong><div class="small" style="margin-top:4px">${esc((full.supersededSteps || []).length)} failed action step(s) were superseded; later steps were rebuilt from the current screen.</div></div>` : ''}
         </div>
+          ${full.presence?.holding ? `<div class="hint-box" style="margin-top:8px;border-color:rgba(251,191,36,.4)"><strong>Waiting for your desktop to go quiet</strong><div class="small" style="margin-top:3px">${esc(full.presence.reason || 'the presence guard is holding this step')} · held ${Math.round((Number(full.presence.deferredMs) || 0) / 1000)}s so far — live steps start the moment you stop moving the mouse, or press <b>Run now anyway</b>.</div></div>` : ''}
         <div class="row wrap">
           <button class="btn btn-sm" data-act="retry-run" data-id="${full.id}" ${retryBusy ? 'disabled' : ''}>${retryBusy ? 'Re-planning…' : '↻ Re-plan & retry'}</button>
           ${['failed', 'needs_review', 'cancelled'].includes(full.status) ? `<button class="btn btn-sm btn-ghost" data-act="propose-run" data-id="${full.id}">🧭 Research repair proposal</button>` : ''}
           ${canCancel ? `<button class="btn btn-sm" data-act="run-control" data-id="${full.id}" data-cmd="pause" ${runPaused ? 'disabled' : ''}>Pause</button>` : ''}
           ${canCancel && runPaused ? `<button class="btn btn-sm btn-primary" data-act="run-control" data-id="${full.id}" data-cmd="resume">Resume</button>` : ''}
           ${canCancel ? `<button class="btn btn-sm" data-act="run-control" data-id="${full.id}" data-cmd="skip">Skip step</button>` : ''}
+          ${canCancel && full.presence?.holding ? `<button class="btn btn-sm btn-primary" data-act="run-control" data-id="${full.id}" data-cmd="bypass" title="Skip the presence wait and take focus right away">Run now anyway</button>` : ''}
           ${canCancel ? `<button class="btn btn-sm btn-ghost" data-act="run-control" data-id="${full.id}" data-cmd="continue">Continue</button>` : ''}
           ${canCancel ? `<button class="btn btn-sm btn-danger" data-act="cancel-run" data-id="${full.id}">Cancel</button>` : ''}
           <button class="btn btn-sm" data-act="capture-run" data-id="${full.id}">Capture now</button>
@@ -3503,7 +3505,7 @@ function renderPresentation() {
           </div>
           <div class="hint-box small">
             <b>Now:</b> ${esc(liveStep || (liveActive ? 'waiting for the next step' : 'run finished'))}${liveNext ? `<br><b>Next:</b> ${esc(liveNext)}` : ''}
-            ${liveRun.presence?.holding ? `<br><b>Hold:</b> ${esc(liveRun.presence.reason || 'waiting for the desktop')}${Number(liveRun.presence.deferredMs) > 0 ? ` · held ${Math.round(Number(liveRun.presence.deferredMs) / 1000)}s` : ''}` : ''}
+            ${liveRun.presence?.holding ? `<br><b style="color:var(--warn,#b58900)">Waiting for your desktop to go quiet</b> — ${esc(liveRun.presence.reason || 'waiting for the desktop')}${Number(liveRun.presence.deferredMs) > 0 ? ` · held ${Math.round(Number(liveRun.presence.deferredMs) / 1000)}s so far` : ''} — press <b>Run now anyway</b> to take focus immediately.` : ''}
             ${liveRun.position ? `<br><span class="dim">position ${Number(liveRun.position.stepNumber) || 0}/${Number(liveRun.position.total) || liveRun.total || 0} · ${esc(liveRun.position.phase || '')}</span>` : ''}
           </div>
           ${liveFacts.length ? `<div class="stack" style="gap:4px">${liveFacts.map((fact) => `<div class="cc-event"><span class="badge">${esc(fact.level || 'note')}</span><span class="small">${esc(fact.message || '')}</span></div>`).join('')}</div>` : ''}
@@ -3511,7 +3513,7 @@ function renderPresentation() {
           ${liveRun.followup ? `<div class="hint-box small"><b>Independent check:</b> ${liveRun.followup.ok ? 'passed' : 'failed'} — ${esc(liveRun.followup.summary || '')}</div>` : ''}
           ${renderSimulationCard(sim)}
           <div class="row wrap" style="gap:6px">
-            ${liveActive ? `<button class="btn btn-sm" data-act="run-control" data-id="${esc(liveRun.id)}" data-cmd="pause" ${liveRun.paused ? 'disabled' : ''}>Pause</button><button class="btn btn-sm" data-act="run-control" data-id="${esc(liveRun.id)}" data-cmd="skip">Skip step</button><button class="btn btn-sm" data-act="run-control" data-id="${esc(liveRun.id)}" data-cmd="continue" ${liveRun.paused ? '' : 'disabled'}>Resume</button><button class="btn btn-sm btn-danger" data-act="cancel-run" data-id="${esc(liveRun.id)}">Cancel</button>` : `<button class="btn btn-sm" data-act="run-workflow" data-id="${esc(wf.id)}" data-mode="${liveRun.dryRun ? 'dry' : 'live'}">Run again</button>`}
+            ${liveActive ? `<button class="btn btn-sm" data-act="run-control" data-id="${esc(liveRun.id)}" data-cmd="pause" ${liveRun.paused ? 'disabled' : ''}>Pause</button><button class="btn btn-sm" data-act="run-control" data-id="${esc(liveRun.id)}" data-cmd="skip">Skip step</button><button class="btn btn-sm" data-act="run-control" data-id="${esc(liveRun.id)}" data-cmd="continue" ${liveRun.paused ? '' : 'disabled'}>Resume</button>${liveRun.presence?.holding ? `<button class="btn btn-sm btn-primary" data-act="run-control" data-id="${esc(liveRun.id)}" data-cmd="bypass" title="Skip the presence wait and take focus right away">Run now anyway</button>` : ''}<button class="btn btn-sm btn-danger" data-act="cancel-run" data-id="${esc(liveRun.id)}">Cancel</button>` : `<button class="btn btn-sm" data-act="run-workflow" data-id="${esc(wf.id)}" data-mode="${liveRun.dryRun ? 'dry' : 'live'}">Run again</button>`}
             <button class="btn btn-sm btn-ghost" data-act="run-simulate" data-id="${esc(liveRun.id)}" ${ui.simBusy ? 'disabled' : ''}>Screenshot check</button>
             <button class="btn btn-sm btn-ghost" data-act="presentation-capture">Capture desktop now</button>
           </div>
@@ -5814,8 +5816,10 @@ function renderSentinel() {
           <div class="row wrap" style="gap:8px">
             <button class="btn btn-sm ${s.autoPlan ? 'btn-ghost' : ''}" data-act="sentinel-setting" data-key="autoPlan" data-value="${s.autoPlan ? 'off' : 'on'}">AI repair plans: ${s.autoPlan ? 'on' : 'off'}</button>
             <button class="btn btn-sm ${s.showWindow ? '' : 'btn-ghost'}" data-act="sentinel-setting" data-key="showWindow" data-value="${s.showWindow ? 'off' : 'on'}">Separate window: ${s.showWindow ? 'on' : 'off'}</button>
+            <button class="btn btn-sm ${s.worktree ? '' : 'btn-ghost'}" data-act="sentinel-setting" data-key="worktree" data-value="${s.worktree ? 'off' : 'on'}" title="Run the suite in a throwaway git worktree instead of this folder">Isolated worktree: ${s.worktree ? 'on' : 'off'}</button>
           </div>
           <p class="small dim" style="margin-top:8px">“Separate window” shows the test run in its own console window; either way it runs in a child process, so the console never blocks on tests.</p>
+          <p class="small dim">Worktree ${s.worktree ? 'on' : 'off'}${s.lastRun?.isolated ? ' · last run tested an isolated copy' : ''} · queue file <span class="mono">${esc(s.queueFile || 'must-check/repair-queue.json')}</span></p>
           ${s.lastError ? `<div class="hint-box small" style="color:var(--bad)">${esc(s.lastError)}</div>` : ''}
         </div>
       </div>
@@ -5984,6 +5988,18 @@ function renderRelay() {
     </section>
 
     <section class="card">
+      <div class="card-head"><h3>AIs working now</h3><span class="dim small">${(() => { const a = ui.data?.agentsWorking || {}; return a.active ? 'active' : 'none detected'; })()}</span></div>
+      <div class="card-body">
+        ${(() => {
+          const a = ui.data?.agentsWorking || {};
+          if (!a.active) return '<p class="muted small" style="margin:0">No agent is editing the app right now. Working agents can announce themselves: <span class="mono">POST /api/agents/heartbeat {name, task}</span>, and sign out with <span class="mono">/api/agents/done</span>.</p>';
+          return `<div class="stack" style="gap:6px">${(a.agents || []).map((agent) => `<div class="row wrap" style="gap:8px;align-items:center"><span class="badge okbadge">working</span><strong class="small">${esc(agent.name)}</strong><span class="small dim">${esc(agent.task || 'no task given')} · ${fmtTime(agent.at)}</span></div>`).join('')}${(a.signals || []).length ? `<p class="small dim" style="margin-top:4px">Signals: ${a.signals.map((s) => esc(s)).join(' · ')}</p>` : ''}${(a.files || []).length ? `<p class="small dim mono" style="margin-top:2px">${(a.files || []).slice(0, 8).map((f) => esc(f)).join(', ')}</p>` : ''}</div>`;
+        })()}
+        <p class="small dim" style="margin-top:8px">While agents are editing, the Sentinel stretches its auto-test cooldown so it never tests half-written files, and failures are sent to the working agents as continuation messages.</p>
+      </div>
+    </section>
+
+    <section class="card">
       <div class="card-head"><h3>Action log</h3><span class="dim small">${(() => { const al = ui.data?.actionLog || {}; return al.open ? `${al.open} open${al.triaged ? ` · ${al.triaged} with suggestions` : ''}` : 'clear'; })()}</span></div>
       <div class="card-body">
         <p class="small dim" style="margin-top:0">Every UI action, click and error is reported here and deduplicated. A recurring problem is written once into <span class="mono">must-check/</span> — the folder auto-sync carries to GitHub — and the pipeline drafts an AI suggestion for it. Nothing is auto-applied to source files.</p>
@@ -5995,6 +6011,8 @@ function renderRelay() {
               <span class="small dim">${item.count}× · ${fmtTime(item.lastAt)}${item.pattern ? ` · known: ${esc(item.pattern.id)}` : ''}</span>
               <span class="spacer"></span>
               <button class="btn btn-sm" data-act="alog-triage" data-id="${esc(item.id)}" title="Ask the model for a fix suggestion">${item.suggestion ? 'Re-suggest' : 'AI suggestion'}</button>
+              ${item.suggestion ? `<button class="btn btn-sm btn-primary" data-act="alog-implement" data-id="${esc(item.id)}" title="Turn the suggestion into reviewable workflow steps">Implement</button>` : ''}
+              ${item.implementation?.steps?.length ? `<span class="small dim">→ ${item.implementation.steps.length} step(s) drafted</span>` : ''}
               <button class="btn btn-sm ${item.pattern?.fix ? '' : 'btn-ghost'}" data-act="alog-fix" data-id="${esc(item.id)}" title="Mark handled / apply the known safe fix">Mark fixed</button>
               <button class="btn btn-sm btn-ghost" data-act="alog-dismiss" data-id="${esc(item.id)}">Dismiss</button>
             </div>
@@ -6049,6 +6067,7 @@ function renderSync() {
         <div>
           <p class="small">Local is <b>${Number(info.ahead ?? g.ahead) || 0}</b> commit(s) ahead and <b>${Number(info.behind ?? g.behind) || 0}</b> behind.</p>
           <p class="small dim">Last sync: ${g.lastSyncAt ? fmtTime(g.lastSyncAt) : 'never'} · auto-sync ${g.enabled ? 'on' : 'off'} every ${Math.round(Number(g.intervalMs || 0) / 1000)}s · auto-pull ${ui.data?.settings?.autoPull === false ? 'off' : 'on'}</p>
+          ${g.autoBranch ? `<p class="small dim">Conveyor: <span class="mono">${esc(g.autoBranch)}</span> — every automatic commit lands there first; ${g.branch || 'main'} can only fast-forward to it after the suite passes on that exact commit.${g.held && g.held.ok === false ? ` <span style="color:var(--bad)">Held back by ${g.held.fail ?? 'failing'} test(s).</span>` : ''}</p>` : ''}
         </div>
         <div>
           ${g.lastError ? `<div class="hint-box small" style="color:var(--bad)">${esc(g.lastError)}</div>` : '<p class="small dim">No errors. Nothing to do means the folder matches the remote.</p>'}
@@ -6805,6 +6824,14 @@ async function runAction(name, ds, el) {
       render();
       break;
     }
+    case 'alog-implement': {
+      toast('Turning the suggestion into workflow steps…');
+      const res = await api(`/api/action-log/${encodeURIComponent(ds.id)}/implement`, { method: 'POST', body: {} });
+      toast(res.message || res.error || 'Done', res.ok ? 'ok' : 'error');
+      await refresh();
+      render();
+      break;
+    }
     case 'note-add': {
       const text = $('#note-text')?.value?.trim();
       if (!text) return toast('Write the note first', 'error');
@@ -7286,13 +7313,22 @@ async function runAction(name, ds, el) {
     case 'retry-run': {
       ui.runBusy = `retry:${ds.id}`;
       render();
-      const res = await api(`/api/runs/${encodeURIComponent(ds.id)}/retry`, { method: 'POST' });
+      const res = await api(`/api/runs/${encodeURIComponent(ds.id)}/replan-retry`, { method: 'POST' });
       ui.runBusy = '';
       if (!res.ok) {
         render();
         return toast(res.error, 'error');
       }
-      toast(res.replanned ? 'Plan rebuilt from the goal; retry queued' : 'No usable new plan; re-running the existing steps', res.replanned ? 'ok' : 'error');
+      if (!res.retried) {
+        render();
+        return toast(res.reason || 'No candidate plan passed the shadow test; nothing was retried', 'error');
+      }
+      toast(
+        res.aiRevision?.decision
+          ? `AI ${res.aiRevision.decision}${res.aiRevision.prepCount ? ` with ${res.aiRevision.prepCount} prep step(s)` : ''}; retry queued`
+          : 'Recovery candidate tested; retry queued',
+        'ok'
+      );
       ui.selectedRun = res.run.id;
       await refresh();
       await loadRun(res.run.id);
@@ -7473,6 +7509,7 @@ async function runAction(name, ds, el) {
         resume: 'Run resumed.',
         skip: 'Skip requested; the active wait or next step will be skipped.',
         continue: 'Pause and skip flags cleared.',
+        bypass: 'Run now anyway: the presence hold is skipped and the step takes focus right away.',
       };
       toast(messages[cmd] || `Run ${cmd}`, 'ok');
       await loadRun(ds.id);

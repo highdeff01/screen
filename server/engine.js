@@ -16,8 +16,10 @@ import {
   silentCheck,
   resolveCheckFile,
 } from './automation.js';
-import { assessStep, reviewPrevious } from './step-context.js';
+import { assessStep, launchProducedNewWindow, looksLikeSavedDocument, reviewPrevious } from './step-context.js';
 import { classifyPresence, holdDecision, learnHold, completionFor, isFocusStealing, silentChecksFor } from './presence.js';
+import { recordAction } from './action-log.js';
+import { sendContinuation } from './agent-awareness.js';
 import { beginRunObservation, endRunObservation } from './app-observer.js';
 import { expectsScreenChange, windowChecksFor, resumePlan, corroboratesNoChange, lookupWindowFor, screenChangeVerdict } from './step-effects.js';
 
@@ -408,6 +410,7 @@ async function pump() {
       run.log.push({ at: now(), level: 'error', message: `Engine error: ${err.message}` });
       if (run.shadow) delete run.workflowSnapshot;
       persist();
+      reportRunFailure(run, `engine crash: ${err.message}`, err.stack || err.message);
     }
   } finally {
     busy = false;
@@ -650,6 +653,58 @@ async function applyStepContext(step, run, workflow, probe = null) {
  * The desktop must be quiet for `presenceHoldMs` (learned per workstation); a
  * run that has waited past `presenceMaxDeferMs` continues anyway and says so.
  */
+/** Remember the window this run opened or focused, so typing has a guard. */
+const WINDOW_OUTPUT = /(?:front|already focused|focused existing|focused window)\s+(\S[^:]*?)\s*::\s*(.+)/;
+function rememberWindow(run, step) {
+  if (!['launchApp', 'focusWindow'].includes(step.type) || step.status !== 'passed') return;
+  const match = WINDOW_OUTPUT.exec(String(step.output || ''));
+  if (match) run.lastWindow = { process: match[1].trim(), title: match[2].trim(), at: now(), by: step.id };
+}
+
+/**
+ * Typing needs a destination. A step without a foreground guard inherits the
+ * window this run last opened or focused — “type anywhere that looks like a
+ * text area” is exactly how text ended up in the wrong place.
+ */
+function deriveTypingGuard(step, run) {
+  const typing = ['type', 'key', 'clipboard'].includes(step.type);
+  const clicking = step.type === 'clickElement' && !String(step.params?.window || '').trim();
+  if (!typing && !clicking) return;
+  if (typing && String(step.params?.foreground || '').trim()) return;
+  const window = run.lastWindow;
+  if (!window?.title) return;
+  step.params = { ...(step.params || {}), ...(typing ? { foreground: window.title } : { window: window.title }) };
+  pushLog(
+    run,
+    'info',
+    `No window named for “${step.name}”; it inherits “${window.title}”, the window this run opened.`,
+    step.id
+  );
+}
+
+/** Report a failed or crashed run to the action log and the working agents. */
+function reportRunFailure(run, summary, error = '') {
+  try {
+    const item = recordAction({
+      kind: 'run',
+      action: `run-failed:${run.workflowName || run.workflowId || 'unknown'}`,
+      error: String(error || summary || 'the run failed').slice(0, 2000),
+      detail: { runId: run.id, status: run.status, failing: (run.steps || []).filter((s) => s.status === 'failed').map((s) => s.name).slice(0, 5) },
+      forceReport: true,
+    });
+    sendContinuation({
+      from: 'engine',
+      reason: `${run.workflowName || 'run'} ended ${run.status}`,
+      detail: `${summary} (run ${run.id}); fix, then re-run`,
+      tags: ['run-failed'],
+    });
+    return item;
+  } catch (err) {
+    console.warn(`[engine] failure report failed: ${err.message}`);
+    return null;
+  }
+}
+
 async function awaitUserSettle(step, run, probe = null) {
   // A probe without presence belongs to a desktop-free test run.
   if (probe && typeof probe.readPresence !== 'function') return;
@@ -664,6 +719,10 @@ async function awaitUserSettle(step, run, probe = null) {
   ).trim();
   let deferredMs = 0;
   for (;;) {
+    if (run.presenceBypass) {
+      // "Run now anyway" was pressed: the desktop activity no longer holds the step.
+      return;
+    }
     let presence;
     try {
       presence = probe?.readPresence ? await probe.readPresence() : await readPresence();
@@ -716,7 +775,7 @@ async function awaitUserSettle(step, run, probe = null) {
     const until = Date.now() + chunk;
     while (Date.now() < until) {
       await waitWhileRunPaused(run);
-      if (run.cancelRequested) return;
+      if (run.cancelRequested || run.presenceBypass) return;
       await sleep(Math.min(250, Math.max(0, until - Date.now())));
     }
     deferredMs += chunk;
@@ -729,15 +788,28 @@ async function alreadyInFront(step, probe = null) {
   if (!['launchApp', 'focusWindow'].includes(step.type)) return '';
   // A launch with arguments (e.g. notepad.exe <file>) must actually run.
   if (step.type === 'launchApp' && (step.params?.args || []).length) return '';
+  // A launch is the flow asking for a window or tab, not for a window that
+  // already exists.
+  // Reuse is opt-in: without it a launch opens a new instance instead of
+  // adopting whatever window of that app happens to be open. Adopting silently
+  // once typed a workflow's text into the operator's own Notepad document.
+  if (step.type === 'launchApp' && step.params?.reuseExisting !== true && step.params?.reuse !== true) return '';
   const title = String(step.params?.title || '').trim();
   const target = String(step.params?.target || '').trim();
   const processName = String(step.params?.process || '').trim() || (/\.exe$/i.test(target) ? target.replace(/\.exe$/i, '') : '');
   const windowTitle = title || (/\s/.test(target) && !/[\\/]/.test(target) && !/\.\w+$/.test(target) ? target : '');
-  if (!windowTitle && !processName) return '';
+  // A process match alone is never enough to skip: two windows of the same app
+  // are different documents. The foreground must carry the exact window title
+  // the step asked for; a focus step with no exact title is simply run again
+  // (focusing an already-focused window is harmless, typing into the wrong one
+  // is not).
+  if (!windowTitle) return '';
   const state = probe?.inspectWindowState
     ? await probe.inspectWindowState({ title: windowTitle, process: processName })
     : await inspectWindowState({ title: windowTitle, process: processName });
   if (state.state !== 'foreground') return '';
+  const foregroundTitle = String(state.foreground?.title || '').trim().toLowerCase();
+  if (foregroundTitle !== windowTitle.toLowerCase()) return '';
   // A setup wizard, installer, updater or browser page that carries the app's
   // name is not the installed app. "Already in front" must not skip the launch
   // just because the installer window or the download page still has focus.
@@ -938,9 +1010,12 @@ async function detectHindrance(probe = null) {
 }
 
 /** Reinstate focus and record what was seen before an app-dependent step. */
-async function perceiveStep(step, run, workflow, getTool) {
+async function perceiveStep(step, run, workflow, getTool, probe = null) {
   const guard = String(step.params?.foreground || (step.type === 'focusWindow' ? step.params?.title : '') || '').trim();
   if (!guard) return;
+  // A probe without a foreground reader is a desktop-free run: there is no real
+  // desktop to perceive, and reading it would touch the machine running tests.
+  if (probe && typeof probe.readForegroundWindow !== 'function') return;
   try {
     const state = await inspectWindowState({ title: guard });
     step.perception = { guard, state: state.state, foreground: state.foreground?.title || null, at: now() };
@@ -950,6 +1025,35 @@ async function perceiveStep(step, run, workflow, getTool) {
         { live: true, runId: run.id, run, workflow, getTool }
       );
       pushLog(run, 'info', `Focus reinstated for “${guard}” before ${step.type}.`, step.id);
+    }
+    // Keystrokes must not land in whatever happens to be in front. If the guard
+    // window is not in front, bring it forward and read again; if it still is
+    // not, the runner skips the step rather than typing into the wrong app.
+    // Only a real run reads (and moves) the desktop; a test's probe owns that.
+    if (!probe && ['type', 'key', 'clipboard'].includes(step.type)) {
+      const norm = (value) => String(value || '').toLowerCase().replace(/\s+/g, ' ').trim();
+      const inFront = (title) => norm(title).includes(norm(guard));
+      if (!inFront(state.foreground?.title)) {
+        try {
+          await executeStep(
+            { id: uid('chk'), type: 'focusWindow', name: `Focus ${guard} before typing`, params: { title: guard }, timeoutMs: 8000 },
+            { live: true, runId: run.id, run, workflow, getTool }
+          );
+        } catch (err) {
+          pushLog(run, 'warn', `Could not focus “${guard}” before ${step.type}: ${err.message}`, step.id);
+        }
+        const after = await readForegroundWindow().catch(() => null);
+        step.perception.foregroundAfterFocus = after?.title || null;
+        if (!inFront(after?.title)) {
+          step.perception.guardFailed = true;
+          pushLog(
+            run,
+            'warn',
+            `“${guard}” is not the window in front (“${after?.title || 'unknown'}”) after focusing it; ${step.type} would type into the wrong app.`,
+            step.id
+          );
+        }
+      }
     }
   } catch (err) {
     pushLog(run, 'warn', `Perception check failed: ${err.message}`, step.id);
@@ -1465,7 +1569,40 @@ async function executeRun(runId) {
       } catch (err) {
         pushLog(run, 'warn', `Pre-step window check failed: ${err.message}`, step.id);
       }
-      await perceiveStep(step, run, workflow, getTool);
+      // A launch that only re-raised an already-open document is not a new
+      // window: typing into it would overwrite the operator's own work.
+      if (['type', 'key', 'clipboard'].includes(step.type) && !String(step.params?.foreground || '').trim()) {
+        const adopted = [...(run.steps || [])].reverse().find((entry) => entry.launch?.adopted);
+        if (adopted) {
+          step.status = 'skipped';
+          step.output = `Skipped: “${adopted.launch.target}” was already showing the saved document “${adopted.launch.after}”, so the launch opened no new window; ${step.type} would have landed in that file.`;
+          recordLedger(run, step);
+          pushLog(run, 'warn', step.output, step.id);
+          persist();
+          continue;
+        }
+      }
+      deriveTypingGuard(step, run);
+      // After inheritance a typing step still without a window has no destination
+      // this run can name, and "whatever is in front" is how it typed into an
+      // unrelated text area. Nothing is sent; the console asks for a window.
+      if (['type', 'key', 'clipboard'].includes(step.type) && !String(step.params?.foreground || '').trim()) {
+        step.status = 'skipped';
+        step.output = `Skipped: no window was named or opened before “${step.name}”, so the keystrokes were not sent anywhere. Add a focusWindow step or set the step's foreground window.`;
+        recordLedger(run, step);
+        pushLog(run, 'warn', step.output, step.id);
+        persist();
+        continue;
+      }
+      await perceiveStep(step, run, workflow, getTool, probe);
+      if (step.perception?.guardFailed) {
+        step.status = 'skipped';
+        step.output = `Skipped: “${step.perception.guard}” is not the window in front (“${step.perception.foregroundAfterFocus || 'unknown'}”), so the keystrokes were not sent.`;
+        recordLedger(run, step);
+        pushLog(run, 'warn', step.output, step.id);
+        persist();
+        continue;
+      }
     }
     try {
       await presenterBeginStep(run, workflow, step);
@@ -1621,6 +1758,32 @@ async function executeRun(runId) {
           }
         }
       }
+      if (succeeded && step.type === 'launchApp' && !probe) {
+        // A launch that only re-raised a window already on the desktop did not
+        // open the window the flow asked for. Remembering that lets a later
+        // typing step refuse to write into the operator’s existing document.
+        const target = String(step.params?.target || step.params?.title || step.params?.app || '').trim();
+        const windowsBefore = step.context?.state?.windows || [];
+        const after = (await readForegroundWindow().catch(() => null))?.title || '';
+        step.launch = {
+          target,
+          before: windowsBefore.slice(0, 8),
+          after,
+          adopted:
+            windowsBefore.length > 0 &&
+            !launchProducedNewWindow({ windows: windowsBefore, after }) &&
+            looksLikeSavedDocument(after),
+        };
+        if (step.launch.adopted) {
+          pushLog(
+            run,
+            'warn',
+            `“${target}” was already showing the saved document “${after}”; the launch opened no new window, so typing will not touch that file.`,
+
+            step.id
+          );
+        }
+      }
       if (run.cancelRequested && !succeeded) cancelled = true;
       if (!succeeded && !cancelled && !skipped && repairEnabled) {
         step.repairStartedAt = now();
@@ -1706,6 +1869,7 @@ async function executeRun(runId) {
         pushLog(run, 'warn', `Presenter verification failed: ${err.message}`, step.id);
       }
       step.status = 'passed';
+      rememberWindow(run, step);
     } else {
       step.status = 'failed';
       step.error = lastError || 'Step failed';
@@ -1862,6 +2026,12 @@ async function executeRun(runId) {
   } else {
     run.status = 'passed';
   }
+  // A failed run is a message, not just a record: the action log reports it
+  // (with logs) and the working agents get a continuation addressed to them.
+  if (['failed', 'needs_review'].includes(run.status)) {
+    const failing = (run.steps || []).filter((s) => s.status === 'failed')[0];
+    reportRunFailure(run, failing?.error || run.errorSummary || `${failedCount} step(s) failed`, failing?.error || '');
+  }
   if (run.followup && run.followup.ok === false && run.status === 'passed') {
     run.status = 'needs_review';
     run.followupFailed = true;
@@ -1978,8 +2148,8 @@ export function controlRun(id, action) {
   const run = findRun(id);
   if (!run) throw new Error('Run not found');
   const code = String(action || '').toLowerCase();
-  if (!['pause', 'resume', 'continue', 'skip'].includes(code)) {
-    throw new Error('Unknown run control. Use pause, resume, continue or skip.');
+  if (!['pause', 'resume', 'continue', 'skip', 'bypass'].includes(code)) {
+    throw new Error('Unknown run control. Use pause, resume, continue, skip or bypass.');
   }
   if (!['queued', 'running'].includes(run.status)) {
     throw new Error(`Run is ${run.status}; controls only apply while queued or running.`);
@@ -1999,6 +2169,10 @@ export function controlRun(id, action) {
   } else if (code === 'skip') {
     run.skipRequested = true;
     pushLog(run, 'warn', 'Skip requested; the current wait or next step will be skipped.');
+  } else if (code === 'bypass') {
+    run.presenceBypass = true;
+    run.presence = { ...(run.presence || {}), holding: false, reason: 'bypassed by the operator' };
+    pushLog(run, 'info', 'Run now anyway: the presence hold is bypassed; the step takes focus immediately.');
   }
   persist();
   logActivity('run', `Control ${code} on ${run.workflowName}`, { runId: run.id });

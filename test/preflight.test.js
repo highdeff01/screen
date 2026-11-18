@@ -21,10 +21,16 @@ after(() => {
   }
 });
 
-test('an app already in front skips its launch', async () => {
-  const probe = { inspectWindowState: async () => ({ state: 'foreground', foreground: { title: 'Untitled - Notepad' } }) };
+test('a launch opens the app instead of adopting a window that is already open', async () => {
+  const probe = { inspectWindowState: async () => ({ state: 'foreground', foreground: { title: 'notes.txt - Notepad', process: 'notepad' } }) };
   const reason = await engine.preStepSkip({ type: 'launchApp', params: { target: 'notepad.exe' } }, probe, null);
-  assert.match(reason, /Already open and in front/);
+  assert.equal(reason, '', 'a running app must not stop the launch: the flow asked for a window');
+});
+
+test('focusing a different document of the same app is not "already focused"', async () => {
+  const probe = { inspectWindowState: async () => ({ state: 'foreground', foreground: { title: 'notes.txt - Notepad', process: 'notepad' } }) };
+  const reason = await engine.preStepSkip({ type: 'focusWindow', params: { title: 'Notepad' } }, probe, null);
+  assert.equal(reason, '', 'a title that merely contains the guard is not the window the step named');
 });
 
 test('a page that is already open is focused instead of opened again', async () => {

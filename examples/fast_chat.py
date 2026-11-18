@@ -50,6 +50,7 @@ import sys
 import tempfile
 import threading
 import time
+import traceback
 import zlib
 from concurrent.futures import ThreadPoolExecutor
 from difflib import SequenceMatcher
@@ -240,6 +241,35 @@ def dedupe_candidates(ranked, threshold=0.72):
             continue
         kept.append((score, text))
     return kept
+
+
+def variation_stats(answers, threshold=0.72):
+    """How different repeated answers really are.
+
+    `distinct` only counts replies a reader would call different, so "7
+    variations" means seven answers, not seven strings with a new opening clause.
+    """
+    texts = [str(answer).strip() for answer in answers if str(answer).strip()]
+    if not texts:
+        return {"answers": 0, "distinct": 0, "mean": 0.0, "min": 0.0, "max": 0.0, "chars": 0, "words": 0}
+    ratios = []
+    for index, left in enumerate(texts):
+        for right in texts[index + 1:]:
+            ratios.append(SequenceMatcher(None, left.lower(), right.lower()).ratio())
+    kept = []
+    for text in texts:
+        if all(SequenceMatcher(None, text.lower(), other.lower()).ratio() <= threshold for other in kept):
+            kept.append(text)
+    words = [len(text.split()) for text in texts]
+    return {
+        "answers": len(texts),
+        "distinct": len(kept),
+        "mean": (sum(ratios) / len(ratios)) if ratios else 0.0,
+        "min": min(ratios) if ratios else 0.0,
+        "max": max(ratios) if ratios else 0.0,
+        "chars": int(sum(len(text) for text in texts) / len(texts)),
+        "words": int(sum(words) / len(words)),
+    }
 
 
 def split_candidates(text, limit=3):
@@ -3149,12 +3179,24 @@ class Chat:
             and rounds < max_rounds
         ):
             rounds += 1
-            more = self.append_answer(prompt, text)
+            # Stream the tail: the turn used to sit silent through a second full
+            # request right after the first answer had already arrived.
+            writer = Writer()
+            pieces = []
+
+            def on_chunk(piece, _result, _writer=writer, _pieces=pieces):
+                _pieces.append(piece)
+                _writer.write(piece)
+
+            writer.start("AI (+chunk %d): " % rounds)
+            more = self.append_answer(prompt, text, on_token=on_chunk)
+            writer.end()
             if not more:
+                if pieces:
+                    print("[dropped that tail - it repeated the answer]")
                 break
             added += len(more)
             text = text.rstrip() + " " + more
-            print("AI (+chunk %d): %s" % (rounds, more[:400]))
         if len(text) > PREPLY_THRESHOLD:
             self.stash(text, raw[:60])
         reward = score_answer(text, raw, context, sentences_of(self.last_answer) if self.last_answer else [])
@@ -3725,10 +3767,14 @@ class Chat:
             return ""
         return alt
 
-    def append_answer(self, prompt, text):
-        """Ask for only the missing tail of an answer that stopped mid-sentence."""
+    def append_answer(self, prompt, text, on_token=None):
+        """Ask for only the missing tail of an answer that stopped mid-sentence.
+
+        Streamed, so the tail appears token by token instead of the turn pausing
+        in silence for a second request.
+        """
         try:
-            more = self.client.complete(
+            result = self.client.ask(
                 [
                     {
                         "role": "system",
@@ -3741,14 +3787,74 @@ class Chat:
                 ],
                 max_tokens=setting("append_tokens", 160, int),
                 sampling={"temperature": 0.3, "repeat_penalty": 1.15},
+                on_token=on_token,
                 kind="append",
             )
         except Exception:  # noqa: BLE001
             return ""
-        more = str(more or "").strip()
+        more = str(result["text"] or "").strip()
         if not more or novelty(more, sentences_of(text)) < 0.5:
             return ""
         return more
+
+    def measure_variation(self, argument=""):
+        """Ask one question n times and report how different the answers are.
+
+        Answered with no memory window on purpose: history is what makes repeats
+        look alike, and this number should describe the model, not the session.
+        """
+        parts = str(argument or "").split(None, 1)
+        count = 7
+        prompt = ""
+        if parts and parts[0].isdigit():
+            count = max(2, min(12, int(parts[0])))
+            prompt = parts[1].strip() if len(parts) > 1 else ""
+        else:
+            prompt = str(argument or "").strip()
+        prompt = prompt or str(self.last_prompt or "").strip()
+        if not prompt:
+            print("usage: /variation [n] <question>   (default 7 answers)")
+            return {}
+        print("[asking %d times: %s]" % (count, prompt))
+        answers = []
+        secs = []
+        for index in range(count):
+            sampling = dict(SAMPLING)
+            sampling["seed"] = random.randint(1, 10 ** 9)
+            sampling["temperature"] = min(1.0, float(sampling.get("temperature", 0.7)) + 0.15)
+            started = time.time()
+            try:
+                result = self.client.ask(
+                    self.messages_for(prompt, "", window_tokens=0),
+                    max_tokens=MAX_TOKENS,
+                    sampling=sampling,
+                    kind="variation",
+                )
+            except Exception as err:  # noqa: BLE001
+                print("  %d/%d failed: %s" % (index + 1, count, err))
+                continue
+            text = str(result["text"] or "").strip()
+            answers.append(text)
+            secs.append(time.time() - started)
+            print(
+                "  %d/%d  %5.2fs  %4d chars  %s"
+                % (index + 1, count, secs[-1], len(text), text[:70].replace("\n", " "))
+            )
+        stats = variation_stats(answers)
+        if not stats["answers"]:
+            print("[no answers - the endpoint did not reply]")
+            return stats
+        ordered = sorted(secs)
+        print(
+            "[variation: %d/%d distinct | mean pairwise similarity %.2f | closest pair %.2f | "
+            "avg %d chars / %d words | median %.2fs]"
+            % (
+                stats["distinct"], stats["answers"], stats["mean"], stats["max"],
+                stats["chars"], stats["words"], ordered[len(ordered) // 2],
+            )
+        )
+        self.telemetry.record(kind="variation", model=MODEL, chars=stats["chars"])
+        return stats
 
     def multi_image(self, argument):
         """Send several images in one request so the model compares them together."""
@@ -5457,6 +5563,7 @@ HELP = """commands
   /documents          list ingested documents
   /research <q>       plan -> gather -> synthesize, saves notes and next steps
   /vary <q>           same question, new seed and higher temperature
+  /variation [n] <q>  ask n times (default 7) and report how different the answers are
   /batch a || b       measure two calls at once against one combined call
   /test-loop          force a repetition and show the guard + replacement
   /review <path>      review a source file, worst problems first
@@ -5558,6 +5665,8 @@ def run_repl(chat, telemetry):
                 chat.research(line[10:])
             elif low.startswith("/vary"):
                 chat.vary(line[5:].strip())
+            elif low.startswith("/variation"):
+                chat.measure_variation(line[len("/variation"):].strip())
             elif low in ("/good", "/bad"):
                 chat.rate_answer(1.0 if low == "/good" else -1.0)
             elif low == "/code":
@@ -5741,9 +5850,18 @@ def run_repl(chat, telemetry):
             else:
                 chat.ask(line)
         except KeyboardInterrupt:
-            print("\n(interrupted)")
+            print("\n(interrupted - the conversation is still open)")
         except Exception as err:  # noqa: BLE001
-            print("error:", err)
+            # One bad turn must never end the session: name the failure, keep the
+            # state that already exists, and go straight back to the prompt.
+            if os.environ.get("FASTCHAT_DEBUG"):
+                traceback.print_exc()
+            print("\nerror: %s: %s" % (type(err).__name__, err))
+            print("[turn failed - the session is still open; ask again or try /memory]")
+            try:
+                chat.save_state()
+            except Exception:  # noqa: BLE001 - saving must not break the loop either
+                pass
 
 
 def run_selftest():
@@ -6196,6 +6314,11 @@ def run_selftest():
         import shutil
 
         shutil.rmtree(temp, ignore_errors=True)
+    same = variation_stats(["word " * 40, "word " * 40, "rubies are red because of chromium"])
+    check("identical answers count once", same["distinct"], 2)
+    check("identical answers are 100% alike", round(same["max"], 2), 1.0)
+    check("one answer is one variation", variation_stats(["a short answer"])["distinct"], 1)
+
     passed = sum(1 for ok in results if ok)
     print("selftest: %d/%d passed" % (passed, len(results)))
     return 0 if passed == len(results) else 1
