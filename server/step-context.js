@@ -198,7 +198,9 @@ export function assessStep({ step = {}, screen = null, goal = '', history = [] }
     if (exactTitle || exactProcess) {
       result.alreadySatisfied = true;
       result.skipReason = 'Already focused; no action was needed.';
-    } else if (wantedTitle && fg.dialog && norm(fg.title) === norm(wantedTitle)) {
+    } else if (wantedTitle && fg.dialog && sameAppDialog(screen, wantedTitle)) {
+      // A dialog of the target app is in front; focusing the app window behind
+      // it would bury the dialog the flow is working through.
       result.alreadySatisfied = true;
       result.inProgress = true;
       result.skipReason = `Already focused on “${clip(fg.title, 50)}”, a dialog of the same app.`;
