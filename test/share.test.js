@@ -123,6 +123,20 @@ test('share proxy only forwards safe reads and dry executions', async (t) => {
     assert.equal(received.length, before, `${method} ${path} reached upstream`);
   }
 
+  // A keep-alive client gets the 403 itself, not a reset from an unread body.
+  const keepAlive = new http.Agent({ keepAlive: true });
+  const viaAgent = (path, method) => new Promise((resolve, reject) => {
+    const req = http.request({ host: '127.0.0.1', port, path, method, headers: auth, agent: keepAlive }, (res) => {
+      res.resume();
+      res.on('end', () => resolve(res.statusCode));
+    });
+    req.on('error', reject);
+    req.end('{}');
+  });
+  assert.equal(await viaAgent('/api/git/pull', 'POST'), 403);
+  assert.equal(await viaAgent('/api/commands/c1/run', 'POST'), 403);
+  keepAlive.destroy();
+
   // Git, note and command mutations name the reason, not just the method gate.
   const commandRun = await request(port, '/api/commands/c1/run', { method: 'POST', headers: auth, body: '{}' });
   assert.equal(commandRun.status, 403);

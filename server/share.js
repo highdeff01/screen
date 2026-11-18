@@ -164,7 +164,14 @@ async function handle(req, res) {
   const approvedPost = method === 'POST' && RUN_PATH.test(url.pathname);
   if (rule || (!['GET', 'HEAD'].includes(method) && !approvedPost)) {
     const why = rule?.why || 'this action is not available through a share link';
-    res.writeHead(403, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+    // Drain the refused body and close the socket: a keep-alive client that is
+    // still uploading would otherwise see ECONNRESET instead of this 403.
+    req.resume();
+    res.writeHead(403, {
+      'content-type': 'application/json; charset=utf-8',
+      'cache-control': 'no-store',
+      connection: 'close',
+    });
     res.end(JSON.stringify({ ok: false, error: `Blocked on a share link: ${why}.` }));
     return;
   }
