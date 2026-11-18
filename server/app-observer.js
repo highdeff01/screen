@@ -24,7 +24,7 @@ const runtime = {
   timer: null,
   runId: null,
   intervalMs: 3000,
-  last: { stepId: '', signature: '' },
+  last: { stepId: '', signature: '', said: [] },
   observations: [],
 };
 
@@ -80,9 +80,14 @@ export function observeStep(run, { at = Date.now(), monitor = null, previous = n
   const startedAt = new Date(step.startedAt || at).getTime();
   const elapsedMs = Number.isFinite(startedAt) ? Math.max(0, at - startedAt) : 0;
   const target = stepTarget(step);
-  const seen = previous?.stepId === step.id ? String(previous.signature || '') : '';
-  const done = (signature, text) => ({ stepId: step.id, signature: `${step.id}:${signature}`, text });
-  const unseen = (signature) => !seen.startsWith(`${step.id}:${signature}`);
+  // Everything already said about this step, so a later line never repeats an
+  // earlier one: the start notice must not come back after a five-second notice.
+  const said = previous?.stepId === step.id && Array.isArray(previous.said) ? previous.said : [];
+  const unseen = (signature) => !said.includes(`${step.id}:${signature}`);
+  const done = (signature, text) => {
+    const full = `${step.id}:${signature}`;
+    return { stepId: step.id, signature: full, said: [...said, full], text };
+  };
 
   if (unseen('start')) {
     return done(
@@ -176,7 +181,7 @@ function tick() {
   }
   const observation = observeStep(run, { monitor, previous: runtime.last });
   if (!observation) return observerState();
-  runtime.last = { stepId: observation.stepId, signature: observation.signature };
+  runtime.last = { stepId: observation.stepId, signature: observation.signature, said: observation.said };
   record(run, observation);
   return observerState();
 }
@@ -196,7 +201,7 @@ export function beginRunObservation(run, { intervalMs } = {}) {
     1000,
     Math.min(15000, Number(intervalMs) || Number(db().settings?.observerIntervalMs) || 3000)
   );
-  runtime.last = { stepId: '', signature: '' };
+  runtime.last = { stepId: '', signature: '', said: [] };
   if (runtime.timer) return observerState();
   runtime.timer = setInterval(tick, runtime.intervalMs);
   runtime.timer.unref?.();

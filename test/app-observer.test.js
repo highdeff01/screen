@@ -117,6 +117,19 @@ test('the closing line gives the duration and the artefact', () => {
   assert.match(withFile.text, /passed after 4s, wrote data\/media\/clip\.mp4/);
 });
 
+test('a later observation never repeats an earlier one', () => {
+  const step = makeStep({ name: 'Hold the step open', type: 'wait', startedAt: iso(16000) });
+  const run = makeRun(step);
+  const start = observer.observeStep(run);
+  const five = observer.observeStep(run, { previous: start, at: Date.now() - 10000 });
+  assert.match(five.text, /has been running 5s/);
+  // The start notice must not come back now that a later line was said.
+  assert.equal(observer.observeStep(run, { previous: five, at: Date.now() - 10000 }), null);
+  const fifteen = observer.observeStep(run, { previous: five });
+  assert.match(fifteen.text, /has been running 15s/);
+  assert.notEqual(fifteen.text, start.text);
+});
+
 test('nothing is narrated when no step is actually running', () => {
   assert.equal(observer.observeStep({ steps: [{ id: 'a', status: 'pending' }], currentStepId: 'a' }), null);
   assert.equal(observer.observeStep({}), null);
