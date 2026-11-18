@@ -41,15 +41,18 @@ test('snapshots refuse to run without a repository', async () => {
   await git(['init']);
   await git(['config', 'user.email', 'test@example.com']);
   await git(['config', 'user.name', 'Test']);
+  await git(['commit', '--allow-empty', '-m', 'base']);
 });
 
 test('a snapshot captures the folder without touching any branch', async () => {
   fs.writeFileSync(path.join(process.cwd(), 'app.txt'), 'version one');
+  const before = await git(['rev-parse', 'HEAD']);
   const made = await snapshots.createSnapshot('first');
   assert.equal(made.ok, true, made.message);
   snapA = made.snapshot;
   const head = await git(['rev-parse', 'HEAD']);
-  assert.equal(head.stdout, '', 'no commit was made on any branch');
+  assert.equal(head.stdout, before.stdout, 'no commit was made on any branch');
+  assert.equal(snapA.parent, before.stdout.slice(0, 40), 'the snapshot hangs off the current HEAD as a parent');
   // The snapshot survives garbage collection via its own ref.
   const ref = await git(['rev-parse', `refs/snapshots/${snapA.id}`]);
   assert.equal(ref.stdout, snapA.commit);
@@ -76,9 +79,9 @@ test('transferring changes between versions lands them on the current tree', asy
   const restored = await snapshots.restoreSnapshot(snapA.id);
   assert.equal(restored.ok, true, restored.message);
   assert.equal(fs.readFileSync(path.join(process.cwd(), 'app.txt'), 'utf8'), 'version one');
-  assert.ok(!fs.existsSync(path.join(process.cwd(), 'extra.txt')), 'a restore leaves out files the snapshot never had');
+  assert.ok(fs.existsSync(path.join(process.cwd(), 'extra.txt')), 'files the snapshot never had stay in place (restore is an overlay, never a wipe)');
   // The restore kept what was here as its own safety snapshot.
-  assert.match(restored.message, /safety/);
+  assert.match(restored.message, /kept as snapshot/);
 
   const transfer = await snapshots.transferBetween(snapA.id, snapB.id);
   assert.equal(transfer.ok, true, transfer.message);
