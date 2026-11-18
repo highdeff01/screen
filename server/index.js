@@ -3783,9 +3783,21 @@ server.listen(PORT, HOST, () => {
     const item = await triageItem({ id });
     return item?.suggestion ? 'Suggestion drafted' : 'No suggestion available';
   });
+  registerHandler('deep-focus', async ({ id, rounds }) => {
+    startDeepFocus(id, { rounds, reason: 'failed run' });
+    return 'Focus cycle started';
+  });
   startPipeline();
   // Know when AIs are working on the app; drives safeguards and continuations.
   startAgentWatch();
+  // Deep focus readers: live desktop state for the rethink rounds.
+  configureDeepFocus({
+    readForeground: readForegroundWindow,
+    readFocused: readFocusedElement,
+    chat,
+    snapshot: (label) => createSnapshot(label),
+    applyAndRetry: applyReshapedToRun,
+  });
   startAmbient();
   // Front the model provider with the local Respan Gateway when it is enabled.
   if (db().settings.gatewayEnabled) ensureGateway().catch((err) => console.warn(`[gateway] ${err.message}`));

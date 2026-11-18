@@ -1,19 +1,43 @@
 {
   "version": 1,
   "by": "sentinel",
-  "updatedAt": "2026-11-18T22:51:47.062Z",
-  "head": "953bd86c3242",
+  "updatedAt": "2026-11-18T23:16:12.151Z",
+  "head": "10881a6c717b",
   "lastRun": {
-    "at": "2026-11-18T22:51:47.062Z",
-    "ok": true,
-    "tests": 461,
-    "pass": 457,
-    "fail": 0,
+    "at": "2026-11-18T23:16:12.141Z",
+    "ok": false,
+    "tests": 467,
+    "pass": 462,
+    "fail": 1,
     "isolated": true,
-    "failingTests": []
+    "failingTests": [
+      "a type step with a named window proves its destination instead of guessing from the screen (14003.4972ms)"
+    ]
   },
-  "open": 8,
+  "open": 9,
   "items": [
+    {
+      "id": "sent_mwmqpqzx5df295",
+      "at": "2026-11-18T23:16:12.141Z",
+      "status": "queued",
+      "attempts": 1,
+      "fail": 1,
+      "pass": 462,
+      "tests": [
+        "a type step with a named window proves its destination instead of guessing from the screen (14003.4972ms)"
+      ],
+      "details": [
+        {
+          "name": "a type step with a named window proves its destination instead of guessing from the screen",
+          "file": "",
+          "line": null,
+          "message": ""
+        }
+      ],
+      "plan": "",
+      "planError": "",
+      "report": "must-check/2026-11-18T23-16-12-a-type-step-with-a-named-window-proves-i.md"
+    },
     {
       "id": "sent_mwmouvh834c257",
       "at": "2026-11-18T22:24:11.996Z",

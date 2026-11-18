@@ -20,6 +20,7 @@ import { assessStep, launchProducedNewWindow, looksLikeSavedDocument, reviewPrev
 import { classifyPresence, holdDecision, learnHold, completionFor, isFocusStealing, silentChecksFor } from './presence.js';
 import { recordAction } from './action-log.js';
 import { sendContinuation } from './agent-awareness.js';
+import { enqueue } from './pipeline.js';
 import { beginRunObservation, endRunObservation } from './app-observer.js';
 import { expectsScreenChange, windowChecksFor, resumePlan, corroboratesNoChange, lookupWindowFor, screenChangeVerdict } from './step-effects.js';
 
@@ -698,6 +699,11 @@ function reportRunFailure(run, summary, error = '') {
       detail: `${summary} (run ${run.id}); fix, then re-run`,
       tags: ['run-failed'],
     });
+    // And the run itself goes to deep focus: live re-reads, a rethink round,
+    // reshaped steps and a conclusion — instead of ending as just a record.
+    try {
+      enqueue({ kind: 'deep-focus', payload: { id: run.id }, key: `deep-focus:${run.id}`, priority: 3 });
+    } catch { /* before boot the handler is not registered yet; skip */ }
     return item;
   } catch (err) {
     console.warn(`[engine] failure report failed: ${err.message}`);
