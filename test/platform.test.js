@@ -52,11 +52,9 @@ test('backend detection reports what a console can actually do', () => {
   assert.equal(windows.id, 'win32');
   assert.equal(windows.available, true);
 
-  // Linux and macOS remain live backends with no optional helpers installed:
-  // the missing tool is reported, and the step that needs it fails on its own.
   const linuxBare = detectBackend({ platform: 'linux', env: { PATH: '' } });
-  assert.equal(linuxBare.available, true);
-  assert.equal(linuxBare.reason, '');
+  assert.equal(linuxBare.available, false);
+  assert.match(linuxBare.reason, /DISPLAY.*xdotool.*screenshot/);
   assert.equal(linuxBare.captureReady, false);
   assert.equal(linuxBare.inputReady, false);
   assert.match(linuxBare.capture, /no screenshot tool/);
@@ -93,9 +91,10 @@ test('live control status reports the backend and the tools it will use', () => 
   assert.equal(windows.captureReady, true);
   assert.equal(windows.inputReady, true);
   const linuxBare = liveControl({ platform: 'linux', env: { PATH: '' } });
-  assert.equal(linuxBare.available, true);
-  assert.equal(linuxBare.reason, '');
+  assert.equal(linuxBare.available, false);
+  assert.match(linuxBare.reason, /DISPLAY.*xdotool.*screenshot/);
   assert.equal(linuxBare.captureReady, false);
+  assert.equal(linuxBare.inputReady, false);
 });
 
 function fixture(t, tools) {
@@ -107,27 +106,44 @@ function fixture(t, tools) {
   return dir;
 }
 
-test('Linux reports its capture and input tools without refusing the backend', { skip: process.platform === 'win32' }, (t) => {
+test('Linux live control requires its X11 input, capture and display prerequisites', { skip: process.platform === 'win32' }, (t) => {
   const full = fixture(t, { grim: '', scrot: '', xdotool: '' });
-  // grim captures Wayland and cannot stand in for an X11 session.
-  assert.equal(captureToolFor('linux', { PATH: full }), 'scrot');
+  const env = { PATH: full, DISPLAY: ':0' };
+  // grim is not used by the X11 capture command.
+  assert.equal(captureToolFor('linux', env), 'scrot');
 
-  const ready = detectBackend({ platform: 'linux', env: { PATH: full } });
+  const ready = detectBackend({ platform: 'linux', env });
   assert.equal(ready.available, true);
   assert.equal(ready.reason, '');
   assert.equal(ready.captureReady, true);
   assert.equal(ready.inputReady, true);
   assert.equal(ready.input, 'xdotool (X11)');
+  assert.equal(liveControl({ platform: 'linux', env }).available, true);
 
-  // No helpers and no DISPLAY is still a live backend: the step that needs one
-  // fails with its own install hint instead of the whole run being refused.
-  const none = fixture(t, {});
-  const bare = detectBackend({ platform: 'linux', env: { PATH: none } });
-  assert.equal(bare.available, true);
-  assert.equal(bare.reason, '');
-  assert.equal(bare.captureReady, false);
-  assert.equal(bare.inputReady, false);
-  assert.equal(captureToolFor('linux', { PATH: none }), '');
+  // A Wayland session with XWayland is usable; Wayland alone is not enough.
+  assert.equal(detectBackend({ platform: 'linux', env: { ...env, WAYLAND_DISPLAY: 'wayland-0' } }).available, true);
+  for (const display of ['', '   ']) {
+    const noDisplay = detectBackend({ platform: 'linux', env: { ...env, DISPLAY: display, WAYLAND_DISPLAY: 'wayland-0' } });
+    assert.equal(noDisplay.available, false);
+    assert.match(noDisplay.reason, /DISPLAY/);
+    assert.equal(noDisplay.captureReady, false);
+    assert.equal(noDisplay.inputReady, false);
+  }
+
+  const noInput = fixture(t, { scrot: '', ydotool: '' });
+  const missingInput = detectBackend({ platform: 'linux', env: { PATH: noInput, DISPLAY: ':0' } });
+  assert.equal(missingInput.available, false);
+  assert.match(missingInput.reason, /xdotool/);
+  assert.equal(missingInput.inputReady, false);
+  assert.equal(missingInput.captureReady, true);
+
+  const noCapture = fixture(t, { xdotool: '', grim: '' });
+  const missingCapture = detectBackend({ platform: 'linux', env: { PATH: noCapture, DISPLAY: ':0', WAYLAND_DISPLAY: 'wayland-0' } });
+  assert.equal(missingCapture.available, false);
+  assert.match(missingCapture.reason, /screenshot/);
+  assert.equal(missingCapture.inputReady, true);
+  assert.equal(missingCapture.captureReady, false);
+  assert.equal(captureToolFor('linux', { PATH: noCapture }), '');
 });
 
 test('PATH entries must be executable regular files', { skip: process.platform === 'win32' }, (t) => {

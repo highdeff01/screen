@@ -1,6 +1,7 @@
 import test, { after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -26,6 +27,8 @@ beforeEach(() => {
   sync.__gitSyncState.lastStatusHash = '';
   sync.__gitSyncState.pausedUntil = 0;
   sync.__gitSyncState.busy = false;
+  sync.__gitSyncState.ahead = 0;
+  sync.__gitSyncState.behind = 0;
   store.db().settings.autoSync = true;
 });
 
@@ -42,6 +45,19 @@ function fakeGit(handlers) {
   return { run, calls };
 }
 
+test('new installs default off and saved choices are preserved', () => {
+  for (const choice of [undefined, true, false, null]) {
+    const dir = fs.mkdtempSync(path.join(tempRoot, 'store-'));
+    if (choice !== undefined) {
+      fs.mkdirSync(path.join(dir, 'data'));
+      fs.writeFileSync(path.join(dir, 'data', 'db.json'), JSON.stringify({ settings: choice === null ? {} : { autoSync: choice } }));
+    }
+    const script = `import { db } from ${JSON.stringify(pathToFileURL(path.join(root, 'server/store.js')).href)}; console.log(JSON.stringify(db().settings.autoSync));`;
+    const value = execFileSync(process.execPath, ['--input-type=module', '-e', script], { cwd: dir, encoding: 'utf8' }).trim();
+    assert.equal(JSON.parse(value), choice === true);
+  }
+});
+
 test('a clean tree is left alone', async () => {
   const git = fakeGit({
     'rev-parse': { ok: true, stdout: 'true' },
@@ -57,6 +73,15 @@ test('auto-sync off means no git work at all', async () => {
   store.db().settings.autoSync = false;
   const git = fakeGit({});
   const status = await sync.checkAndSync({ run: git.run });
+  assert.equal(status.status, 'disabled');
+  assert.deepEqual(git.calls, []);
+});
+
+test('missing opt-in and force do not run git', async () => {
+  delete store.db().settings.autoSync;
+  const git = fakeGit({});
+  const status = await sync.checkAndSync({ run: git.run, force: true });
+  assert.equal(status.enabled, false);
   assert.equal(status.status, 'disabled');
   assert.deepEqual(git.calls, []);
 });
@@ -78,7 +103,7 @@ test('a change is committed only after it looks the same twice', async () => {
 
   const second = await sync.checkAndSync({ run: git.run });
   assert.equal(second.status, 'pushed');
-  assert.equal(git.calls.some((call) => call.startsWith('add -A')), true);
+  assert.equal(git.calls.includes('add -u -- . :(exclude)data'), true);
   assert.equal(git.calls.some((call) => call.startsWith('push origin')), true);
 });
 
@@ -134,4 +159,78 @@ test('a folder that is not a repository says so once', async () => {
   const status = await sync.checkAndSync({ run: git.run });
   assert.equal(status.status, 'not-a-repo');
   assert.match(status.lastError, /not a git repository/);
+});
+
+test('status failure and staged changes never cause a commit', async () => {
+  for (const response of [
+    { ok: false, stderr: 'status error' },
+    { ok: true, stdout: 'A  private.txt\n M public/app.js' },
+  ]) {
+    const git = fakeGit({ 'rev-parse': { ok: true, stdout: 'true' }, status: response });
+    const result = await sync.checkAndSync({ run: git.run, force: true });
+    assert.equal(result.status, response.ok ? 'staged' : 'error');
+    assert.equal(git.calls.some((call) => /^(add|commit|push)\b/.test(call)), false);
+  }
+});
+
+test('fetch or comparison failure keeps the local commit without pushing', async () => {
+  for (const failure of ['fetch', 'rev-list']) {
+    const handlers = {
+      'rev-parse': { ok: true, stdout: 'true' },
+      status: { ok: true, stdout: ' M public/app.js' },
+      commit: { ok: true, stdout: 'committed' },
+      fetch: { ok: true, stdout: '' },
+      'rev-list': { ok: true, stdout: '1\t0' },
+    };
+    handlers[failure] = { ok: false, stderr: 'offline' };
+    const git = fakeGit(handlers);
+    const result = await sync.checkAndSync({ run: git.run, force: true });
+    assert.equal(result.status, 'push-failed');
+    assert.equal(git.calls.some((call) => call.startsWith('push')), false);
+  }
+});
+
+test('real git sync commits only tracked changes outside data and refuses staged files', async () => {
+  const dir = fs.mkdtempSync(path.join(tempRoot, 'repo-'));
+  const remote = fs.mkdtempSync(path.join(tempRoot, 'remote-'));
+  const git = (args, cwd = dir) => execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  git(['init', '--bare'], remote);
+  git(['init', '-b', 'main']);
+  git(['config', 'user.email', 'test@example.com']);
+  git(['config', 'user.name', 'Test']);
+  git(['remote', 'add', 'origin', remote]);
+  fs.mkdirSync(path.join(dir, 'data'));
+  fs.writeFileSync(path.join(dir, '.gitignore'), 'data/\nignored.txt\n');
+  fs.writeFileSync(path.join(dir, 'source.js'), 'before');
+  fs.writeFileSync(path.join(dir, 'deleted.js'), 'delete me');
+  fs.writeFileSync(path.join(dir, 'data', 'tracked.json'), 'private before');
+  git(['add', '.gitignore', 'source.js', 'deleted.js']);
+  git(['add', '-f', 'data/tracked.json']);
+  git(['commit', '-m', 'initial']);
+  git(['push', '-u', 'origin', 'main']);
+  fs.writeFileSync(path.join(dir, 'source.js'), 'after');
+  fs.rmSync(path.join(dir, 'deleted.js'));
+  fs.writeFileSync(path.join(dir, 'data', 'tracked.json'), 'private after');
+  fs.writeFileSync(path.join(dir, 'unrelated-secret.txt'), 'secret');
+  fs.writeFileSync(path.join(dir, 'ignored.txt'), 'ignored');
+  const run = async (args) => {
+    try {
+      return { ok: true, stdout: git(args).trimEnd(), stderr: '' };
+    } catch (error) {
+      return { ok: false, stdout: String(error.stdout || ''), stderr: String(error.stderr || '') };
+    }
+  };
+  git(['add', 'unrelated-secret.txt']);
+  const blocked = await sync.checkAndSync({ run, force: true });
+  assert.equal(blocked.status, 'staged');
+  assert.equal(git(['rev-list', '--count', 'HEAD']).trim(), '1');
+  git(['reset', 'HEAD', '--', 'unrelated-secret.txt']);
+  const result = await sync.checkAndSync({ run, force: true });
+  assert.equal(result.status, 'pushed', result.lastError);
+  assert.deepEqual(git(['show', '--pretty=format:', '--name-only', 'HEAD']).trim().split('\n').sort(), ['deleted.js', 'source.js']);
+  assert.equal(git(['show', 'HEAD:data/tracked.json']), 'private before');
+  assert.match(git(['status', '--porcelain']), /\?\? unrelated-secret\.txt/);
+  assert.match(git(['status', '--porcelain']), / M data\/tracked\.json/);
+  const clean = await sync.checkAndSync({ run, force: true });
+  assert.equal(clean.status, 'clean');
 });

@@ -35,3 +35,30 @@ test('boot renders state without waiting for optional startup requests', async (
   assert.ok(calls.includes('poll-scheduled'));
   assert.deepEqual(calls.filter((call) => ['auth', 'captures', 'health', 'chat'].includes(call)).sort(), ['auth', 'captures', 'chat', 'health']);
 });
+
+test('header renders and clears the relay review badge', () => {
+  const source = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+  const header = source.slice(source.indexOf('function renderHeader()'), source.indexOf('/* ------------------------------------------------------------------ views */'));
+  assert.match(header, /^function renderHeader/);
+  const elements = new Map();
+  const element = (id) => {
+    if (!elements.has(id)) elements.set(id, { textContent: '', className: '', classList: { toggle() {} } });
+    return elements.get(id);
+  };
+  const ui = {
+    data: { settings: { dryRun: true }, counts: { activeRuns: 2 }, relay: { openReviews: 3 } },
+    view: 'relay',
+    auth: { authenticated: true, username: 'operator' },
+  };
+  const context = { ui, $: element, document: { querySelectorAll: () => [] } };
+  vm.runInNewContext(`${header}\nrenderHeader();`, context);
+  assert.equal(element('#badge-relay').textContent, '3');
+  assert.equal(element('#admin-btn').textContent, 'Admin · operator');
+  assert.equal(element('#engine-label').textContent, '2 run active');
+  ui.data.relay.openReviews = 0;
+  vm.runInNewContext('renderHeader();', context);
+  assert.equal(element('#badge-relay').textContent, '');
+  delete ui.data.relay;
+  vm.runInNewContext('renderHeader();', context);
+  assert.equal(element('#badge-relay').textContent, '');
+});

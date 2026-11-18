@@ -175,20 +175,43 @@ function reportUiError(error, action = '') {
 }
 
 async function api(path, options = {}) {
+  // Give long-running actions more time than reads, while ensuring neither a
+  // stalled connection nor a stalled response body can block the UI forever.
+  const timeoutMs = !options.method || options.method.toUpperCase() === 'GET' ? 15000 : 300000;
+  const controller = new AbortController();
+  const signal = options.signal;
+  const abort = () => controller.abort();
+  if (signal?.aborted) abort();
+  else signal?.addEventListener('abort', abort, { once: true });
+  let timer;
   try {
-    const res = await fetch(path, {
-      headers: { 'Content-Type': 'application/json' },
-      ...options,
-      body: options.body == null ? undefined : JSON.stringify(options.body),
+    const timeout = new Promise((_, reject) => {
+      timer = setTimeout(() => {
+        reject(new Error('Request timed out.'));
+        controller.abort();
+      }, timeoutMs);
     });
-    const data = await res.json().catch(() => ({ ok: false, error: `Unexpected response (${res.status})` }));
-    if (data && data.ok === false && res.status >= 400 && !/action-log/.test(path)) {
-      reportUiError(data.error || `HTTP ${res.status}`, path);
+    const request = (async () => {
+      const res = await fetch(path, {
+        headers: { 'Content-Type': 'application/json' },
+        ...options,
+        signal: controller.signal,
+        body: options.body == null ? undefined : JSON.stringify(options.body),
+      });
+      const data = await res.json().catch(() => ({ ok: false, error: `Unexpected response (${res.status})` }));
+      return { data, status: res.status };
+    })();
+    const { data, status } = await Promise.race([request, timeout]);
+    if (data && data.ok === false && status >= 400 && !/action-log/.test(path) && typeof reportUiError === 'function') {
+      reportUiError(data.error || `HTTP ${status}`, path);
     }
     return data;
   } catch (err) {
-    if (!/action-log/.test(path)) reportUiError(err.message, path);
+    if (!/action-log/.test(path) && typeof reportUiError === 'function') reportUiError(err.message, path);
     return { ok: false, error: err.message };
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener('abort', abort);
   }
 }
 
@@ -725,7 +748,8 @@ function renderHeader() {
     sentinelBadge.textContent = s.openFailures ? String(s.openFailures) : '';
     sentinelBadge.className = s.openFailures ? 'warnbadge' : '';
   }
-  relayBadge();
+  const relayBadge = $('#badge-relay');
+  if (relayBadge) relayBadge.textContent = ui.data?.relay?.openReviews ? String(ui.data.relay.openReviews) : '';
   const adminBtn = $('#admin-btn');
   if (adminBtn) {
     adminBtn.textContent = ui.auth?.authenticated ? `Admin · ${ui.auth.username}` : 'Admin sign-in';
@@ -9379,19 +9403,25 @@ async function boot() {
   loadCaptures().then(renderAfterLoad);
   loadChat().then(renderAfterLoad);
   const pollState = async () => {
-    const focused = document.activeElement;
-    const typing = focused && /INPUT|TEXTAREA|SELECT/.test(focused.tagName);
-    // Every refresh rebuilds the view, so a poll that lands between mousedown and
-    // click swallows the click. Give the pointer and keyboard a moment first; this
-    // is why buttons used to work only some of the time.
-    const interacting = Date.now() - Number(ui.lastInteractionAt || 0) < 700;
-    if (!ui.modal && !typing && !interacting) {
-      await refresh();
+    try {
+      const focused = document.activeElement;
+      const typing = focused && /INPUT|TEXTAREA|SELECT/.test(focused.tagName);
+      // Every refresh rebuilds the view, so a poll that lands between mousedown and
+      // click swallows the click. Give the pointer and keyboard a moment first; this
+      // is why buttons used to work only some of the time.
+      const interacting = Date.now() - lastInteractionAt < 700;
+      if (!ui.modal && !typing && !interacting) {
+        await refresh();
+      }
+    } catch (err) {
+      console.error('State refresh failed:', err);
+    } finally {
+      // Schedule only after the previous refresh settles, even on failure.
+      const counts = ui.data?.counts || {};
+      const busy = Number(counts.activeRuns || 0) + Number(counts.missionsActive || 0);
+      const delay = document.hidden ? 8000 : busy ? 500 : 2000;
+      setTimeout(pollState, delay);
     }
-    const counts = ui.data?.counts || {};
-    const busy = Number(counts.activeRuns || 0) + Number(counts.missionsActive || 0);
-    const delay = document.hidden ? 8000 : busy ? 500 : 2000;
-    setTimeout(pollState, delay);
   };
   pollState();
   setInterval(loadHealth, 60000);

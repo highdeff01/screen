@@ -104,6 +104,20 @@ test('share proxy only forwards safe reads and dry executions', async (t) => {
   assert.equal(tokenGet.status, 200);
   assert.match(tokenGet.headers['set-cookie'][0], /^sightline_share=/);
 
+  // Review views and the exact static assets used by index.html remain available.
+  for (const path of [
+    '/index.html', '/app.js', '/styles.css', '/api/auth/status', '/api/examples',
+    '/api/captures', '/api/companion', '/api/continuity',
+    '/api/runs/run_1', '/api/runs/run_1/simulations',
+    '/api/missions', '/api/missions/msn_1', '/api/missions/msn_1/presentation',
+  ]) {
+    for (const method of ['GET', 'HEAD']) {
+      const before = received.length;
+      assert.equal((await request(port, path, { method, headers: auth })).status, 200, `${method} ${path}`);
+      assert.equal(received.length, before + 1, `${method} ${path} not forwarded`);
+    }
+  }
+
   const blocked = [
     ['POST', '/api/control'], ['POST', '/api/shortcuts/habits/h/replay'],
     ['POST', '/api/missions/m/resume'], ['POST', '/api/workflows/w/runs/r/retry'],
@@ -115,6 +129,11 @@ test('share proxy only forwards safe reads and dry executions', async (t) => {
     ['OPTIONS', '/api/state'], ['GET', '/api/admin'], ['GET', '/api/tools'],
     ['HEAD', '/api/element-links'], ['GET', '/api/python/file/download'],
     ['GET', '/api/share'], ['GET', '/api/ambient/refresh'], ['HEAD', '/api/ambient/refresh'],
+    ...['/api/files', '/api/files/read?path=data/db.json', '/api/files/raw?path=data/db.json',
+      '/api/files/', '/api/%66iles/read?path=data/db.json', '/api/files%2fraw?path=data/db.json',
+      '/api/unknown', '/api/models?refresh=1', '/api/workflow-memory?limit=60', '/api/shortcuts',
+      '/api/presentations/deck_1', '/api/runs/run_1/retry', '/unlisted.txt',
+    ].flatMap((path) => [['GET', path], ['HEAD', path]]),
   ];
   for (const [method, path] of blocked) {
     const before = received.length;
