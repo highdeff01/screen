@@ -20,7 +20,7 @@ after(() => {
   }
 });
 
-test('a recorded path relative to the project root resolves to the real file', () => {
+test('a recorded path relative to the project root resolves to the real file', async () => {
   fs.mkdirSync(probeDir, { recursive: true });
   fs.writeFileSync(probePath, 'evidence');
   const recorded = `data/media/${probeName}`;
@@ -28,10 +28,10 @@ test('a recorded path relative to the project root resolves to the real file', (
 
   const result = await automation.silentCheck('file', { path: recorded });
   assert.equal(result.ok, true);
-  assert.match(result.detail, /13 bytes/);
+  assert.match(result.detail, /data[\\/]media[\\/]silent-file-check-[\d]+\.txt \(8 bytes\)$/);
 });
 
-test('a bare file name still finds a download in data/media', () => {
+test('a bare file name still finds a download in data/media', async () => {
   fs.mkdirSync(probeDir, { recursive: true });
   fs.writeFileSync(probePath, 'evidence');
   // Older runs stored only the file name, which used to be resolved against the
