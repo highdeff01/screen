@@ -175,8 +175,9 @@ function fail(res, code, message) {
 }
 
 /**
- * Live control is available wherever a backend exists (Windows, macOS, Linux,
- * or Android over adb). When it is not, the refusal names what is missing.
+ * Live control is available on Windows, macOS, Linux and Android over adb.
+ * Only a target with no backend at all (adb requested without a device, or an
+ * unsupported host platform) is refused, and the message says why.
  */
 function liveRefusal() {
   const control = liveControl();
@@ -3050,14 +3051,8 @@ server.listen(PORT, HOST, () => {
   setInterval(scanElementLinks, 5000).unref?.();
   console.log(`Sightline console running at http://${HOST}:${PORT}`);
   console.log(`Data: ${DATA}`);
-  // Say which kind of console this is: a live run refused on a different
-  // machine looks identical to a bug on this one without it.
   const control = liveControl();
-  console.log(
-    control.available
-      ? `Platform: ${process.platform} — live control via ${control.label} (${control.input}; capture: ${control.capture}).`
-      : `Platform: ${process.platform} — live control unavailable: ${control.reason}`
-  );
+  console.log(`Platform: ${process.platform} — live control via ${control.label} (${control.input}; capture: ${control.capture}).`);
 });
 
 function shutdown() {

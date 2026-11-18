@@ -63,6 +63,9 @@ const LINUX_CAPTURE = [
   { tool: 'gnome-screenshot', args: (file) => ['-f', file] },
   { tool: 'spectacle', args: (file) => ['-b', '-n', '-o', file] },
   { tool: 'scrot', args: (file) => [file] },
+  { tool: 'maim', args: (file) => [file] },
+  { tool: 'xfce4-screenshooter', args: (file) => ['-f', '-s', file] },
+  { tool: 'flameshot', args: (file) => ['full', '-p', file] },
   { tool: 'import', args: (file) => ['-window', 'root', file] },
 ];
 
@@ -256,7 +259,11 @@ export function captureCommand(backend, file) {
   if (backend === 'darwin') return { cmd: 'screencapture', args: ['-x', file] };
   if (backend === 'linux') {
     const entry = LINUX_CAPTURE.find((candidate) => commandOnPath(candidate.tool));
-    if (!entry) throw new Error('No screenshot tool found. Install grim (Wayland) or imagemagick/gnome-screenshot (X11).');
+    if (!entry) {
+      throw new Error(
+        'No screenshot tool found. Install grim (Wayland) or one of gnome-screenshot, spectacle, scrot, maim, flameshot, xfce4-screenshooter, imagemagick import (X11).'
+      );
+    }
     return { cmd: entry.tool, args: entry.args(file) };
   }
   throw new Error(`No capture command for ${backend}.`);
@@ -278,6 +285,8 @@ export function detectBackend({ env = process.env, platform = HOST } = {}) {
           reason: '',
           capture: 'adb screencap',
           input: 'adb input',
+          captureReady: true,
+          inputReady: true,
           mobile: true,
           target: forced,
         }
@@ -287,8 +296,10 @@ export function detectBackend({ env = process.env, platform = HOST } = {}) {
           available: false,
           mobile: true,
           target: forced,
+          captureReady: false,
+          inputReady: false,
           reason:
-            'SIGHTLINE_TARGET=android needs adb on PATH with a device attached (check `adb devices`). Live runs are refused until one is available.',
+            'SIGHTLINE_TARGET=android needs adb on PATH with a device attached; check `adb devices`.',
         };
   }
   if (platform === 'win32') {
@@ -299,6 +310,8 @@ export function detectBackend({ env = process.env, platform = HOST } = {}) {
       reason: '',
       capture: 'PowerShell + System.Drawing',
       input: 'PowerShell + Win32 SendInput',
+      captureReady: true,
+      inputReady: true,
       mobile: false,
       target: 'desktop',
     };
@@ -309,12 +322,12 @@ export function detectBackend({ env = process.env, platform = HOST } = {}) {
     return {
       id: 'darwin',
       label: 'macOS',
-      available: Boolean(capture),
-      reason: capture
-        ? ''
-        : 'macOS capture needs /usr/sbin/screencapture, which is missing; live runs are refused.',
-      capture: capture || 'missing',
+      available: true,
+      reason: '',
+      capture: capture || 'screencapture (not found)',
       input,
+      captureReady: Boolean(capture),
+      inputReady: true,
       mobile: false,
       target: 'desktop',
     };
@@ -322,18 +335,18 @@ export function detectBackend({ env = process.env, platform = HOST } = {}) {
   if (platform === 'linux') {
     const capture = captureToolFor('linux', env);
     const input = firstPresent(LINUX_INPUT, env);
-    const missing = [];
-    if (!capture) missing.push('a screenshot tool (grim, gnome-screenshot, spectacle, scrot or imagemagick import)');
-    if (!input) missing.push('an input tool (xdotool on X11, ydotool on Wayland)');
+    // Linux is a live backend with or without the optional X11 helpers. A step
+    // that needs one of them fails there, with its own install hint, instead of
+    // refusing the whole run up front.
     return {
       id: 'linux',
       label: 'Linux',
-      available: !missing.length,
-      reason: missing.length
-        ? `Linux live control needs ${missing.join(' and ')}; live runs are refused until they are installed.`
-        : '',
-      capture: capture || 'missing',
-      input: input ? input.label : 'missing',
+      available: true,
+      reason: '',
+      capture: capture || 'no screenshot tool',
+      input: input ? input.label : 'no input tool',
+      captureReady: Boolean(capture),
+      inputReady: Boolean(input),
       mobile: false,
       target: 'desktop',
     };
@@ -348,6 +361,8 @@ export function detectBackend({ env = process.env, platform = HOST } = {}) {
     target: device ? 'android' : 'desktop',
     capture: device ? 'adb screencap' : 'none',
     input: device ? 'adb input' : 'none',
+    captureReady: Boolean(device),
+    inputReady: Boolean(device),
     reason: device
       ? ''
       : `Live control is not implemented for ${platform}. Set SIGHTLINE_TARGET=android with adb and a device attached, or run the console on Windows, macOS or Linux.`,
@@ -364,6 +379,8 @@ export function liveControl(options) {
     label: backend.label,
     capture: backend.capture,
     input: backend.input,
+    captureReady: backend.captureReady !== false,
+    inputReady: backend.inputReady !== false,
     mobile: backend.mobile,
     target: backend.target,
   };

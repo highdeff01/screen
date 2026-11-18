@@ -7,6 +7,7 @@ import {
   captureCommand,
   detectBackend,
   keyChords,
+  LINUX_CAPTURE,
   liveControl,
   xdotoolKeyArgs,
 } from '../server/platform.js';
@@ -46,14 +47,19 @@ test('backend detection reports what a console can actually do', () => {
   assert.equal(windows.id, 'win32');
   assert.equal(windows.available, true);
 
+  // Linux and macOS remain live backends with no optional helpers installed:
+  // the missing tool is reported, and the step that needs it fails on its own.
   const linuxBare = detectBackend({ platform: 'linux', env: { PATH: '' } });
-  assert.equal(linuxBare.available, false);
-  assert.match(linuxBare.reason, /screenshot tool/);
-  assert.match(linuxBare.reason, /xdotool/);
+  assert.equal(linuxBare.available, true);
+  assert.equal(linuxBare.reason, '');
+  assert.equal(linuxBare.captureReady, false);
+  assert.equal(linuxBare.inputReady, false);
+  assert.match(linuxBare.capture, /no screenshot tool/);
 
   const macBare = detectBackend({ platform: 'darwin', env: { PATH: '' } });
-  assert.equal(macBare.available, false);
-  assert.match(macBare.reason, /screencapture/);
+  assert.equal(macBare.available, true);
+  assert.equal(macBare.captureReady, false);
+  assert.match(macBare.capture, /screencapture \(not found\)/);
 
   const phone = detectBackend({ platform: 'win32', env: { PATH: '', SIGHTLINE_TARGET: 'android' } });
   assert.equal(phone.id, 'android');
@@ -66,13 +72,25 @@ test('backend detection reports what a console can actually do', () => {
   assert.match(unsupported.reason, /not implemented for freebsd/);
 });
 
-test('live control status carries the reason the UI banner shows', () => {
+test('linux capture falls back through the common X11 and Wayland tools', () => {
+  const tools = LINUX_CAPTURE.map((entry) => entry.tool);
+  for (const tool of ['grim', 'gnome-screenshot', 'spectacle', 'scrot', 'maim', 'xfce4-screenshooter', 'flameshot', 'import']) {
+    assert.ok(tools.includes(tool), `${tool} should be a capture candidate`);
+  }
+  const flameshot = LINUX_CAPTURE.find((entry) => entry.tool === 'flameshot');
+  assert.deepEqual(flameshot.args('/tmp/shot.png'), ['full', '-p', '/tmp/shot.png']);
+});
+
+test('live control status reports the backend and the tools it will use', () => {
   const windows = liveControl({ platform: 'win32', env: {} });
   assert.equal(windows.available, true);
   assert.equal(windows.reason, '');
+  assert.equal(windows.captureReady, true);
+  assert.equal(windows.inputReady, true);
   const linuxBare = liveControl({ platform: 'linux', env: { PATH: '' } });
-  assert.equal(linuxBare.available, false);
-  assert.ok(linuxBare.reason.length > 20);
+  assert.equal(linuxBare.available, true);
+  assert.equal(linuxBare.reason, '');
+  assert.equal(linuxBare.captureReady, false);
 });
 
 test('macOS capture command is a full-screen PNG', () => {

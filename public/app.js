@@ -667,16 +667,6 @@ function renderHeader() {
       ? `${platform.input || 'input'} · capture: ${platform.capture || 'unknown'}`
       : String(platform.reason || 'no live backend');
   }
-  // A console without a live backend cannot drive this screen at all, so it
-  // says so above every view instead of only when someone tries a live run.
-  const banner = $('#platform-banner');
-  if (banner && ui.data) {
-    banner.hidden = platform.available !== false;
-    const detail = $('#platform-banner-detail');
-    if (detail && platform.available === false) {
-      detail.textContent = `${platform.reason || 'no live backend'} · pid ${platform.pid ?? '?'} · ${location.origin}`;
-    }
-  }
   const counts = ui.data?.counts;
   $('#badge-suggestions').textContent = counts?.suggestions ? String(counts.suggestions) : '';
   const missionBadge = $('#badge-missions');
