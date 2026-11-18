@@ -5717,6 +5717,101 @@ async function syncAction(path, body) {
   await loadSync();
 }
 
+/* ------------------------------------------------- sentinel: auto-test & repair */
+function renderSentinel() {
+  const s = ui.data?.sentinel || {};
+  const settings = ui.data?.settings?.sentinel || {};
+  const failures = s.failures || [];
+  const open = failures.filter((f) => f.status !== 'dismissed' && f.status !== 'fixed');
+  const runs = s.runs || [];
+  const last = s.lastRun;
+
+  const statusBadge = !s.enabled
+    ? '<span class="badge">off</span>'
+    : s.busy
+    ? '<span class="badge okbadge">testing…</span>'
+    : last
+    ? last.ok
+      ? '<span class="badge okbadge">last run passed</span>'
+      : `<span class="badge warnbadge">${last.fail ?? '?'} failing</span>`
+    : '<span class="badge">no run yet</span>';
+
+  return `
+  <div class="page-head">
+    <div>
+      <h1>Sentinel</h1>
+      <p>Watches the project's source files, runs the test suite in a separate process whenever changes settle, and queues every failure for repair. Failures are written to <span class="mono">must-check/</span> and left as handoff notes, so auto-sync carries them to GitHub for every connected app and agent.</p>
+    </div>
+    <div class="page-head-actions">
+      <button class="btn btn-sm btn-ghost" data-act="sentinel-refresh">Refresh</button>
+      <button class="btn btn-sm" data-act="sentinel-toggle">${s.enabled ? 'Pause watching' : 'Resume watching'}</button>
+      <button class="btn btn-sm btn-primary" data-act="sentinel-run-now">Run tests now</button>
+      <button class="btn btn-sm" data-act="sentinel-push" ${s.lastRun && !s.lastRun.ok ? '' : 'disabled title="Nothing failed — nothing to push as a fix"'}>Push fix</button>
+    </div>
+  </div>
+
+  <div class="stack">
+    <section class="card">
+      <div class="card-head"><h3>Watcher</h3>${statusBadge}</div>
+      <div class="card-body detail-cols">
+        <div>
+          <p class="small">Test command: <span class="mono">${esc(settings.testCommand || 'npm test')}</span></p>
+          <p class="small dim">Watched: public, server, test, bin, examples, package.json · cooldown ${Math.round(Number(s.cooldownMs || 60000) / 1000)}s · ${s.watching ? 'watching now' : 'not watching'}</p>
+          <p class="small dim">Last run: ${last ? `${fmtTime(last.at)} · ${last.ok ? 'passed' : `failed (${last.fail ?? '?'} failing)`}${last.tests ? ` · ${last.pass ?? '?'} of ${last.tests}` : ''}` : 'never run'}</p>
+        </div>
+        <div>
+          <div class="row wrap" style="gap:8px">
+            <button class="btn btn-sm ${s.autoPlan ? 'btn-ghost' : ''}" data-act="sentinel-setting" data-key="autoPlan" data-value="${s.autoPlan ? 'off' : 'on'}">AI repair plans: ${s.autoPlan ? 'on' : 'off'}</button>
+            <button class="btn btn-sm ${s.showWindow ? '' : 'btn-ghost'}" data-act="sentinel-setting" data-key="showWindow" data-value="${s.showWindow ? 'off' : 'on'}">Separate window: ${s.showWindow ? 'on' : 'off'}</button>
+          </div>
+          <p class="small dim" style="margin-top:8px">“Separate window” shows the test run in its own console window; either way it runs in a child process, so the console never blocks on tests.</p>
+          ${s.lastError ? `<div class="hint-box small" style="color:var(--bad)">${esc(s.lastError)}</div>` : ''}
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="card-head"><h3>Repair queue</h3><span class="dim small">${open.length ? `${open.length} waiting` : 'clear'}</span></div>
+      <div class="card-body">
+        ${open.length
+          ? `<div class="stack" style="gap:10px">${open.map((f) => `
+            <div class="cc-note">
+              <div class="row wrap" style="gap:6px;align-items:center">
+                <span class="badge ${f.status === 'planned' ? 'okbadge' : 'warnbadge'}">${esc(f.status)}</span>
+                <span class="small dim">${fmtTime(f.at)} · ${f.fail ?? '?'} of ${f.tests ?? '?'} failing · attempt ${f.attempts || 1}</span>
+                <span class="spacer"></span>
+                <button class="btn btn-sm" data-act="sentinel-plan" data-id="${esc(f.id)}">${f.plan?.text ? 'Re-plan' : 'AI repair plan'}</button>
+                <button class="btn btn-sm" data-act="sentinel-retry" data-id="${esc(f.id)}">Re-run</button>
+                <button class="btn btn-sm btn-ghost" data-act="sentinel-dismiss" data-id="${esc(f.id)}">Dismiss</button>
+              </div>
+              ${(f.tests || []).length ? `<p class="small" style="margin-top:6px">${(f.tests || []).slice(0, 4).map((t) => `✖ ${esc(t)}`).join('<br>')}${(f.tests || []).length > 4 ? ` <span class="dim">+${f.tests.length - 4} more</span>` : ''}</p>` : ''}
+              ${f.plan?.text ? `<div class="hint-box small" style="margin-top:8px;white-space:pre-wrap">${esc(f.plan.text)}</div>` : ''}
+              ${f.plan?.error ? `<p class="small dim" style="margin-top:6px">Plan unavailable: ${esc(f.plan.error)}</p>` : ''}
+              ${f.output ? `<details style="margin-top:6px"><summary class="small dim">Output tail</summary><pre class="mono small" style="white-space:pre-wrap">${esc(String(f.output).slice(-1500))}</pre></details>` : ''}
+            </div>`).join('')}</div>`
+          : '<p class="muted small" style="margin:0">No failing runs waiting. When a run fails, it lands here with a plan suggestion and a report in <span class="mono">must-check/</span>.</p>'}
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="card-head"><h3>Recent runs</h3><span class="dim small">${runs.length ? `${runs.length} kept` : 'none'}</span></div>
+      <div class="card-body">
+        ${runs.length
+          ? `<div class="stack" style="gap:6px">${runs.map((run) => `<div class="row wrap" style="gap:8px;align-items:center"><span class="badge ${run.ok ? 'okbadge' : 'warnbadge'}">${run.ok ? 'pass' : 'fail'}</span><span class="small">${fmtTime(run.at)}</span><span class="small dim">${run.pass ?? '?'} passed · ${run.fail ?? 0} failed${run.timedOut ? ' · timed out' : ''}</span><span class="spacer"></span>${(run.failingTests || []).length ? `<span class="small dim mono">${esc(run.failingTests[0].slice(0, 60))}${run.failingTests.length > 1 ? ` +${run.failingTests.length - 1}` : ''}</span>` : ''}</div>`).join('')}</div>`
+          : '<p class="muted small" style="margin:0">No runs yet. Change a file or press “Run tests now”.</p>'}
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="card-head"><h3>Must-check folder</h3><span class="dim small">tracked in git · read by every connected agent</span></div>
+      <div class="card-body">
+        <p class="small">Every failure drops a markdown report into <span class="mono">must-check/</span> — the one folder everyone agrees to read before touching the app. Add your own notes there too; auto-sync carries the folder to GitHub and pulls it back down for every connected machine.</p>
+        <p class="small dim">The console's own agents read the same stream through the Sync page and the <span class="mono">sightline notes</span> CLI.</p>
+      </div>
+    </section>
+  </div>`;
+}
+
 function renderSync() {
   const info = ui.gitInfo;
   if (!info) {
@@ -6243,6 +6338,69 @@ async function runAction(name, ds, el) {
     case 'sync-pr-fetch':
       await syncAction('/api/git/prs/fetch', { number: Number(ds.id) });
       break;
+    case 'sentinel-refresh':
+      await refresh();
+      render();
+      break;
+    case 'sentinel-toggle': {
+      const res = await api('/api/sentinel/settings', { method: 'POST', body: { enabled: !(ui.data?.sentinel?.enabled) } });
+      if (!res.ok) return toast(res.error, 'error');
+      toast(res.sentinel?.enabled ? 'Sentinel is watching for changes.' : 'Sentinel paused.', 'ok');
+      await refresh();
+      render();
+      break;
+    }
+    case 'sentinel-setting': {
+      const key = ds.key;
+      const body = {};
+      body[key] = ds.value === 'on';
+      const res = await api('/api/sentinel/settings', { method: 'POST', body });
+      if (!res.ok) return toast(res.error, 'error');
+      await refresh();
+      render();
+      break;
+    }
+    case 'sentinel-run-now': {
+      toast('Running the test suite…');
+      const res = await api('/api/sentinel/run-now', { method: 'POST', body: {} });
+      if (!res.ok) return toast(res.error, 'error');
+      const run = res.sentinel?.lastRun;
+      toast(run?.ok ? 'All tests passed.' : `${run?.fail ?? '?'} test(s) failing — queued for repair.`, run?.ok ? 'ok' : 'error');
+      await refresh();
+      render();
+      break;
+    }
+    case 'sentinel-plan': {
+      const res = await api(`/api/sentinel/failures/${encodeURIComponent(ds.id)}/plan`, { method: 'POST', body: {} });
+      if (!res.ok) return toast(res.error, 'error');
+      toast(res.failure?.plan?.text ? 'Repair plan drafted — review it before touching anything.' : 'No plan available right now.', res.failure?.plan?.text ? 'ok' : 'error');
+      await refresh();
+      render();
+      break;
+    }
+    case 'sentinel-retry': {
+      const res = await api(`/api/sentinel/failures/${encodeURIComponent(ds.id)}/retry`, { method: 'POST', body: {} });
+      if (!res.ok) return toast(res.error, 'error');
+      const run = res.sentinel?.lastRun;
+      toast(run?.ok ? 'Re-run passed.' : `Still failing: ${run?.fail ?? '?'} test(s).`, run?.ok ? 'ok' : 'error');
+      await refresh();
+      render();
+      break;
+    }
+    case 'sentinel-dismiss': {
+      const res = await api(`/api/sentinel/failures/${encodeURIComponent(ds.id)}/dismiss`, { method: 'POST', body: {} });
+      if (!res.ok) return toast(res.error, 'error');
+      await refresh();
+      render();
+      break;
+    }
+    case 'sentinel-push': {
+      toast('Committing and pushing…');
+      const res = await api('/api/sentinel/push-fix', { method: 'POST', body: { message: 'after sentinel auto-test' } });
+      toast(res.message || res.error || 'Done', res.ok ? 'ok' : 'error');
+      await refresh();
+      break;
+    }
     case 'note-add': {
       const text = $('#note-text')?.value?.trim();
       if (!text) return toast('Write the note first', 'error');
