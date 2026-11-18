@@ -23,6 +23,9 @@ import {
 } from './store.js';
 import { executeStep, runPowerShell, STEP_TYPES, IS_WINDOWS, describe, findUiElement, readFocusedElement } from './automation.js';
 import { liveControl } from './platform.js';
+import { loopStatus, reviewPendingVerifications, startVerificationLoop, stopVerificationLoop } from './verification-loop.js';
+import { checkAndSync, gitSyncStatus, startAutoSync, stopAutoSync } from './git-sync.js';
+import { shareStatus, startShare, stopShare } from './share.js';
 import { chatWithProjectMemory, getHistory, clearHistory, health, parseJsonLoose, chat, listModels, getMemoryStats, summarizeConversation } from './llm.js';
 import { estimateTokens } from './context.js';
 import { readTextChunk, writeTextChunk, digestForSummary, isTextFile } from './longfiles.js';
@@ -365,6 +368,9 @@ function buildState() {
     },
     workflows: d.workflows.map(workflowView),
     runs: d.runs.slice(0, 80).map(summary),
+    verificationLoop: loopStatus(),
+    gitSync: gitSyncStatus(),
+    share: shareStatus(),
     notes: d.notes.slice(0, 60).map(({ body, ...rest }) => ({
       ...rest,
       preview: body.split('\n').filter(Boolean).slice(0, 3).join(' ').slice(0, 180),
@@ -493,6 +499,59 @@ function route(method, pattern, handler) {
 
 /* ---------------- State & health ---------------- */
 route('GET', /^\/api\/state$/, async (req, res) => sendJson(res, 200, buildState()));
+// Auto-sync of this source to GitHub, and the shareable test link.
+route('GET', /^\/api\/git-sync$/, async (req, res) => {
+  sendJson(res, 200, { ok: true, gitSync: gitSyncStatus() });
+});
+
+route('POST', /^\/api\/git-sync\/now$/, async (req, res) => {
+  const status = await checkAndSync({ force: true });
+  sendJson(res, 200, { ok: status.status !== 'error' && status.status !== 'push-failed', gitSync: status });
+});
+
+route('GET', /^\/api\/share$/, async (req, res) => {
+  sendJson(res, 200, { ok: true, share: shareStatus({ includeToken: true }) });
+});
+
+route('POST', /^\/api\/share\/start$/, async (req, res) => {
+  const body = await readBody(req);
+  const share = await startShare({ port: Number(body.port) || undefined, tunnel: body.tunnel !== false });
+  if (share.lastError && !share.active) return fail(res, 500, share.lastError);
+  sendJson(res, 200, { ok: true, share });
+});
+
+route('POST', /^\/api\/share\/stop$/, async (req, res) => {
+  sendJson(res, 200, { ok: true, share: stopShare() });
+});
+
+// The verification review loop: what it has done, and a way to run a pass now
+// instead of waiting for the timer.
+route('GET', /^\/api\/verification-loop$/, async (req, res) => {
+  const runs = (db().runs || []).filter((run) => (run.verificationReview || []).length);
+  sendJson(res, 200, {
+    ok: true,
+    loop: loopStatus(),
+    runs: runs.slice(0, 20).map((run) => ({
+      id: run.id,
+      workflowName: run.workflowName,
+      status: run.status,
+      awaitingChecks: (run.pendingVerification || []).length,
+      verificationState: run.verificationState || '',
+      attempts: Number(run.verificationAttempts || 0),
+      stalled: Boolean(run.verificationStalled),
+      review: (run.verificationReview || []).slice(-6),
+      stepStalled: run.stepStalled || null,
+    })),
+  });
+});
+
+route('POST', /^\/api\/verification-loop\/review$/, async (req, res) => {
+  const body = await readBody(req);
+  const onlyRunIds = Array.isArray(body?.runIds) ? body.runIds.map(String) : null;
+  const summary = await reviewPendingVerifications({ ignoreBackoff: true }, { onlyRunIds });
+  sendJson(res, 200, { ok: true, summary });
+});
+
 route('GET', /^\/api\/health$/, async (req, res) => {
   const h = await health();
   sendJson(res, 200, { ok: true, ...h, platform: process.platform, windows: IS_WINDOWS, ...liveControl() });
@@ -2658,6 +2717,11 @@ route('PATCH', /^\/api\/settings$/, async (req, res) => {
   if (body.model !== undefined) s.model = String(body.model).trim();
   if (body.apiStyle !== undefined) s.apiStyle = body.apiStyle === 'openai' ? 'openai' : 'ollama';
   if (body.dryRun !== undefined) s.dryRun = Boolean(body.dryRun);
+  if (body.autoSync !== undefined) s.autoSync = Boolean(body.autoSync);
+  if (body.autoSyncIntervalMs !== undefined) {
+    s.autoSyncIntervalMs = Math.max(5000, Math.min(600000, Number(body.autoSyncIntervalMs) || 20000));
+    if (gitSyncStatus().running) startAutoSync({ intervalMs: s.autoSyncIntervalMs });
+  }
   if (body.autoNotes !== undefined) s.autoNotes = Boolean(body.autoNotes);
   if (body.aiSuggestions !== undefined) s.aiSuggestions = Boolean(body.aiSuggestions);
   if (body.requireToolApproval !== undefined) s.requireToolApproval = Boolean(body.requireToolApproval);
@@ -3033,6 +3097,11 @@ server.listen(PORT, HOST, () => {
   ensurePresentationAgent();
   compactPresentations({ keep: 8 });
   startAgents();
+  // Re-check what finished runs still owe, and look for blocked steps, on a
+  // timer; read-only, so it is safe while the console is in use.
+  startVerificationLoop({ intervalMs: Number(db().settings.verificationReviewMs) || undefined });
+  // Keep the GitHub copy of this source current with the machine.
+  startAutoSync({ intervalMs: Number(db().settings.autoSyncIntervalMs) || undefined });
   startAmbient();
   setInterval(scanElementLinks, 5000).unref?.();
   console.log(`Sightline console running at http://${HOST}:${PORT}`);
@@ -3052,6 +3121,9 @@ function shutdown() {
   stopAmbient();
   stopAgents();
   livePreview.stop();
+  stopVerificationLoop();
+  stopAutoSync();
+  stopShare();
   flush();
   server.close(() => process.exit(0));
   setTimeout(() => process.exit(0), 1500);

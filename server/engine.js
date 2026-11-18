@@ -193,6 +193,27 @@ export function summary(run) {
     // Steps whose silent checks have not settled yet: they read as passed in the
     // run but must not be presented as finished until those checks answer.
     awaitingChecks: (run.pendingVerification || []).length,
+    // "checking" only while the review loop will actually re-read it; a failed or
+    // cancelled run keeps its queued check as history ("unverified").
+    verificationState:
+      run.verificationState ||
+      (run.pendingVerification?.length
+        ? ['passed', 'needs_review'].includes(run.status)
+          ? 'checking'
+          : 'unverified'
+        : ''),
+    verificationAttempts: Number(run.verificationAttempts || 0),
+    verificationStalled: Boolean(run.verificationStalled),
+    verificationReviews: (run.verificationReview || []).slice(-3).map((entry) => ({
+      kind: entry.kind,
+      attempt: entry.attempt,
+      detail: String(entry.detail || '').slice(0, 240),
+      drift: entry.drift ?? null,
+      suggestions: (entry.suggestions || []).slice(0, 2),
+    })),
+    stepStalled: run.stepStalled
+      ? { stepName: run.stepStalled.stepName, elapsedMs: run.stepStalled.elapsedMs, suggestion: run.stepStalled.suggestion }
+      : null,
     evidenceCount: (run.evidence || []).length,
     retryCount: Number(run.retryCount || 0),
     errorCategory: run.errorCategory || null,
