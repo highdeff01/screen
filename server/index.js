@@ -21,7 +21,7 @@ import {
   resolveInside,
   writeFileDurable,
 } from './store.js';
-import { executeStep, runPowerShell, STEP_TYPES, IS_WINDOWS, describe, findUiElement, readFocusedElement } from './automation.js';
+import { executeStep, runPowerShell, STEP_TYPES, IS_WINDOWS, describe, findUiElement, readFocusedElement, readForegroundWindow } from './automation.js';
 import { liveControl } from './platform.js';
 import { loopStatus, reviewPendingVerifications, startVerificationLoop, stopVerificationLoop } from './verification-loop.js';
 import {
@@ -57,6 +57,35 @@ import { createSnapshot, diffSnapshots, restoreSnapshot, snapshotStatus, transfe
 import { addSecondOpinion, lensList } from './second-opinion.js';
 import { actionLogStatus, applyFix, dismissItem, implementSuggestion, listActionLog, recordAction, triageItem } from './action-log.js';
 import { agentActivity, heartbeat, heartbeatDone, sendContinuation, startAgentWatch } from './agent-awareness.js';
+import { applyReshaped, configureDeepFocus, deepFocusStatus, startDeepFocus, stopDeepFocus } from './deep-focus.js';
+
+/**
+ * Apply the deep-focus reshaped steps: keep everything the run passed, replace
+ * the failed step and everything after it with the reshaped plan, then re-run
+ * from the failed step. The workflow is patched, not duplicated.
+ */
+async function applyReshapedToRun(runId, reshapedSteps, focus) {
+  const run = db().runs.find((entry) => entry.id === runId);
+  if (!run) throw new Error('Run not found');
+  const workflow = db().workflows.find((entry) => entry.id === run.workflowId);
+  if (!workflow) throw new Error('Workflow for this run no longer exists');
+  const firstFailedIndex = (run.steps || []).findIndex((step) => step.status === 'failed');
+  const keepCount = firstFailedIndex === -1 ? (run.steps || []).length : firstFailedIndex;
+  const kept = (workflow.steps || []).slice(0, keepCount);
+  const reshaped = (reshapedSteps || []).map((step, index) => ({
+    ...step,
+    id: uid('stp'),
+    name: String(step.name || `${step.type} ${index + 1}`).slice(0, 80),
+  }));
+  workflow.steps = [...kept, ...reshaped];
+  workflow.updatedAt = now();
+  workflow.lastPlanSource = 'deep-focus';
+  workflow.lastPlanNote = focus?.reshaped?.conclusion || 'reshaped by deep focus';
+  persist();
+  logActivity('deep-focus', `Reshaped steps written into “${workflow.name}” (${kept.length} kept + ${reshaped.length} new)`, { runId });
+  const retried = await retryRun(runId, { replan: false });
+  return { ok: true, status: 'applied', kept: kept.length, added: reshaped.length, message: 'Reshaped steps applied (snapshot gate passed); the run is going again.', run: retried };
+}
 import {
   dismissFailure,
   planFailure,

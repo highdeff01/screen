@@ -1889,6 +1889,7 @@ function renderRunDetail(run) {
           ${full.replannedAfterFailure ? `<div class="hint-box" style="margin-top:8px"><strong>AI replanned the remainder</strong><div class="small" style="margin-top:4px">${esc((full.supersededSteps || []).length)} failed action step(s) were superseded; later steps were rebuilt from the current screen.</div></div>` : ''}
         </div>
           ${full.presence?.holding ? `<div class="hint-box" style="margin-top:8px;border-color:rgba(251,191,36,.4)"><strong>Waiting for your desktop to go quiet</strong><div class="small" style="margin-top:3px">${esc(full.presence.reason || 'the presence guard is holding this step')} · held ${Math.round((Number(full.presence.deferredMs) || 0) / 1000)}s so far — live steps start the moment you stop moving the mouse, or press <b>Run now anyway</b>.</div></div>` : ''}
+          ${renderDeepFocusCard(full)}
         <div class="row wrap">
           <button class="btn btn-sm" data-act="retry-run" data-id="${full.id}" ${retryBusy ? 'disabled' : ''}>${retryBusy ? 'Re-planning…' : '↻ Re-plan & retry'}</button>
           ${['failed', 'needs_review', 'cancelled'].includes(full.status) ? `<button class="btn btn-sm btn-ghost" data-act="propose-run" data-id="${full.id}">🧭 Research repair proposal</button>` : ''}
@@ -6342,6 +6343,51 @@ async function loadModels(force) {
   return res;
 }
 
+/* --------------------------------------------------------- deep focus card */
+function renderDeepFocusCard(run) {
+  const focus = run.deepFocus;
+  const terminal = ['failed', 'needs_review', 'cancelled'].includes(run.status);
+  const actions = [];
+  if (terminal) {
+    actions.push(`<button class="btn btn-sm btn-primary" data-act="df-start" data-id="${esc(run.id)}">Focus ×5</button>`);
+    if (focus?.reshaped?.steps?.length && !focus.appliedAt) actions.push(`<button class="btn btn-sm btn-primary" data-act="df-apply" data-id="${esc(run.id)}" title="Snapshot gate, then reshape the workflow and re-run">Apply reshaped &amp; re-run</button>`);
+    if (focus && !focus.finishedAt) actions.push(`<button class="btn btn-sm btn-ghost" data-act="df-stop" data-id="${esc(run.id)}">Stop focusing</button>`);
+  }
+  if (!focus && !actions.length) return '';
+  const reflexBadge = (check) => check == null ? '' : check.ok === false ? '<span class="badge warnbadge">!</span>' : check.ok === true ? '<span class="badge okbadge">✓</span>' : '';
+  return `
+  <section class="card section-gap">
+    <div class="card-head"><h3>Deep focus</h3><span class="dim small">${focus ? (focus.finishedAt ? 'concluded' : `${(focus.rounds || []).length} round(s), live`) : 'available for failed runs'}</span></div>
+    <div class="card-body">
+      ${!focus ? `<p class="small dim" style="margin:0">When a run fails, the app re-reads the live desktop (window in front, caret, unsaved work, minimized state), thinks, and reshapes the remaining steps — several rounds wide. You can start it now.</p>` : `
+      <div class="stack" style="gap:8px">
+        ${(focus.rounds || []).map((round) => `
+        <div class="cc-note">
+          <div class="row wrap" style="gap:6px;align-items:center">
+            <span class="badge">round ${round.index}</span>
+            <span class="small">${esc(round.foreground || 'nothing in front')}${round.process ? ` <span class="dim">(${esc(round.process)})</span>` : ''}</span>
+            ${round.caret ? `<span class="small dim">caret: ${esc(round.caret)}</span>` : ''}
+            <span class="spacer"></span>
+            ${reflexBadge(round.reflexes?.windowFocus)}${reflexBadge(round.reflexes?.saveCheck)}${reflexBadge(round.reflexes?.typingFlow)}${reflexBadge(round.reflexes?.minimizeCheck)}
+            <span class="badge ${round.decision === 'reshape' ? 'okbadge' : ''}">${esc(round.decision)}</span>
+          </div>
+          ${round.note ? `<p class="small dim" style="margin-top:4px">${esc(round.note)}</p>` : ''}
+        </div>`).join('')}
+        ${Object.entries(focus.reflexes || {}).filter(([, check]) => check.ok === false && check.note).length ? `<div class="hint-box small">${Object.entries(focus.reflexes).filter(([, check]) => check.ok === false && check.note).map(([name, check]) => `<div><b>${esc(name)}:</b> ${esc(check.note)}</div>`).join('')}</div>` : ''}
+        ${focus.diff ? `<details ${focus.appliedAt ? '' : 'open'}><summary class="small dim">Reshape diff — ${focus.diff.added.length} added, ${focus.diff.removed.length} removed</summary><div class="stack" style="gap:4px;margin-top:6px">
+          ${(focus.diff.added || []).map((step) => `<div class="small"><span class="badge okbadge">+</span> ${esc(step.type)}: ${esc(step.name || '')}</div>`).join('')}
+          ${(focus.diff.removed || []).map((step) => `<div class="small"><span class="badge warnbadge">−</span> ${esc(step.type)}: ${esc(step.name || '')}</div>`).join('')}
+        </div></details>` : ''}
+        ${focus.conclusion ? `<p class="small"><b>Conclusion:</b> ${esc(focus.conclusion)}</p>` : ''}
+        ${focus.reshaped?.steps?.length ? `<p class="small dim">${focus.reshaped.steps.length} reshaped step(s): ${focus.reshaped.steps.map((step) => esc(step.type)).join(' → ')}</p>` : ''}
+        ${focus.applyGate ? `<p class="small dim">Apply gate: snapshot ${esc(String(focus.applyGate.snapshot || '').slice(0, 8))} ${focus.applyGate.blocked ? '(blocked — nothing applied)' : 'ok'}</p>` : ''}
+        ${focus.error ? `<p class="small" style="color:var(--bad)">${esc(focus.error)}</p>` : ''}
+      </div>`}
+      ${actions.length ? `<div class="row wrap" style="gap:8px;margin-top:10px">${actions.join('')}</div>` : ''}
+    </div>
+  </section>`;
+}
+
 async function loadRun(id) {
   const changed = ui.runDetail?.id !== id || !ui.runDetailOpen;
   ui.selectedRun = id;
@@ -6830,6 +6876,25 @@ async function runAction(name, ds, el) {
       toast(res.message || res.error || 'Done', res.ok ? 'ok' : 'error');
       await refresh();
       render();
+      break;
+    }
+    case 'df-start': {
+      toast('Starting deep focus: live reads, then a rethink…');
+      const res = await api(`/api/deep-focus/${encodeURIComponent(ds.id)}/start`, { method: 'POST', body: { rounds: 5 } });
+      if (!res.ok) return toast(res.error, 'error');
+      await loadRun(ds.id);
+      break;
+    }
+    case 'df-apply': {
+      toast('Snapshot gate, then applying reshaped steps…');
+      const res = await api(`/api/deep-focus/${encodeURIComponent(ds.id)}/apply`, { method: 'POST', body: {} });
+      toast(res.message || res.error || 'Done', res.ok ? 'ok' : 'error');
+      await loadRun(ds.id);
+      break;
+    }
+    case 'df-stop': {
+      await api(`/api/deep-focus/${encodeURIComponent(ds.id)}/stop`, { method: 'POST', body: {} });
+      await loadRun(ds.id);
       break;
     }
     case 'note-add': {
