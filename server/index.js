@@ -3683,9 +3683,11 @@ function queueRecoveryRetry(run, pack, snapshot, { source = 'auto-recovery', dry
   // whole snapshot replays rather than dropping the repair.
   const failedStep = (run.steps || []).find((step) => step.status === 'failed');
   const resumed = failedStep ? resumeRecoveryPlan(snapshot.steps, run.steps, failedStep.id) : null;
-  // A retry whose next step is the exact step that just failed cannot pass twice,
-  // unless the failure may clear by itself. Refuse it instead of spending a run.
-  const firstNext = (resumed ? resumed.steps : snapshot.steps || [])[0] || null;
+  // Only a plan that resumes at the failure point is a literal replay: the same
+  // plan re-run from the step that just failed. A rebuilt or repaired plan that
+  // merely starts with a step of the same shape is a different attempt and is
+  // allowed through, unless the failure may clear by itself anyway.
+  const firstNext = resumed ? resumed.steps[0] || null : null;
   if (retryReplaysFailure({ failedStep, firstNext })) {
     pack.logs = Array.isArray(pack.logs) ? pack.logs : [];
     pack.logs.unshift({ at: now(), level: 'warn', stage: 'verify', message: RECOVERY_REPEAT });

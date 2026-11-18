@@ -43,7 +43,7 @@ const MEDIA_TYPES = new Set(['playMedia', 'mediaHold', 'watchVideo', 'recordVide
 const MEDIA_WORDS = /\b(?:play|plays|playing|paused|playback|watch|video|audio|music|movie|clip|youtube|listen|stream)\b/i;
 // Failures that may clear on their own. Only then may a retry replay the exact
 // step that just failed, because the next attempt has a real chance to differ.
-const TRANSIENT_FAILURE = /\b(?:timeout|timed out|timed-out|not ready|still loading|loading|busy|try again|temporar|transient|network|connection reset|econnreset|etimedout|eai_again|unavailable|throttl|rate limit|not responding|503|429)\b/i;
+const TRANSIENT_FAILURE = /\b(?:timeout|timed out|timed-out|not ready|still loading|loading|busy|try again|temporar|transient|interrupted|interrupt|network|connection reset|econnreset|etimedout|eai_again|unavailable|throttl|rate limit|not responding|503|429)\b/i;
 
 const DECISIONS = ['continue', 'rearrange', 'rebuild'];
 
@@ -280,7 +280,11 @@ export async function revisePlan({ ask, timeoutMs = 60000, ...input } = {}) {
   const content = reply && typeof reply === 'object' && 'ok' in reply ? (reply.ok ? reply.content : '') : reply;
   const applied = applyRevision(content, input);
   if (applied) return applied;
-  return { error: typeof reply === 'object' && reply?.error ? reply.error : 'the model returned no usable plan' };
+  if (typeof reply === 'object' && reply?.error) return { error: reply.error };
+  // Keep what the model actually said: without it an unusable reply is
+  // indistinguishable from a truncated one when the pack is reviewed later.
+  const raw = typeof content === 'string' ? content : JSON.stringify(content || '');
+  return { error: `the model returned no usable plan: ${text(raw, 320) || '(empty reply)'}` };
 }
 
 export const REPLAN_LIMITS = { MAX_STEPS, MAX_PREP, PREP_TYPES, FORBIDDEN_TYPES, MEDIA_TYPES };

@@ -6,6 +6,7 @@ import {
   desktopSummary,
   isTransientFailure,
   retryReplaysFailure,
+  revisePlan,
 } from '../server/replan.js';
 
 function plan() {
@@ -147,6 +148,22 @@ test('a replay is refused unless the failure looks transient', () => {
   );
   assert.equal(isTransientFailure({ error: 'Refusing to type: foreground window is another document' }), false);
   assert.equal(isTransientFailure({ error: 'The app is not responding' }), true);
+});
+
+test('an interrupted step is transient, a typing refusal is not', () => {
+  assert.equal(isTransientFailure({ error: 'Interrupted by a console restart before this step completed.' }), true);
+  assert.equal(isTransientFailure({ error: 'Refusing to type: foreground window is another document' }), false);
+});
+
+test('an unusable reply keeps what the model actually said', async () => {
+  const result = await revisePlan({
+    steps: plan(),
+    failedIndex: 2,
+    goal: 'type a note',
+    ask: async () => 'I could not turn that into a plan.',
+  });
+  assert.match(result.error, /no usable plan/);
+  assert.match(result.error, /could not turn that into a plan/);
 });
 
 test('a play step nothing in the goal or plan requires is dropped', () => {
