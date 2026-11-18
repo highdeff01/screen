@@ -5678,12 +5678,6 @@ function renderModal() {
 }
 
 /* ------------------------------------------------------------------ sync */
-// A click is only lost when a re-render replaces the button under the pointer, so
-// the poll waits for the pointer and keyboard to go quiet before rebuilding.
-let lastInteractionAt = 0;
-document.addEventListener('pointerdown', () => { lastInteractionAt = Date.now(); }, true);
-document.addEventListener('keydown', () => { lastInteractionAt = Date.now(); }, true);
-
 function renderSyncPill() {
   const pill = $('#sync-pill');
   if (!pill) return;
@@ -8777,6 +8771,11 @@ document.addEventListener('keydown', (event) => {
 async function boot() {
   ui.captures = [];
   render();
+  // A click is only lost when a re-render replaces the button under the pointer, so
+  // the poll waits for the pointer and keyboard to go quiet before rebuilding.
+  let lastInteractionAt = 0;
+  document.addEventListener?.('pointerdown', () => { lastInteractionAt = Date.now(); }, true);
+  document.addEventListener?.('keydown', () => { lastInteractionAt = Date.now(); }, true);
   // Optional startup requests must not hold the primary console view hostage.
   loadAuth();
   loadHealth();
@@ -8792,7 +8791,7 @@ async function boot() {
     // Every refresh rebuilds the view, so a poll that lands between mousedown and
     // click swallows the click. Give the pointer and keyboard a moment first; this
     // is why buttons used to work only some of the time.
-    const interacting = Date.now() - lastInteractionAt < 700;
+    const interacting = Date.now() - Number(ui.lastInteractionAt || 0) < 700;
     if (!ui.modal && !typing && !interacting) {
       await refresh();
     }
