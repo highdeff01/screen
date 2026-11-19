@@ -1,19 +1,115 @@
 {
   "version": 1,
   "by": "sentinel",
-  "updatedAt": "2026-11-19T05:30:53.892Z",
-  "head": "9a3b2921c220",
+  "updatedAt": "2026-11-19T10:01:15.579Z",
+  "head": "8a98e3a5ef1a",
   "lastRun": {
-    "at": "2026-11-19T05:30:53.892Z",
-    "ok": true,
-    "tests": 555,
-    "pass": 550,
-    "fail": 0,
-    "isolated": true,
-    "failingTests": []
+    "at": "2026-11-19T10:01:15.527Z",
+    "ok": false,
+    "tests": 556,
+    "pass": 541,
+    "fail": 9,
+    "isolated": false,
+    "failingTests": [
+      "the engine executes an AI replacement and records the repair (20173.9889ms)",
+      "a repair that opens another app is adopted by the presenter and verifier (25322.894ms)",
+      "the engine rewrites the remainder after an irreparable action and still passes (45041.9394ms)",
+      "API mutations require a valid same-host Origin when one is present (6673.9243ms)",
+      "continuation requires explicit approval of a tested candidate and queues exactly one retry (30006.6303ms)",
+      "a type step with a named window proves its destination instead of guessing from the screen (14815.3079ms)",
+      "a display-name launch target confirms the process it really focused (14328.0257ms)",
+      "chat() reaches the console provider through the local gateway (25589.8873ms)",
+      "HTTP endpoints expose state, validate actions and reject cross-origin starts (7012.4048ms)",
+      "observation review uses stored evidence and is read-only (11940.2145ms)"
+    ]
   },
-  "open": 3,
+  "open": 4,
   "items": [
+    {
+      "id": "sent_mwndrapz471087",
+      "at": "2026-11-19T10:01:15.527Z",
+      "status": "queued",
+      "attempts": 1,
+      "fail": 9,
+      "pass": 541,
+      "tests": [
+        "the engine executes an AI replacement and records the repair (20173.9889ms)",
+        "a repair that opens another app is adopted by the presenter and verifier (25322.894ms)",
+        "the engine rewrites the remainder after an irreparable action and still passes (45041.9394ms)",
+        "API mutations require a valid same-host Origin when one is present (6673.9243ms)",
+        "continuation requires explicit approval of a tested candidate and queues exactly one retry (30006.6303ms)",
+        "a type step with a named window proves its destination instead of guessing from the screen (14815.3079ms)",
+        "a display-name launch target confirms the process it really focused (14328.0257ms)",
+        "chat() reaches the console provider through the local gateway (25589.8873ms)",
+        "HTTP endpoints expose state, validate actions and reject cross-origin starts (7012.4048ms)",
+        "observation review uses stored evidence and is read-only (11940.2145ms)"
+      ],
+      "details": [
+        {
+          "name": "the engine executes an AI replacement and records the repair",
+          "file": "",
+          "line": null,
+          "message": ""
+        },
+        {
+          "name": "a repair that opens another app is adopted by the presenter and verifier",
+          "file": "",
+          "line": null,
+          "message": ""
+        },
+        {
+          "name": "the engine rewrites the remainder after an irreparable action and still passes",
+          "file": "",
+          "line": null,
+          "message": ""
+        },
+        {
+          "name": "API mutations require a valid same-host Origin when one is present",
+          "file": "",
+          "line": null,
+          "message": ""
+        },
+        {
+          "name": "continuation requires explicit approval of a tested candidate and queues exactly one retry",
+          "file": "",
+          "line": null,
+          "message": ""
+        },
+        {
+          "name": "a type step with a named window proves its destination instead of guessing from the screen",
+          "file": "",
+          "line": null,
+          "message": ""
+        },
+        {
+          "name": "a display-name launch target confirms the process it really focused",
+          "file": "",
+          "line": null,
+          "message": ""
+        },
+        {
+          "name": "chat() reaches the console provider through the local gateway",
+          "file": "",
+          "line": null,
+          "message": ""
+        },
+        {
+          "name": "HTTP endpoints expose state, validate actions and reject cross-origin starts",
+          "file": "",
+          "line": null,
+          "message": ""
+        },
+        {
+          "name": "observation review uses stored evidence and is read-only",
+          "file": "",
+          "line": null,
+          "message": ""
+        }
+      ],
+      "plan": "",
+      "planError": "",
+      "report": "must-check/2026-11-19T10-01-15-the-engine-executes-an-ai-replacement-an.md"
+    },
     {
       "id": "sent_mwn2e0x0c70fd5",
       "at": "2026-11-19T04:43:00.516Z",
