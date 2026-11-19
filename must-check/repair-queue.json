@@ -1,19 +1,43 @@
 {
   "version": 1,
   "by": "sentinel",
-  "updatedAt": "2026-11-19T16:28:29.084Z",
-  "head": "df96c67914cc",
+  "updatedAt": "2026-11-19T16:31:00.467Z",
+  "head": "0f7a8a01ffe5",
   "lastRun": {
-    "at": "2026-11-19T16:28:29.084Z",
-    "ok": true,
-    "tests": 564,
-    "pass": 559,
-    "fail": 0,
+    "at": "2026-11-19T16:31:00.448Z",
+    "ok": false,
+    "tests": 567,
+    "pass": 561,
+    "fail": 1,
     "isolated": true,
-    "failingTests": []
+    "failingTests": [
+      "a tool reference resolves by id or by name and refuses anything else (1.472ms)"
+    ]
   },
-  "open": 4,
+  "open": 5,
   "items": [
+    {
+      "id": "sent_mwnroin42d05b4",
+      "at": "2026-11-19T16:31:00.448Z",
+      "status": "queued",
+      "attempts": 1,
+      "fail": 1,
+      "pass": 561,
+      "tests": [
+        "a tool reference resolves by id or by name and refuses anything else (1.472ms)"
+      ],
+      "details": [
+        {
+          "name": "a tool reference resolves by id or by name and refuses anything else",
+          "file": "",
+          "line": null,
+          "message": ""
+        }
+      ],
+      "plan": "",
+      "planError": "",
+      "report": "must-check/2026-11-19T16-31-00-a-tool-reference-resolves-by-id-or-by-na.md"
+    },
     {
       "id": "sent_mwndrapz471087",
       "at": "2026-11-19T10:01:15.527Z",
