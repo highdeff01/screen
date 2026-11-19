@@ -116,7 +116,7 @@ import { listPresentations, getPresentation, findRelatedPresentations, generateP
 import { presentationGraph } from './presentation-index.js';
 import { ensurePresentationAgent, watchPresentationDecks } from './presentation-watch.js';
 import { getRetryBudget, setRetryBudget } from './retry-budget.js';
-import { prepareRecovery, finalizeRecoveryPack, applyRecoveryPack, listRecoveryPacks, findRecoveryPack, reconcileStuckRecoveryPacks } from './run-recovery.js';
+import { prepareRecovery, finalizeRecoveryPack, applyRecoveryPack, listRecoveryPacks, findRecoveryPack, reconcileStuckRecoveryPacks, recoveryTelemetrySummary, listRecoveryTelemetry } from './run-recovery.js';
 import { activePresenter, listPositionMemory, presenterUserInput } from './foreground-presenter.js';
 import { latestMonitorSuggestions, monitorState, startLiveMonitor, stopLiveMonitor } from './live-monitor.js';
 import { observerState } from './app-observer.js';
@@ -256,9 +256,10 @@ function sendJson(res, code, payload) {
 function fail(res, code, message, detail = null) {
   if (code >= 400) {
     // Every server-side error feeds the action log, so a recurring one is
-    // reported into the synced must-check folder for the fixer to read.
+    // reported into the synced must-check folder for the fixer to read. The
+    // request's method and URL ride along so the source is obvious.
     try {
-      recordAction({ kind: 'server', action: 'http-error', error: message, detail: { code, ...detail } });
+      recordAction({ kind: 'server', action: 'http-error', error: message, detail: { code, ...(res?.requestInfo || {}), ...detail } });
     } catch { /* logging must never break the response */ }
   }
   sendJson(res, code, { ok: false, error: message });
@@ -477,6 +478,7 @@ function buildState() {
     visualTester: visualTesterStatus(),
     agents: d.agents,
     recoveryPacks: listRecoveryPacks(20),
+    recoveryTelemetry: recoveryTelemetrySummary(),
     presenter: activePresenter(),
     live: monitorState(),
     observer: observerState(),
@@ -2665,6 +2667,16 @@ route('GET', /^\/api\/recovery-packs$/, async (req, res, _params, url) => {
   sendJson(res, 200, { ok: true, packs });
 });
 
+// Per-stage planning costs and revision-to-outcome results: the ledger behind
+// "does the AI candidate beat the fresh rebuild, and what does it cost?".
+route('GET', /^\/api\/recovery-telemetry$/, async (req, res, _params, url) => {
+  sendJson(res, 200, {
+    ok: true,
+    ...recoveryTelemetrySummary(),
+    recent: listRecoveryTelemetry(url.searchParams.get('limit') || 20),
+  });
+});
+
 route('GET', /^\/api\/presenter$/, async (req, res) => {
   sendJson(res, 200, { ok: true, presenter: activePresenter(), positions: listPositionMemory(12) });
 });
@@ -3657,6 +3669,9 @@ async function handleApi(req, res, url) {
     if (r.method !== req.method) continue;
     const match = url.pathname.match(r.pattern);
     if (!match) continue;
+    // Every error handler can name the exact request that failed, so the
+    // action log records the true source instead of a generic guess.
+    res.requestInfo = { method: req.method, url: url.pathname + (url.search || '') };
     try {
       await r.handler(req, res, match.slice(1), url);
     } catch (err) {
