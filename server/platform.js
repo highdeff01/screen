@@ -416,7 +416,7 @@ export function windowsProbeCommand() {
     "$k='HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion'",
     '$p=Get-ItemProperty $k -ErrorAction SilentlyContinue',
     '$b=if($p.CurrentBuild){[int]$p.CurrentBuild}else{[Environment]::OSVersion.Version.Build}',
-    '$v=if($p.DisplayVersion){$p.DisplayVersion}else{'unknown'}',
+    "$v=if($p.DisplayVersion){$p.DisplayVersion}else{'unknown'}",
     '"sightline build=$b version=$v interactive=$([Environment]::UserInteractive)"',
   ].join('; ');
 }
@@ -424,8 +424,8 @@ export function windowsProbeCommand() {
 /** Read windowsProbeCommand's single output line. */
 export function parseWindowsProbe(output) {
   const text = String(output || '');
-  const build = Number((text.match(/build=(d+)/) || [])[1] || 0);
-  const version = (text.match(/version=(S+)/) || [])[1] || '';
+  const build = Number((text.match(/build=(\d+)/) || [])[1] || 0);
+  const version = (text.match(/version=(\S+)/) || [])[1] || '';
   const interactive = /interactive=(?:True|true)/.test(text);
   return { build, version, interactive };
 }
