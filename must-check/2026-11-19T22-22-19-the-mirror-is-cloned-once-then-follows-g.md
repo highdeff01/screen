@@ -78,6 +78,6 @@ Two real defects in the first cut of `server/backup.js`, both fixed:
 2. After a fast-forward the mirror still reported the pre-merge `behind` count.
    The counts are now cleared on a successful pull or push.
 
-Protein note: the test also covers a change made inside the backup folder
+The same test also covers a change made inside the backup folder
 flowing back to GitHub, and a pass that would delete tracked files being held
 rather than committed. Full suite after the fix: 600 tests, 0 failing.
