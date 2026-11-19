@@ -1914,6 +1914,7 @@ function renderRunDetail(run) {
           ${full.failureSignature ? `<p class="dim small mono" style="margin-top:5px">signature: ${esc(full.failureSignature)}</p>` : ''}
           ${full.errorSummary ? `<div class="hint-box" style="margin-top:8px;border-color:rgba(251,113,133,.35)"><strong>${failedSteps.length} step${failedSteps.length === 1 ? '' : 's'} failed</strong><div class="small" style="margin-top:4px">${esc(full.errorSummary)}</div>${full.continuedAfterFailure ? '<div class="small dim" style="margin-top:4px">The run continued with the remaining independent steps after the failure.</div>' : ''}</div>` : ''}
           ${full.followup ? `<div class="hint-box" style="margin-top:8px;border-color:${full.followup.ok ? 'rgba(74,222,128,.3)' : 'rgba(251,191,36,.35)'}"><strong>Follow-up check · ${full.followup.ok ? 'passed' : 'needs review'}</strong><div class="small" style="margin-top:4px">${esc(full.followup.summary)}</div>${(full.followup.verificationFailed || []).length ? `<div class="small" style="color:var(--bad);margin-top:3px">Failed checks: ${esc((full.followup.verificationFailed || []).join(', '))}</div>` : ''}</div>` : ''}
+          ${(() => { const co = full.closeout; if (!co || !co.action) return ''; const stepsText = (co.followUpSteps || []).map((step) => `${step.type}: ${esc(step.name || '')}`).join(' · '); const button = co.appended ? '<div class="small" style="color:var(--ok);margin-top:4px">Steps already appended to the workflow.</div>' : (co.followUpSteps || []).length ? `<button class="btn btn-sm" data-act="closeout-append" data-id="${esc(run.id)}" style="margin-top:6px">Append to workflow</button>` : ''; return `<div class="hint-box" style="margin-top:8px;border-color:rgba(56,189,248,.35)"><strong>Predicted follow-up · ${esc(co.action)}</strong><div class="small" style="margin-top:4px">${esc((co.reasons || []).join('; '))}</div>${stepsText ? `<div class="small dim" style="margin-top:4px">Proposed: ${stepsText}</div>` : ''}${button}</div>`; })()}
           ${(full.agentReplans || []).length ? `<div class="hint-box" style="margin-top:8px;border-color:rgba(129,140,248,.35)"><strong>AI repair agent</strong>${full.agentReplans.map((replan) => `<div class="small" style="margin-top:6px"><b>${esc(replan.step)}</b> · ${esc(replan.method)}${replan.confidence != null ? ` · ${Math.round(Number(replan.confidence) * 100)}% confidence` : ''}${replan.diagnosis ? `<div class="dim" style="margin-top:2px">${esc(replan.diagnosis)}</div>` : ''}<div class="dim" style="margin-top:2px">${replan.replacesStep ? 'replaced the failed step' : 'ran prerequisites, then retried'}${(replan.steps || []).length ? ` · ${esc((replan.steps || []).join(' → '))}` : ''}${(replan.remaining || []).length ? ` · rewrote ${replan.remaining.length} remaining step(s)` : ''}</div></div>`).join('')}</div>` : ''}
           ${full.replannedAfterFailure ? `<div class="hint-box" style="margin-top:8px"><strong>AI replanned the remainder</strong><div class="small" style="margin-top:4px">${esc((full.supersededSteps || []).length)} failed action step(s) were superseded; later steps were rebuilt from the current screen.</div></div>` : ''}
         </div>
@@ -7019,6 +7020,13 @@ async function runAction(name, ds, el) {
     }
     case 'df-stop': {
       await api(`/api/deep-focus/${encodeURIComponent(ds.id)}/stop`, { method: 'POST', body: {} });
+      await loadRun(ds.id);
+      break;
+    }
+    case 'closeout-append': {
+      const res = await api(`/api/closeout/${encodeURIComponent(ds.id)}/append`, { method: 'POST', body: {} });
+      if (!res.ok) return toast(res.error, 'error');
+      toast(`Appended ${res.appended?.appended ?? 0} follow-up step(s) to the workflow.`, 'ok');
       await loadRun(ds.id);
       break;
     }

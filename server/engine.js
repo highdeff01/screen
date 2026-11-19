@@ -26,6 +26,7 @@ import { enqueue } from './pipeline.js';
 import { firewallCheck } from './firewall.js';
 import { addNote } from './handoff.js';
 import { noteStepOutcome, pinStepIntents, similarSolutions, spotIntent } from './step-factoring.js';
+import { recordCloseout } from './closeout.js';
 import { beginRunObservation, endRunObservation } from './app-observer.js';
 import { liveControl } from './platform.js';
 import { expectsScreenChange, windowChecksFor, resumePlan, corroboratesNoChange, lookupWindowFor, screenChangeVerdict } from './step-effects.js';
@@ -253,6 +254,7 @@ export function summary(run) {
     })),
     followup: run.followup || null,
     followupFailed: Boolean(run.followupFailed),
+    closeout: run.closeout || null,
     recovered: Boolean(run.recovered),
     patternTags: run.patternTags || [],
     agentRole: run.agentRole || 'operator',
@@ -2246,6 +2248,10 @@ async function executeRun(runId) {
     run.status = 'needs_review';
     run.followupFailed = true;
   }
+  // Closeout prediction: the state the run leaves behind, judged once.
+  try {
+    recordCloseout(run);
+  } catch { /* the prediction never breaks the finish */ }
   run.retryCount = run.steps.reduce((total, step) => total + Math.max(0, Number(step.attempts || 0) - 1), 0);
   run.recovered =
     run.status === 'passed' &&

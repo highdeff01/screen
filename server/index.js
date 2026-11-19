@@ -63,6 +63,7 @@ import { addAnnotation, annotationsForRun, listAnnotations, pinFindings, removeA
 import { presentationFromDeepFocus, deepFocusMarkdown } from './presentations-deep.js';
 import { addFirewallRule, firewallCheck, firewallStatus, firewallTest, removeFirewallRule, resetFirewallRules, setFirewallMode } from './firewall.js';
 import { factoringStatus, pinStepIntents, planRefactoring, pushRefactorToBuilder, similarSolutions } from './step-factoring.js';
+import { appendCloseout, recordCloseout } from './closeout.js';
 
 /**
  * Apply the deep-focus reshaped steps: keep everything the run passed, replace
@@ -1215,6 +1216,25 @@ route('POST', /^\/api\/factoring\/solutions$/, async (req, res) => {
     sendJson(res, 200, { ok: true, solutions: similarSolutions({ step: body.step || {}, excludeWorkflowId: body.excludeWorkflowId || '' }) });
   } catch (err) {
     fail(res, 400, err.message);
+  }
+});
+
+/* ---------------- Closeout: predicted follow-up steps after a run ---------- */
+route('GET', /^\/api\/closeout\/([^/]+)$/, async (req, res, [id]) => {
+  try {
+    const run = findRun(id);
+    if (!run) throw new Error('Run not found');
+    sendJson(res, 200, { ok: true, closeout: run.closeout || recordCloseout(run) });
+  } catch (err) {
+    fail(res, err.message === 'Run not found' ? 404 : 400, err.message);
+  }
+});
+
+route('POST', /^\/api\/closeout\/([^/]+)\/append$/, async (req, res, [id]) => {
+  try {
+    sendJson(res, 200, { ok: true, appended: appendCloseout(id) });
+  } catch (err) {
+    fail(res, err.message === 'Run not found' ? 404 : 400, err.message);
   }
 });
 
