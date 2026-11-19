@@ -1,18 +1,16 @@
 {
   "version": 1,
   "by": "sentinel",
-  "updatedAt": "2026-11-19T16:31:00.467Z",
-  "head": "0f7a8a01ffe5",
+  "updatedAt": "2026-11-19T16:36:48.523Z",
+  "head": "806ad542a421",
   "lastRun": {
-    "at": "2026-11-19T16:31:00.448Z",
-    "ok": false,
+    "at": "2026-11-19T16:36:48.522Z",
+    "ok": true,
     "tests": 567,
-    "pass": 561,
-    "fail": 1,
+    "pass": 562,
+    "fail": 0,
     "isolated": true,
-    "failingTests": [
-      "a tool reference resolves by id or by name and refuses anything else (1.472ms)"
-    ]
+    "failingTests": []
   },
   "open": 5,
   "items": [
