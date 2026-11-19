@@ -13,9 +13,11 @@ import {
   readScreenContext,
   readPresence,
   readForegroundWindow,
+  readWindowText,
   silentCheck,
   resolveCheckFile,
 } from './automation.js';
+import { normalizeText } from './judgement.js';
 import { assessStep, launchProducedNewWindow, looksLikeSavedDocument, reviewPrevious } from './step-context.js';
 import { classifyPresence, holdDecision, learnHold, completionFor, isFocusStealing, silentChecksFor } from './presence.js';
 import { recordAction } from './action-log.js';
@@ -595,8 +597,12 @@ async function runPostChecks(step, ctx, probe = null) {
   const checks = [];
   const explicit = buildPostCheck(step);
   if (explicit) checks.push(explicit);
-  const guard = String(step.params?.foreground || '').trim();
-  if (guard && ['type', 'key', 'clipboard'].includes(step.type)) {
+  const guard = String(step.params?.foreground === true ? '' : step.params?.foreground || '').trim();
+  // With an inherited handle the window may rename itself (an untitled
+  // document takes its first line as its title), so the post-check names the
+  // handle instead of the title.
+  const handle = Math.max(0, Number(step.params?.foregroundHandle) || 0);
+  if (guard && !handle && ['type', 'key', 'clipboard'].includes(step.type)) {
     checks.push({
       id: uid('chk'),
       type: 'expect',
@@ -1067,7 +1073,20 @@ async function corroborateNoChange(step, checks, probe = null) {
   let textFound = false;
   const text = String(step.params?.text || '').trim();
   const window = lookupWindowFor({ step, focused });
-  if (step.type === 'type' && window && text) {
+  if (step.type === 'type' && text && (window || step.params?.foregroundHandle)) {
+    // The free proof: read the window's own text and look for what was typed.
+    // Accessible names cannot prove a paragraph; the document text can.
+    try {
+      const readTextFn = probe?.readWindowText || readWindowText;
+      const seen = await readTextFn({ handle: Number(step.params?.foregroundHandle) || 0, title: window || '' });
+      const haystack = normalizeText(seen?.text);
+      const needle = normalizeText(text).slice(0, 160);
+      textFound = Boolean(needle && haystack.includes(needle));
+    } catch {
+      textFound = false;
+    }
+  }
+  if (!textFound && step.type === 'type' && window && text) {
     try {
       const element = probe?.findUiElement
         ? await probe.findUiElement({ window, name: text.slice(0, 80), controlType: 'Text|Document|Edit' })

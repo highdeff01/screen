@@ -304,7 +304,9 @@ $expectedHandle = [int64]${expectedHandle}
 # An inherited handle is the exact window this run opened; a title match alone
 # would accept another document of the same app.
 $handleOk = if ($expectedHandle -gt 0) { $fg.ToInt64() -eq $expectedHandle } else { $true }
-$titleOk = if ($expected) { ($fgProcess -like ('*' + $expected + '*')) -or ($fgTitle -like ('*' + $expected + '*')) } else { $true }
+# A handle is authoritative: typing into an untitled document renames it, and
+# the title check would then refuse the very window that received the text.
+$titleOk = if ($expected -and $expectedHandle -le 0) { ($fgProcess -like ('*' + $expected + '*')) -or ($fgTitle -like ('*' + $expected + '*')) } else { $true }
 $guardMatch = $handleOk -and $titleOk
 if (-not $guardMatch) {
   $actual = if ($fgProcess -or $fgTitle) { $fgProcess + ' :: ' + $fgTitle } else { '(unknown)' }
@@ -1012,7 +1014,8 @@ $fgProc = Get-Process | Where-Object { $_.MainWindowHandle -ne 0 -and $_.MainWin
 $handleOk = if ($requestedHandle -gt 0) { $fg.ToInt64() -eq $requestedHandle } else { $true }
 $fgMatch = if ($fgProc -and $handleOk) {
   $procOk = if ($desiredProcess) { $fgProc.ProcessName -like $procPattern } else { $true }
-  $titleOk = if ($title) { $fgProc.MainWindowTitle -like $pattern } else { $true }
+  # With an exact handle the title is informational; it changes as documents do.
+  $titleOk = if ($title -and $requestedHandle -le 0) { $fgProc.MainWindowTitle -like $pattern } else { $true }
   $procOk -and $titleOk
 } else { $false }
 if ($fgMatch) {
