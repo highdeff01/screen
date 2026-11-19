@@ -110,13 +110,13 @@ import { planSteps, ensureWorkflowSteps, analyzeRun, writeRunNote, addSuggestion
 import { listProposals, findProposal, proposalView, createProposal, approveProposal, rejectProposal, createProposalForRun, shadowTestProposal } from './proposals.js';
 import { visualTesterStatus, testScreenshot, rememberVisualTest } from './visual-tester.js';
 import { stepMarks, normalizeMarks } from './research.js';
-import { resumeRecoveryPlan } from './step-effects.js';
+import { resumeRecoveryPlan, carryForwardPassedEffects } from './step-effects.js';
 import { retryReplaysFailure } from './replan.js';
 import { listPresentations, getPresentation, findRelatedPresentations, generatePresentation, auditPresentation, reapplyPresentation, proposalFromPresentation, reviewPresentation, setPresentationControl, compactPresentations, exportPresentation } from './presentations.js';
 import { presentationGraph } from './presentation-index.js';
 import { ensurePresentationAgent, watchPresentationDecks } from './presentation-watch.js';
 import { getRetryBudget, setRetryBudget } from './retry-budget.js';
-import { prepareRecovery, finalizeRecoveryPack, applyRecoveryPack, listRecoveryPacks, findRecoveryPack, reconcileStuckRecoveryPacks, recoveryTelemetrySummary, listRecoveryTelemetry } from './run-recovery.js';
+import { prepareRecovery, finalizeRecoveryPack, applyRecoveryPack, listRecoveryPacks, findRecoveryPack, reconcileStuckRecoveryPacks, reconcileStuckReplans, recoveryTelemetrySummary, listRecoveryTelemetry } from './run-recovery.js';
 import { activePresenter, listPositionMemory, presenterUserInput } from './foreground-presenter.js';
 import { latestMonitorSuggestions, monitorState, startLiveMonitor, stopLiveMonitor } from './live-monitor.js';
 import { observerState } from './app-observer.js';
@@ -439,6 +439,7 @@ function workflowView(w) {
 }
 
 function buildState() {
+  reconcileStuckReplans({ live: replanning });
   const d = db();
   const proposalState = listProposals({ limit: 20 });
   const continuity = continuityState();
@@ -2549,6 +2550,7 @@ route('POST', /^\/api\/runs\/([^/]+)\/replan-retry$/, async (req, res, [id]) => 
     if (['queued', 'running'].includes(original.status)) {
       return fail(res, 409, 'This run is still running; replan it after it finishes.');
     }
+    reconcileStuckReplans({ live: replanning });
     if (replanning.has(original.id) || original.replan?.status === 'planning') {
       return fail(res, 409, 'Re-planning this run is already in progress.');
     }
@@ -3835,6 +3837,12 @@ function queueRecoveryRetry(run, pack, snapshot, { source = 'auto-recovery', dry
   // whole snapshot replays rather than dropping the repair.
   const failedStep = (run.steps || []).find((step) => step.status === 'failed');
   const resumed = failedStep ? resumeRecoveryPlan(snapshot.steps, run.steps, failedStep.id) : null;
+  // A whole-plan replay must not repeat an effect that already happened (the
+  // same text typed twice, the same file written twice). Those steps are left
+  // out of the retry and recorded as facts — they are never marked passed.
+  const carried = !dryRun && !resumed
+    ? carryForwardPassedEffects(snapshot.steps, run.steps)
+    : { steps: snapshot.steps, carried: [] };
   // Only a plan that resumes at the failure point is a literal replay: the same
   // plan re-run from the step that just failed. A rebuilt or repaired plan that
   // merely starts with a step of the same shape is a different attempt and is
@@ -3849,7 +3857,21 @@ function queueRecoveryRetry(run, pack, snapshot, { source = 'auto-recovery', dry
     persist();
     return null;
   }
-  const retry = createRun(resumed ? { ...snapshot, steps: resumed.steps } : snapshot, {
+  if (!resumed && !carried.steps.length) {
+    pack.logs = Array.isArray(pack.logs) ? pack.logs : [];
+    pack.logs.unshift({
+      at: now(),
+      level: 'warn',
+      stage: 'verify',
+      message: 'Every remaining step already had its effect in the earlier run; there was nothing left to retry.',
+    });
+    if (pack.status !== 'passed') pack.status = 'needs_review';
+    pack.updatedAt = now();
+    persist();
+    return null;
+  }
+  const retrySteps = resumed ? resumed.steps : carried.steps;
+  const retry = createRun({ ...snapshot, steps: retrySteps }, {
     trigger: 'recovery',
     dryRun: Boolean(dryRun),
     agentRole: 'recovery-agent',
@@ -3866,6 +3888,22 @@ function queueRecoveryRetry(run, pack, snapshot, { source = 'auto-recovery', dry
   retry.recoveryPackId = pack.id;
   retry.recoveryDepth = (Number(run.recoveryDepth) || Number(pack.depth) || 0) + 1;
   retry.recovery = { packId: pack.id, status: 'running', depth: retry.recoveryDepth, startedAt: now() };
+  if (carried.carried.length) {
+    retry.carriedSteps = carried.carried;
+    retry.log = Array.isArray(retry.log) ? retry.log : [];
+    retry.log.push({
+      at: now(),
+      level: 'info',
+      message: `Not repeating ${carried.carried.length} step(s) whose effect already happened in ${run.id}: ${carried.carried.map((step) => step.name).join(', ')}.`,
+    });
+    pack.logs = Array.isArray(pack.logs) ? pack.logs : [];
+    pack.logs.unshift({
+      at: now(),
+      level: 'info',
+      stage: 'verify',
+      message: `The retry continues past ${carried.carried.length} step(s) that already had their effect (${carried.carried.map((step) => step.name).join(', ')}); they were not marked complete or run again.`,
+    });
+  }
   pack.retryRunId = retry.id;
   pack.status = 'retrying';
   pack.updatedAt = now();
@@ -4001,6 +4039,7 @@ server.listen(PORT, HOST, () => {
   ensureToolFiles();
   ensurePythonFiles();
   reconcileStuckRecoveryPacks();
+  reconcileStuckReplans({ live: replanning });
   try {
     backfillWorkflowMemory();
   } catch (err) {

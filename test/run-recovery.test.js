@@ -558,3 +558,73 @@ test('planning stages and the retry verdict are recorded per candidate source', 
   assert.equal(continueGroup.passRate, null);
   store.flush();
 });
+
+test('the revision sees the run evidence and the refused window as facts', async () => {
+  const d = store.db();
+  d.settings.replanAi = true;
+  d.settings.replanDesktop = false;
+  const { workflow, run } = notepadFixture(
+    'run_evidence_facts',
+    'Refusing to type: foreground window is "Notepad :: *Sightline screen agent - Notepad", expected process or window "Untitled - Notepad".'
+  );
+  run.evidence = [{ kind: 'screenshot', caption: 'Notepad shows an empty page' }];
+  run.steps[1].output = 'Typed into the wrong document';
+  d.workflows = [workflow];
+  d.runs = [run];
+  d.recoveryPacks = [];
+  let asked = '';
+  const outcome = await recovery.prepareRecovery(run, {
+    plan: async () => null,
+    desktop: {},
+    ask: async ({ prompt }) => {
+      asked = prompt;
+      return JSON.stringify({
+        decision: 'rearrange',
+        note: 'the note window changed its title',
+        steps: [
+          { type: 'focusWindow', name: 'Focus the note', params: { title: 'Notepad' } },
+          { type: 'type', name: 'Type the note again', params: { text: 'hello' } },
+          { type: 'expect', name: 'Window is present', params: { kind: 'window', value: 'Notepad' } },
+        ],
+      });
+    },
+  });
+  assert.ok(outcome?.pack);
+  assert.match(asked, /Notepad shows an empty page/);
+  assert.match(asked, /Typed into the wrong document/);
+  assert.match(asked, /Refused window guard/);
+  assert.match(asked, /do not reuse it/);
+  assert.match(asked, /evidence is context, not completion/i);
+  assert.equal(outcome.pack.aiRevision.evidenceCount, 2);
+  const ai = (outcome.pack.candidates || []).find((candidate) => candidate.id === 'candidate_ai');
+  assert.ok(ai);
+  const typing = ai.steps.find((step) => step.name === 'Type the note again');
+  assert.ok(typing);
+  assert.notEqual(typing.params.foreground, 'Untitled - Notepad', 'the refused guard is not reused');
+  store.flush();
+});
+
+test('a run stuck in replanning is unstuck without queueing a retry', () => {
+  const d = store.db();
+  const old = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+  d.runs = [
+    {
+      id: 'run_stuck_replan',
+      status: 'failed',
+      recoveryPackId: 'rcp_stuck_replan',
+      replan: { status: 'planning', startedAt: old },
+    },
+  ];
+  d.recoveryPacks = [{ id: 'rcp_stuck_replan', status: 'planning', logs: [], candidates: [], createdAt: old, updatedAt: old }];
+  assert.equal(recovery.reconcileStuckReplans({ staleMs: 1000 }), true);
+  assert.equal(d.runs[0].replan.status, 'failed');
+  assert.match(d.runs[0].replan.reason, /Nothing was retried/);
+  assert.equal(d.recoveryPacks[0].status, 'needs_review');
+  assert.equal(d.runs[0].recovery.status, 'needs_review');
+  assert.match(d.recoveryPacks[0].logs[0].message, /No retry was approved/);
+
+  d.runs = [{ id: 'run_live_replan', status: 'failed', replan: { status: 'planning', startedAt: old } }];
+  assert.equal(recovery.reconcileStuckReplans({ live: new Set(['run_live_replan']), staleMs: 1000 }), false);
+  assert.equal(d.runs[0].replan.status, 'planning', 'a planning that is still running is untouched');
+  store.flush();
+});

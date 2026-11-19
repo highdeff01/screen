@@ -38,6 +38,24 @@ function clip(value, max = 240) {
   return text.length > max ? `${text.slice(0, max - 1)}…` : text;
 }
 
+/**
+ * Facts the run itself produced: evidence captions and step outputs. They are
+ * given to the revision as context only — an artifact proves something was on
+ * screen, never that a step already happened — so nothing is marked complete.
+ */
+function runEvidenceFacts(run) {
+  const rows = [];
+  for (const item of (run?.evidence || []).slice(-8)) {
+    const caption = clip(item?.caption || '', 160);
+    rows.push(`${item?.kind || 'evidence'}: ${caption || '(no caption)'}${item?.simulated ? ' [simulated]' : ''}`);
+  }
+  for (const step of run?.steps || []) {
+    const output = clip(step?.output || '', 140);
+    if (output) rows.push(`step “${clip(step.name || step.type || 'step', 70)}” output: ${output}`);
+  }
+  return rows.slice(-10);
+}
+
 function stepTarget(step) {
   const p = step?.params || {};
   const values = [p.title, p.windowName, p.windowTitle, p.window, p.foreground, p.process, p.target, p.value, p.app];
@@ -236,6 +254,7 @@ export function recordRecoveryTelemetry(pack, { outcome = null } = {}) {
           transient: Boolean(aiRevision.transient),
           blocked: Boolean(aiRevision.blocked),
           droppedPlayback: aiRevision.droppedPlayback || 0,
+          evidenceCount: aiRevision.evidenceCount ?? 0,
           offered: Boolean(aiCandidate),
           score: aiCandidate?.score ?? null,
         }
@@ -428,6 +447,45 @@ export function reconcileStuckRecoveryPacks({ staleMs = 180000 } = {}) {
     if (run?.recovery) {
       run.recovery.status = 'needs_review';
       run.recovery.packId = pack.id;
+    }
+    changed = true;
+  }
+  if (changed) persist();
+  return changed;
+}
+
+/**
+ * A background replan lives in memory (the caller's `replanning` set). After a
+ * restart nothing is planning, so a run still marked `planning` would refuse
+ * every new replan forever. Downgrade it with an honest reason; queue nothing.
+ */
+export function reconcileStuckReplans({ live = null, staleMs = 180000 } = {}) {
+  const isLive = (id) => (typeof live?.has === 'function' ? live.has(id) : Array.isArray(live) && live.includes(id));
+  const d = db();
+  let changed = false;
+  for (const run of d.runs || []) {
+    if (run?.replan?.status !== 'planning') continue;
+    if (isLive(run.id)) continue;
+    const startedAt = Date.parse(run.replan.startedAt || run.replan.at || 0) || 0;
+    if (!startedAt || Date.now() - startedAt < staleMs) continue;
+    run.replan = {
+      ...run.replan,
+      status: 'failed',
+      reason: 'Re-planning stopped before a tested plan was ready (the console restarted or the planner hung). Nothing was retried; start the replan again.',
+      at: now(),
+    };
+    const pack = run.recoveryPackId ? findRecoveryPack(run.recoveryPackId) : null;
+    if (pack && pack.status === 'planning') {
+      pack.status = 'needs_review';
+      pack.updatedAt = now();
+      pack.logs = Array.isArray(pack.logs) ? pack.logs : [];
+      pack.logs.unshift({
+        at: now(),
+        level: 'warn',
+        stage: 'plan',
+        message: 'Planning was interrupted before a tested candidate was ready. No retry was approved.',
+      });
+      run.recovery = { ...(run.recovery || {}), status: 'needs_review', packId: pack.id };
     }
     changed = true;
   }
@@ -664,6 +722,7 @@ export async function prepareRecovery(
       }
     }
   }
+  const evidenceFacts = runEvidenceFacts(run);
   const revisionStartedAt = performance.now();
   const revision = aiRevisionEnabled ? await withTimeout(
     revisePlan({
@@ -678,6 +737,7 @@ export async function prepareRecovery(
         error: failedRuntime?.error || '',
       },
       desktop,
+      evidence: evidenceFacts,
       // Off means the revision may not plan video or playback work at all.
       allowMedia: d.settings.replanMedia !== false,
       suggestions: (d.suggestions || []).filter((entry) => !entry.dismissed).slice(0, 6),
@@ -715,6 +775,7 @@ export async function prepareRecovery(
       transient,
       blocked,
       droppedPlayback: revision.droppedPlayback || 0,
+      evidenceCount: evidenceFacts.length,
       at: now(),
     };
     if (revision.droppedPlayback) {
@@ -723,6 +784,14 @@ export async function prepareRecovery(
         'info',
         'plan',
         `AI revision dropped ${revision.droppedPlayback} playback step(s) that no step or user input requires.`
+      );
+    }
+    if (revision.rewrittenGuards) {
+      log(
+        pack,
+        'info',
+        'plan',
+        `The revision replaced ${revision.rewrittenGuards} window guard(s) the desktop had already refused instead of reusing them.`
       );
     }
     if (blocked) {

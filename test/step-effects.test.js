@@ -9,6 +9,8 @@ import {
   resumePlan,
   resumeSteps,
   resumeRecoveryPlan,
+  carryForwardPassedEffects,
+  repeatsSideEffect,
   corroboratesNoChange,
   lookupWindowFor,
 } from '../server/step-effects.js';
@@ -112,6 +114,32 @@ test('recovery resumes only when the snapshot is the exact plan that ran', () =>
     resumeRecoveryPlan(repairAfterFailure, ran, 'b').steps.map((s) => s.id),
     ['b', 'fix_shot']
   );
+});
+
+test('a whole-plan replay does not repeat an effect that already happened', () => {
+  const ran = [
+    { id: 'a', type: 'launchApp', params: { target: 'notepad.exe' }, status: 'passed' },
+    { id: 'b', type: 'type', params: { text: 'hello', foreground: 'Notepad' }, status: 'passed' },
+    { id: 'c', type: 'writeTextFile', params: { text: 'hello', filename: 'note.txt' }, status: 'passed' },
+    { id: 'd', type: 'expect', params: { kind: 'window', value: 'Notepad' }, status: 'failed' },
+  ];
+  const snapshot = [
+    { id: 'fix', type: 'focusWindow', params: { title: 'Notepad' } },
+    ...ran.map((step) => ({ ...step })),
+  ];
+  const result = carryForwardPassedEffects(snapshot, ran);
+  assert.deepEqual(result.steps.map((step) => step.id), ['fix', 'a', 'd']);
+  assert.deepEqual(result.carried.map((step) => step.type), ['type', 'writeTextFile']);
+
+  // A changed step is a new attempt, so it is kept.
+  const changed = snapshot.map((step) =>
+    step.id === 'b' ? { ...step, params: { text: 'hello again', foreground: 'Notepad' } } : step
+  );
+  assert.equal(carryForwardPassedEffects(changed, ran).steps.some((step) => step.id === 'b'), true);
+  // A failed step was never carried, and an omission is not a completion.
+  assert.equal(carryForwardPassedEffects([ran[3]], ran).carried.length, 0);
+  assert.equal(repeatsSideEffect({ type: 'launchApp' }), false);
+  assert.equal(repeatsSideEffect({ type: 'type' }), true);
 });
 
 test('resumeSteps starts at the failed step and keeps the rest', () => {

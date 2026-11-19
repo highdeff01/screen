@@ -96,6 +96,24 @@ export function retryReplaysFailure({ failedStep = null, firstNext = null, failu
 }
 
 /**
+ * The window guard the engine just refused, when the failure was that refusal.
+ * The run expected one window and found another in front; handing the same guard
+ * to the retry re-arms a value the desktop has already rejected. The quoted
+ * foreground is the window that is really open, and its process is the durable
+ * half of it: the title changes as text is typed into the document.
+ */
+export function refusedWindow(failure = {}) {
+  const message = `${failure?.error || ''} ${failure?.message || ''}`;
+  const match = message.match(/Refusing to [^:]+: foreground window is "([^"]*)",\s+expected process\s+or window "([^"]*)"/i);
+  if (!match) return null;
+  const actual = match[1].trim();
+  const expected = match[2].trim();
+  if (!expected) return null;
+  const process = actual.includes(' :: ') ? actual.split(' :: ')[0].trim() : '';
+  return { expected, actual, process };
+}
+
+/**
  * Small models sometimes answer with one textual step per entry, for example
  * {"step":"type \"Type the note\" text=\"hello\" foreground=\"Untitled - Notepad\""}.
  * Read that shape instead of discarding a revision that is otherwise complete.
@@ -168,6 +186,7 @@ export function buildRevisionPrompt({
   suggestions = [],
   lessons = [],
   workflows = [],
+  evidence = [],
   allowMedia = true,
 } = {}) {
   const system =
@@ -183,6 +202,8 @@ export function buildRevisionPrompt({
     : 'no steps';
   const remaining = (steps || []).slice(failedIndex);
   const types = STEP_TYPES.map((entry) => `${entry.type} (${entry.group})`).join(', ');
+  const refused = refusedWindow(failure);
+  const facts = (Array.isArray(evidence) ? evidence : []).slice(0, 10).map((entry) => `- ${text(entry, 220)}`);
 
   const prompt = `Goal: ${text(goal || workflow.description || workflow.name || 'unknown', 700)}
 Workflow: ${text(workflow.name, 90)} — ${text(workflow.description, 400)}
@@ -191,6 +212,10 @@ Plan and outcome so far:
 ${plan}
 
 Failure: ${text(failure.type, 30)} “${text(failure.name, 80)}” — ${text(failure.error, 600)}
+${refused ? `Refused window guard: the run expected “${text(refused.expected, 120)}” but the foreground was “${text(refused.actual, 160)}”. That guard is a value the desktop just rejected — do not reuse it. Name the window that is really open, or open and focus the intended one first.\n` : ''}
+Facts already on record for this run (evidence and outputs — they do not prove a step passed):
+${facts.length ? facts.join('\n') : '- none recorded'}
+
 Remaining steps that never ran: ${remaining.length}
 ${remaining.map((step, index) => `${index + 1}) ${step.type} “${text(step.name || step.type, 60)}” ${text(JSON.stringify(step.params || {}), 160)}`).join('\n')}
 
@@ -221,7 +246,9 @@ Rules for the answer:
 7. ${allowMedia
     ? 'Playback and recording steps (playMedia, mediaHold, watchVideo, recordVideo) are only for work the goal asks for. A "press play" step that no earlier step and no user input acts on is the step that hangs a run: re-check the workflow and replace it with the step that actually moves the goal forward instead of pressing play again.'
     : 'The operator turned video and playback steps off for revisions: do not return playMedia, mediaHold, watchVideo or recordVideo.'}
-8. "continue" means the remaining steps are still right, but still return the remainder you stand behind. Returning the failed step unchanged with no prep and nothing else adjusted is refused, because the retry fails the same way.`;
+8. "continue" means the remaining steps are still right, but still return the remainder you stand behind. Returning the failed step unchanged with no prep and nothing else adjusted is refused, because the retry fails the same way.
+9. Recorded evidence is context, not completion: never skip, drop or mark a step done because a screenshot or output exists. Use the facts to choose the step that still has to happen.
+10. When a window guard was refused, do not copy the refused value into the retry. Name the window that is really open, or add a prep step that opens and focuses the right one.`;
 
   return { system, prompt };
 }
@@ -233,12 +260,20 @@ Rules for the answer:
  */
 export function applyRevision(
   reply,
-  { steps = [], failedIndex = 0, goal = '', keepPassed = true, allowMedia = true } = {}
+  { steps = [], failedIndex = 0, goal = '', failure = {}, keepPassed = true, allowMedia = true } = {}
 ) {
   const parsed = typeof reply === 'string' ? parseJsonLoose(reply) : reply;
   if (!parsed || typeof parsed !== 'object') return null;
   const decision = DECISIONS.includes(parsed.decision) ? parsed.decision : 'rearrange';
-  const guard = String(steps?.[failedIndex]?.params?.foreground || '').trim();
+  // A guard the engine just refused is never inherited: it is a value the
+  // desktop rejected, so the retry would refuse again for the same reason.
+  const refused = refusedWindow(failure);
+  const failedGuard = String(steps?.[failedIndex]?.params?.foreground || '').trim();
+  const guard = refused ? '' : failedGuard;
+  const refusedValues = refused
+    ? new Set([refused.expected.toLowerCase(), refused.actual.toLowerCase()].filter(Boolean))
+    : null;
+  let rewrittenGuards = 0;
   // Playback survives only when the operator allows it and the goal or a real
   // step needs it; a bare "press play" is dropped and counted instead of kept.
   const playbackWanted = allowMedia && planWantsPlayback(goal, [...steps, ...(parsed.prep || [])]);
@@ -259,7 +294,22 @@ export function applyRevision(
     .filter(keepStep)
     .map((step) => {
       if (!['type', 'key', 'clipboard'].includes(step.type)) return step;
-      if (String(step.params?.foreground || '').trim() || !guard) return step;
+      const current = String(step.params?.foreground || '').trim();
+      if (refusedValues && current && refusedValues.has(current.toLowerCase())) {
+        // The model repeated the refused guard (or the transient window that
+        // refused it). A process-level guard survives the title change; with no
+        // process to use, leave the step unguarded so the runner skips it rather
+        // than typing into whatever happens to be in front.
+        rewrittenGuards += 1;
+        if (!refused.process) {
+          const { foreground: _refusedGuard, ...rest } = step.params || {};
+          return { ...step, params: rest };
+        }
+        return { ...step, params: { ...(step.params || {}), foreground: refused.process } };
+      }
+      // With a refused guard there is nothing safe to inherit; a step the model
+      // left unguarded stays unguarded (the runner will not type blindly).
+      if (current || !guard) return step;
       return { ...step, params: { ...(step.params || {}), foreground: guard } };
     });
 
@@ -283,6 +333,8 @@ export function applyRevision(
     replaysFailure,
     droppedPlayback: dropped.length,
     mediaEnabled: allowMedia,
+    refusedGuard: refused ? { expected: refused.expected, actual: refused.actual, process: refused.process || null } : null,
+    rewrittenGuards,
     note: text(parsed.note || parsed.reason || '', 400),
   };
 }

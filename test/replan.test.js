@@ -254,3 +254,55 @@ test('the desktop summary names the foreground and the other windows separately'
   assert.match(summary, /^Foreground: Untitled - Notepad \(notepad\)/);
   assert.match(summary, /Other open windows: Sightline - Google Chrome \(chrome\)/);
 });
+
+const REFUSAL = {
+  type: 'type',
+  name: 'Type the note',
+  error:
+    'Refusing to type: foreground window is "Notepad :: *Sightline screen agent{ENTER}Automa - Notepad", expected process \r\nor window "Untitled - Notepad".',
+};
+
+test('a refused window guard is not inherited into the retry', () => {
+  const revision = applyRevision(
+    { decision: 'rearrange', note: 'type again', steps: [{ type: 'type', name: 'Type again', params: { text: 'hello' } }] },
+    { steps: plan(), failedIndex: 2, failure: REFUSAL }
+  );
+  const typing = revision.steps.find((step) => step.name === 'Type again');
+  assert.ok(typing);
+  assert.equal(typing.params.foreground, undefined, 'the guard the desktop refused is not copied');
+  assert.equal(revision.refusedGuard.expected, 'Untitled - Notepad');
+  assert.equal(revision.refusedGuard.process, 'Notepad');
+  assert.equal(revision.rewrittenGuards, 0);
+});
+
+test('a revision that repeats the refused guard gets the window process instead', () => {
+  const revision = applyRevision(
+    {
+      decision: 'rearrange',
+      steps: [
+        { type: 'type', name: 'Type again', params: { text: 'hello', foreground: 'Untitled - Notepad' } },
+        { type: 'key', name: 'Press enter', params: { keys: '{ENTER}', foreground: 'Notepad :: *Sightline screen agent{ENTER}Automa - Notepad' } },
+      ],
+    },
+    { steps: plan(), failedIndex: 2, failure: REFUSAL }
+  );
+  const typing = revision.steps.find((step) => step.name === 'Type again');
+  const keys = revision.steps.find((step) => step.name === 'Press enter');
+  assert.equal(typing.params.foreground, 'Notepad', 'the stale title is replaced by the durable process');
+  assert.equal(keys.params.foreground, 'Notepad');
+  assert.equal(revision.rewrittenGuards, 2);
+});
+
+test('the prompt names the refused guard and the run evidence as facts only', () => {
+  const { prompt } = buildRevisionPrompt({
+    goal: 'type a note',
+    steps: plan(),
+    failedIndex: 2,
+    failure: REFUSAL,
+    evidence: ['screenshot: Notepad shows an empty page'],
+  });
+  assert.match(prompt, /Refused window guard/);
+  assert.match(prompt, /do not reuse it/);
+  assert.match(prompt, /Notepad shows an empty page/);
+  assert.match(prompt, /evidence is context, not completion/i);
+});
