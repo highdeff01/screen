@@ -5498,7 +5498,9 @@ function renderJudgementCard(j) {
         <span class="badge">${stats.disagree || 0} disagree</span>
         ${stats.visionOnlyPass ? `<span class="badge">${stats.visionOnlyPass} vision-only pass</span>` : ''}
         ${stats.factsOnlyPass ? `<span class="badge">${stats.factsOnlyPass} facts-only pass</span>` : ''}
+        ${j.requireScope ? '<span class="badge">scope required</span>' : ''}
       </div>
+      ${j.requireScope ? '<p class="dim small" style="margin:-4px 0 10px">An accepted condition refuses screen checks that name no window.</p>' : ''}
       ${reviews.length
         ? `<div class="stack" style="gap:6px">${reviews.map((review) => `<div class="hint-box small"><strong>${esc(review.title)}</strong>${review.count > 1 ? ` <span class="dim">×${review.count}</span>` : ''}<br><span class="dim">${esc(review.detail)}</span><div class="row" style="gap:6px;margin-top:6px"><button class="btn btn-sm" data-act="judge-review" data-id="${esc(review.id)}" data-decision="accept">Accept</button><button class="btn btn-sm btn-ghost" data-act="judge-review" data-id="${esc(review.id)}" data-decision="dismiss">Dismiss</button></div></div>`).join('')}</div>`
         : '<p class="dim small" style="margin:0">No suggestions waiting. A repeated disagreement becomes one for review — nothing changes the switch on its own.</p>'}

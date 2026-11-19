@@ -4199,6 +4199,15 @@ try {
     // The subject is the window this run opened, not the whole desktop. A
     // lookalike document behind it used to be enough to make the model pass.
     const target = judgeTargetFor(step, ctx.run);
+    // A condition the operator accepted from the judgement review: judging the
+    // whole desktop is never good enough to prove the run's own state.
+    if (!target.scoped && db().settings.verifyJudgeRequireScope === true) {
+      const message = `Screen check “${caption}” names no window, and the accepted judgement condition requires one. Add a title/app to the step or focus the window first.`;
+      if (str(p.onError, 'fail') === 'warn') {
+        return { output: `${message} (onError=warn)`, evidence: [], skipped: true };
+      }
+      throw new Error(message);
+    }
     if (target.scoped) {
       try {
         await executeStep(

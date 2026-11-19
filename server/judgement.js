@@ -244,8 +244,10 @@ function suggestionFor(kind, workflowId, mode) {
   return {
     kind: 'condition',
     mode: null,
-    title: 'Name the window or text this check expects',
-    detail: `${REVIEW_AFTER} checks ran without any window scope. Adding a title or expected text lets both judges read the same subject.`,
+    setting: 'verifyJudgeRequireScope',
+    value: true,
+    title: 'Require every screen check to name its window',
+    detail: `${REVIEW_AFTER} checks ran without any window scope, so both judges read the whole desktop. Accepting makes an unscoped check fail with a clear reason instead of judging whatever is in front.`,
   };
 }
 
@@ -321,7 +323,12 @@ export function recordJudgement(entry = {}, deps = {}) {
           workflowId: suggestion.workflowId || null,
           title: suggestion.title,
           detail: suggestion.detail,
-          suggestion: { kind: suggestion.kind, mode: suggestion.mode || null, workflowId: suggestion.workflowId || null },
+          suggestion: {
+            kind: suggestion.kind,
+            mode: suggestion.mode || null,
+            workflowId: suggestion.workflowId || null,
+            ...(suggestion.setting ? { setting: suggestion.setting, value: suggestion.value } : {}),
+          },
         });
         j.reviews = j.reviews.slice(0, 20);
       }
@@ -358,6 +365,9 @@ export function resolveJudgementReview(id, action = 'dismiss', deps = {}) {
       d.settings.verifyJudgeMode = review.suggestion.mode;
     }
   }
+  if (action === 'accept' && review.suggestion?.setting === 'verifyJudgeRequireScope') {
+    d.settings.verifyJudgeRequireScope = true;
+  }
   review.status = action === 'accept' ? 'accepted' : 'dismissed';
   review.resolvedAt = now();
   save();
@@ -370,6 +380,7 @@ export function judgementSummary(settings) {
   const total = Number(j.stats.total) || 0;
   return {
     mode,
+    requireScope: db().settings.verifyJudgeRequireScope === true,
     modes: JUDGE_MODES.map((id) => ({ id, label: JUDGE_MODE_LABELS[id] })),
     stats: {
       ...j.stats,

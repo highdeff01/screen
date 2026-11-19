@@ -136,6 +136,26 @@ test('repeated disagreement drafts a review but changes nothing on its own', () 
   assert.equal(summary.reviews[0].status, 'accepted');
 });
 
+test('unscoped checks earn a scope condition that only accepting applies', () => {
+  const d = fakeDb();
+  const deps = { db: d, persist: () => {} };
+  const entry = {
+    mode: 'parallel',
+    facts: { status: 'unknown' },
+    vision: { pass: true },
+    agreement: 'partial',
+    target: { scoped: false },
+  };
+
+  for (let i = 0; i < 3; i += 1) judgement.recordJudgement(entry, deps);
+  const review = d.judgement.reviews.find((item) => item.kind === 'unscoped');
+  assert.ok(review, 'a repeated unscoped check becomes a review');
+  assert.equal(d.settings.verifyJudgeRequireScope, undefined, 'nothing is applied before review');
+
+  judgement.resolveJudgementReview(review.id, 'accept', deps);
+  assert.equal(d.settings.verifyJudgeRequireScope, true);
+});
+
 test('a facts-only pass suggests trusting the deterministic check for that workflow', () => {
   const d = fakeDb();
   const deps = { db: d, persist: () => {} };
