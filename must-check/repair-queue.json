@@ -1,17 +1,42 @@
 {
   "version": 1,
   "by": "sentinel",
-  "updatedAt": "2026-11-19T20:15:17.954Z",
-  "head": "58f7384e259d",
+  "updatedAt": "2026-11-19T20:31:43.737Z",
+  "head": "e0551c3954df",
   "lastRun": {
-    "at": "2026-11-19T20:15:17.954Z",
-    "ok": true,
+    "at": "2026-11-19T20:31:43.724Z",
+    "ok": false,
     "tests": 595,
-    "pass": 590,
-    "fail": 0,
+    "pass": 589,
+    "fail": 1,
     "isolated": true,
-    "failingTests": []
+    "failingTests": [
+      "share proxy only forwards safe reads and dry executions (22.1477ms)"
+    ]
   },
-  "open": 0,
-  "items": []
+  "open": 1,
+  "items": [
+    {
+      "id": "sent_mwo0a3580d5251",
+      "at": "2026-11-19T20:31:43.724Z",
+      "status": "queued",
+      "attempts": 1,
+      "fail": 1,
+      "pass": 589,
+      "tests": [
+        "share proxy only forwards safe reads and dry executions (22.1477ms)"
+      ],
+      "details": [
+        {
+          "name": "share proxy only forwards safe reads and dry executions",
+          "file": "",
+          "line": null,
+          "message": ""
+        }
+      ],
+      "plan": "",
+      "planError": "",
+      "report": "must-check/2026-11-19T20-31-43-share-proxy-only-forwards-safe-reads-and.md"
+    }
+  ]
 }
