@@ -199,6 +199,33 @@ test('a focus step is left alone before this run opened a window', () => {
   assert.equal(step.params.title, 'Notepad');
 });
 
+test('a launch report carries the exact window handle into focus and typing', () => {
+  const run = { log: [] };
+  engine.rememberWindow(run, {
+    id: 's1',
+    type: 'launchApp',
+    status: 'passed',
+    output: 'front Notepad :: Untitled - Notepad [hwnd=9192]',
+  });
+  assert.equal(run.lastWindow.hwnd, 9192);
+  assert.equal(run.lastWindow.title, 'Untitled - Notepad');
+
+  const focus = { id: 's2', type: 'focusWindow', name: 'Focus Notepad', params: { title: 'Notepad' } };
+  engine.deriveFocusTarget(focus, run);
+  assert.equal(focus.params.title, 'Untitled - Notepad');
+  assert.equal(focus.params.handle, 9192, 'focus aims at the handle, never at a title guess');
+
+  const typed = { id: 's3', type: 'type', name: 'Type', params: { text: 'hi' } };
+  engine.deriveTypingGuard(typed, run);
+  assert.equal(typed.params.foreground, 'Untitled - Notepad');
+  assert.equal(typed.params.foregroundHandle, 9192);
+});
+
+test('a focus report parses its handle and drops the method bracket', () => {
+  const parsed = engine.parseWindowOutput('focused Notepad :: report.txt - Notepad [hwnd=1234] [AttachThreadInput]');
+  assert.deepEqual(parsed, { process: 'Notepad', title: 'report.txt - Notepad', hwnd: 1234 });
+});
+
 test('planSteps applies the launch prerequisite to the plan it returns', async () => {
   const result = await planner.planSteps('ask chrome a question', null, {
     planBuilder: async () => ({

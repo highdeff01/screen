@@ -1153,6 +1153,7 @@ if (-not (Test-Focused)) {
   throw ('Window "' + $label + '" was found but Windows would not bring it to the foreground after ' + $focusMethod + '. Foreground is "' + $actual + '".')
 }
 Write-Output ('focused ' + $target.ProcessName + ' :: ' + $target.MainWindowTitle + ' [hwnd=' + $target.MainWindowHandle.ToInt64() + '] [' + $focusMethod + ']')`;
+    }
     case 'wait':
       return `Start-Sleep -Milliseconds ${Math.min(num(p.ms, 1000), 600000)}
 Write-Output 'waited'`;
