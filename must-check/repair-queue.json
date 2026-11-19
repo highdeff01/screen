@@ -1,18 +1,16 @@
 {
   "version": 1,
   "by": "sentinel",
-  "updatedAt": "2026-11-19T16:50:46.364Z",
-  "head": "af4ee019ed91",
+  "updatedAt": "2026-11-19T17:59:39.481Z",
+  "head": "7aa5a9f435ea",
   "lastRun": {
-    "at": "2026-11-19T16:50:46.353Z",
-    "ok": false,
-    "tests": 567,
-    "pass": 561,
-    "fail": 1,
+    "at": "2026-11-19T17:59:39.481Z",
+    "ok": true,
+    "tests": 583,
+    "pass": 578,
+    "fail": 0,
     "isolated": true,
-    "failingTests": [
-      "a live run reaches the queue, finds no backend, and continues simulated (5782.398ms)"
-    ]
+    "failingTests": []
   },
   "open": 6,
   "items": [
