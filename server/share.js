@@ -267,7 +267,11 @@ function startTunnel(port) {
 export function startShare({ port = 4318, targetPort = 4317, tunnel = true } = {}) {
   if (state.server) return Promise.resolve(shareStatus({ includeToken: true }));
   return new Promise((resolve) => {
-    state.port = Math.max(1024, Math.min(65535, Number(port) || 4318));
+    // Port 0 asks the OS for a free port; the port actually bound is reported
+    // back through state.port rather than assumed. Pre-reserving a port and
+    // reusing it races other listeners and can land on a Windows excluded range.
+    const requestedPort = Number(port);
+    state.port = requestedPort === 0 ? 0 : Math.max(1024, Math.min(65535, requestedPort || 4318));
     state.targetPort = Math.max(1024, Math.min(65535, Number(targetPort) || 4317));
     state.token = randomBytes(18).toString('hex');
     state.startedAt = null;
@@ -291,6 +295,8 @@ export function startShare({ port = 4318, targetPort = 4317, tunnel = true } = {
     });
     server.listen(state.port, '0.0.0.0', () => {
       state.server = server;
+      const bound = server.address();
+      if (bound && typeof bound === 'object' && bound.port) state.port = bound.port;
       state.startedAt = new Date().toISOString();
       state.lanUrl = `http://${lanAddress()}:${state.port}`;
       if (tunnel) {
