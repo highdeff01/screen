@@ -1,18 +1,16 @@
 {
   "version": 1,
   "by": "sentinel",
-  "updatedAt": "2026-11-19T20:31:43.737Z",
-  "head": "e0551c3954df",
+  "updatedAt": "2026-11-19T20:39:48.953Z",
+  "head": "9007278df887",
   "lastRun": {
-    "at": "2026-11-19T20:31:43.724Z",
-    "ok": false,
+    "at": "2026-11-19T20:39:48.953Z",
+    "ok": true,
     "tests": 595,
-    "pass": 589,
-    "fail": 1,
+    "pass": 590,
+    "fail": 0,
     "isolated": true,
-    "failingTests": [
-      "share proxy only forwards safe reads and dry executions (22.1477ms)"
-    ]
+    "failingTests": []
   },
   "open": 1,
   "items": [
