@@ -61,6 +61,7 @@ import { applyReshaped, configureDeepFocus, deepFocusStatus, startDeepFocus, sto
 import { addAnnotation, annotationsForRun, listAnnotations, pinFindings, removeAnnotation } from './annotations.js';
 import { presentationFromDeepFocus, deepFocusMarkdown } from './presentations-deep.js';
 import { addFirewallRule, firewallCheck, firewallStatus, firewallTest, removeFirewallRule, resetFirewallRules, setFirewallMode } from './firewall.js';
+import { factoringStatus, pinStepIntents, planRefactoring, pushRefactorToBuilder, similarSolutions } from './step-factoring.js';
 
 /**
  * Apply the deep-focus reshaped steps: keep everything the run passed, replace
@@ -467,6 +468,7 @@ function buildState() {
     actionLog: actionLogStatus(),
     agentsWorking: agentActivity(),
     firewall: firewallStatus(),
+    factoring: factoringStatus(),
     share: shareStatus(),
     escalation: escalationStatus(),
     notes: d.notes.slice(0, 60).map(({ body, ...rest }) => ({
@@ -1162,6 +1164,49 @@ route('POST', /^\/api\/firewall\/test$/, async (req, res) => {
   try {
     const body = await readBody(req);
     sendJson(res, 200, { ok: true, verdict: firewallTest(body.step || {}, body.run || null) });
+  } catch (err) {
+    fail(res, 400, err.message);
+  }
+});
+
+/* ---------------- Step factoring: intents, patterns, refactors ------------- */
+route('GET', /^\/api\/factoring$/, async (req, res) => {
+  sendJson(res, 200, { ok: true, factoring: factoringStatus() });
+});
+
+route('POST', /^\/api\/factoring\/pin$/, async (req, res) => {
+  try {
+    const body = await readBody(req);
+    const workflow = (db().workflows || []).find((entry) => entry.id === body.workflowId);
+    if (!workflow) throw new Error('Workflow not found');
+    sendJson(res, 200, { ok: true, pinned: pinStepIntents(workflow) });
+  } catch (err) {
+    fail(res, err.message === 'Workflow not found' ? 404 : 400, err.message);
+  }
+});
+
+route('POST', /^\/api\/factoring\/plan$/, async (req, res) => {
+  try {
+    const body = await readBody(req);
+    sendJson(res, 200, { ok: true, plan: planRefactoring({ minWorkflows: Number(body?.minWorkflows) || 2, minShared: Number(body?.minShared) || 2 }) });
+  } catch (err) {
+    fail(res, 400, err.message);
+  }
+});
+
+route('POST', /^\/api\/factoring\/apply$/, async (req, res) => {
+  try {
+    const body = await readBody(req);
+    sendJson(res, 200, { ok: true, applied: pushRefactorToBuilder(body.planId) });
+  } catch (err) {
+    fail(res, err.message === 'Refactor plan not found' ? 404 : 400, err.message);
+  }
+});
+
+route('POST', /^\/api\/factoring\/solutions$/, async (req, res) => {
+  try {
+    const body = await readBody(req);
+    sendJson(res, 200, { ok: true, solutions: similarSolutions({ step: body.step || {}, excludeWorkflowId: body.excludeWorkflowId || '' }) });
   } catch (err) {
     fail(res, 400, err.message);
   }

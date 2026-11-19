@@ -1,18 +1,16 @@
 {
   "version": 1,
   "by": "sentinel",
-  "updatedAt": "2026-11-19T01:49:25.875Z",
-  "head": "4ecfa83e4ce4",
+  "updatedAt": "2026-11-19T01:55:13.551Z",
+  "head": "f2ee84067003",
   "lastRun": {
-    "at": "2026-11-19T01:49:25.850Z",
-    "ok": false,
-    "tests": 511,
-    "pass": 505,
-    "fail": 1,
+    "at": "2026-11-19T01:55:13.550Z",
+    "ok": true,
+    "tests": 517,
+    "pass": 512,
+    "fail": 0,
     "isolated": true,
-    "failingTests": [
-      "a repair that opens another app is adopted by the presenter and verifier (25060.143ms)"
-    ]
+    "failingTests": []
   },
   "open": 2,
   "items": [

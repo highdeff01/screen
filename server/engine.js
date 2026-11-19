@@ -23,6 +23,7 @@ import { sendContinuation } from './agent-awareness.js';
 import { enqueue } from './pipeline.js';
 import { firewallCheck } from './firewall.js';
 import { addNote } from './handoff.js';
+import { noteStepOutcome, pinStepIntents, similarSolutions } from './step-factoring.js';
 import { beginRunObservation, endRunObservation } from './app-observer.js';
 import { expectsScreenChange, windowChecksFor, resumePlan, corroboratesNoChange, lookupWindowFor, screenChangeVerdict } from './step-effects.js';
 
@@ -318,6 +319,11 @@ export function createRun(workflow, { trigger = 'manual', dryRun = null, agentRo
     persist();
     logActivity('workflow', `Added a launch prerequisite before the first focus in "${workflow.name}"`, { workflowId: workflow.id });
   }
+  // Spot and pin each step's intent once, so similar steps across workflows
+  // carry the same tag and duplication is visible to the factoring scanner.
+  try {
+    pinStepIntents(workflow);
+  } catch { /* pinning never blocks a run */ }
   const run = {
     id: uid('run'),
     workflowId: workflow.id,
@@ -443,6 +449,11 @@ function ledgerStepBrief(step) {
 
 function recordLedger(run, step) {
   if (!run || !step) return null;
+  // Step factoring: every settled step feeds the fingerprint ledger, so the
+  // proven form of this exact step grows stronger (or weaker) across runs.
+  try {
+    noteStepOutcome(run, step);
+  } catch { /* the ledger never breaks the run */ }
   if (!Array.isArray(run.ledger)) run.ledger = [];
   const index = run.steps.indexOf(step);
   const next = run.steps.slice(index + 1).find((entry) => entry.status === 'pending') || run.steps[index + 1] || null;
@@ -1349,6 +1360,17 @@ async function executeRun(runId) {
       );
     }
     const advice = repairAdvice(db(), { step, failure });
+    // Re-conjoin: a step with the same fingerprint already passed somewhere
+    // else — hand its proven form to the agents instead of a fresh guess.
+    try {
+      for (const solution of similarSolutions({ step, excludeWorkflowId: workflow.id })) {
+        advice.push({
+          name: 'step factoring',
+          kind: 'pattern',
+          advice: `This exact step form already passed ${solution.successes}× in “${solution.workflowName}” (step “${solution.stepName}”, strength ${solution.strength}); adopt its params ${JSON.stringify(solution.params).slice(0, 260)} before trying a new method.`,
+        });
+      }
+    } catch { /* factoring advice is additive, never required */ }
     if (advice.length) {
       run.repairAdvice = [...(run.repairAdvice || []), { stepId: step.id, at: now(), advice }].slice(-12);
       pushLog(
