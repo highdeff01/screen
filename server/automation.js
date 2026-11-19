@@ -4260,8 +4260,12 @@ try {
       `\nActive foreground window: "${foreground.title || '(unknown)'}" (process: ${foreground.process || 'unknown'}). ` +
       `${target.scoped ? `The image is cropped to ${target.hwnd ? `the run's own window (hwnd ${target.hwnd})` : `“${target.title || target.process}”`}, not the whole desktop. ` : ''}` +
       `If the expected app is named and this foreground window is a different program, fail even when another window behind it looks correct.`;
+    const mode = judgeModeFor(ctx.workflow);
     const cachedVerdict = readVerdict(question, shot.signature);
     let reply = null;
+    let vision = cachedVerdict
+      ? { pass: true, confidence: null, observed: String(cachedVerdict.output || ''), mismatch: '', cached: true }
+      : null;
     let parsed = cachedVerdict ? { pass: true, observed: cachedVerdict.output } : null;
     if (!cachedVerdict) {
       reply = await chat(
@@ -4279,37 +4283,51 @@ try {
         }
       );
       if (!reply.ok) {
-        if (str(p.onError, 'fail') === 'warn') {
-          return {
-            output: `Screen check could not run (${reply.error}); continuing because onError=warn.`,
-            evidence: [{ kind: 'screenshot', caption: `${caption} (unverified)`, ...shot }],
+        // Facts mode is free: a conclusive deterministic pass stands on its own
+        // when the model is unreachable.
+        if (mode === 'facts' && facts.status === 'pass') {
+          vision = {
+            pass: false,
+            confidence: null,
+            observed: `the vision model was unreachable (${reply.error}); the deterministic check decided`,
+            mismatch: '',
+            offline: true,
           };
+        } else {
+          if (str(p.onError, 'fail') === 'warn') {
+            return {
+              output: `Screen check could not run (${reply.error}); continuing because onError=warn.`,
+              evidence: [{ kind: 'screenshot', caption: `${caption} (unverified)`, ...shot }],
+            };
+          }
+          const error = new Error(`Screen check could not read the screenshot: ${reply.error}`);
+          error.evidence = [{ kind: 'screenshot', caption: `${caption} (unreadable)`, ...shot }];
+          throw error;
         }
-        const error = new Error(`Screen check could not read the screenshot: ${reply.error}`);
-        error.evidence = [{ kind: 'screenshot', caption: `${caption} (unreadable)`, ...shot }];
-        throw error;
+      } else {
+        parsed = parseJsonLoose(reply.content);
       }
-      parsed = parseJsonLoose(reply.content);
     }
-    const rawConfidence = parsed?.confidence != null ? Number(parsed.confidence) : null;
-    const confidence = Number.isFinite(rawConfidence)
-      ? Math.round((rawConfidence > 1 ? rawConfidence / 100 : rawConfidence) * 100)
-      : null;
-    const minConfidence = Math.max(0, Math.min(1, Number(p.minConfidence ?? 0.7)));
-    const vision = {
-      pass: Boolean(
-        parsed &&
-          (parsed.pass === true || parsed.ok === true || parsed.verified === true) &&
-          (confidence == null || confidence >= minConfidence * 100)
-      ),
-      confidence,
-      observed: String(parsed?.observed || parsed?.reason || reply?.content || '').slice(0, 700),
-      mismatch: String(parsed?.mismatch || '').slice(0, 400),
-      cached: Boolean(cachedVerdict),
-    };
+    if (!vision) {
+      const rawConfidence = parsed?.confidence != null ? Number(parsed.confidence) : null;
+      const confidence = Number.isFinite(rawConfidence)
+        ? Math.round((rawConfidence > 1 ? rawConfidence / 100 : rawConfidence) * 100)
+        : null;
+      const minConfidence = Math.max(0, Math.min(1, Number(p.minConfidence ?? 0.7)));
+      vision = {
+        pass: Boolean(
+          parsed &&
+            (parsed.pass === true || parsed.ok === true || parsed.verified === true) &&
+            (confidence == null || confidence >= minConfidence * 100)
+        ),
+        confidence,
+        observed: String(parsed?.observed || parsed?.reason || reply?.content || '').slice(0, 700),
+        mismatch: String(parsed?.mismatch || '').slice(0, 400),
+        cached: false,
+      };
+    }
     // Two judges, one verdict. The mode is the operator's switch; agreement and
     // any repeated disagreement feed the review list, never an auto-change.
-    const mode = judgeModeFor(ctx.workflow);
     const judge = mergeJudgement({ mode, facts, vision });
     const record = recordJudgement({
       mode: judge.mode,
