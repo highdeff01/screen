@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 const planner = await import('../server/planner.js');
+const store = await import('../server/store.js');
 
 const context = {
   windows: [
@@ -170,23 +171,43 @@ test('a tool reference resolves by id or by name and refuses anything else', () 
   assert.equal(planner.resolveToolRef({ toolId: 'tool_cleanup' }, []), null);
 });
 
+/** Add an approved tool to the in-memory store for one test, then remove it. */
+function withTool(tool) {
+  const tools = store.db().tools;
+  tools.push(tool);
+  return () => {
+    const index = tools.indexOf(tool);
+    if (index >= 0) tools.splice(index, 1);
+  };
+}
+
 test('a tool step keeps the id execution looks up, even when the plan names the tool', () => {
-  const step = planner.normalizeStep({ type: 'runTool', name: 'List windows', toolName: 'List visible windows' });
-  assert.equal(step.type, 'runTool');
-  assert.equal(step.params.toolName, 'List visible windows');
-  assert.equal(step.params.toolId, planner.resolveToolRef({ toolName: 'List visible windows' }).id);
+  const drop = withTool({ id: 'tool_under_test', name: 'Tool under test' });
+  try {
+    const step = planner.normalizeStep({ type: 'runTool', name: 'Run the tool', toolName: 'Tool under test' });
+    assert.equal(step.type, 'runTool');
+    assert.equal(step.params.toolId, 'tool_under_test');
+    assert.equal(step.params.toolName, 'Tool under test');
+  } finally {
+    drop();
+  }
 });
 
 test('a tool step that names no approved tool is dropped instead of run', () => {
-  const result = planner.alignPlanToGoal(
-    [
-      { type: 'runTool', name: 'Run nothing', params: {} },
-      { type: 'runTool', name: 'Run an unapproved tool', params: { toolName: 'tool_that_does_not_exist' } },
-      { type: 'runTool', name: 'Run an approved tool by name', params: { toolName: 'List visible windows' } },
-      { type: 'screenshot', name: 'Look at the screen', params: {} },
-    ],
-    'list the visible windows'
-  );
-  assert.deepEqual(result.steps.map((step) => step.type), ['runTool', 'screenshot']);
-  assert.equal(result.steps[0].params.toolId, planner.resolveToolRef({ toolName: 'List visible windows' }).id);
+  const drop = withTool({ id: 'tool_under_test', name: 'Tool under test' });
+  try {
+    const result = planner.alignPlanToGoal(
+      [
+        { type: 'runTool', name: 'Run nothing', params: {} },
+        { type: 'runTool', name: 'Run an unapproved tool', params: { toolName: 'tool_that_does_not_exist' } },
+        { type: 'runTool', name: 'Run an approved tool by name', params: { toolName: 'Tool under test' } },
+        { type: 'screenshot', name: 'Look at the screen', params: {} },
+      ],
+      'list the windows'
+    );
+    assert.deepEqual(result.steps.map((step) => step.type), ['runTool', 'screenshot']);
+    assert.equal(result.steps[0].params.toolId, 'tool_under_test');
+  } finally {
+    drop();
+  }
 });

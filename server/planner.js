@@ -165,7 +165,7 @@ export function resolveToolRef(params = {}, tools = db().tools) {
   const name = String(params?.toolName || '').trim();
   const list = Array.isArray(tools) ? tools : [];
   const tool =
-    (id && list.find((entry) => entry.id === id)) ||
+    (id && list.find((entry) => entry.id === id || entry.name === id)) ||
     (name && list.find((entry) => entry.name === name || entry.id === name)) ||
     null;
   return tool || null;
