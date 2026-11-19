@@ -310,7 +310,7 @@ export async function waitForRun(id, { timeoutMs = 30000, intervalMs = 100 } = {
   return findRun(id);
 }
 
-export function createRun(workflow, { trigger = 'manual', dryRun = null, agentRole = null, missionId = null, shortcutReplayHabitId = null, workflowSnapshot = null, shadowProposalId = null, probe = null, repair = null, aiReplan = null } = {}) {
+export function createRun(workflow, { trigger = 'manual', dryRun = null, agentRole = null, missionId = null, shortcutReplayHabitId = null, workflowSnapshot = null, shadowProposalId = null, probe = null, repair = null, aiReplan = null, liveFallback = null } = {}) {
   const d = db();
   if (!workflow || !workflow.steps?.length) {
     throw new Error('Workflow has no steps to run.');
@@ -356,6 +356,9 @@ export function createRun(workflow, { trigger = 'manual', dryRun = null, agentRo
     runComplexityScore: estimateComplexity(workflow),
     requiresAdvancedPlanning: needsAdvancedPlanning(workflow),
     visualChecks: db().settings.visualChecks !== false,
+    // Why a live request became a simulated run, when it did. Kept on the run
+    // so the engine can test the refusal instead of trusting it.
+    ...(liveFallback ? { liveFallback: String(liveFallback) } : {}),
     liveRepair: repair == null ? null : Boolean(repair),
     aiReplan: aiReplan == null ? db().settings.agentReplans !== false : Boolean(aiReplan),
     replanCount: 0,
@@ -1334,20 +1337,36 @@ async function executeRun(runId) {
   // a prediction, not proof: the machine gets a real chance to answer before
   // the run is downgraded, and a live step that hits the guard mid-run gets
   // one workaround attempt with a fresh probe.
-  if (!run.dryRun && !probe) {
+  if (!probe) {
     const control = liveControl();
-    if (!control.available) {
+    const refusedLive = !run.dryRun && !control.available;
+    // A run can also be downgraded to simulation before it reaches the queue:
+    // the API does it when detection refuses a live request and records why.
+    // That refusal is still only a prediction — and a stale one may even name a
+    // different OS, as when a Linux refusal is carried onto a Windows host. So
+    // a downgraded run gets the same real chance to answer as a live one, and
+    // continues live (through the platform's own implementation) when it does.
+    const downgradedAtRequest = run.dryRun && Boolean(run.liveFallback);
+    if (refusedLive || downgradedAtRequest) {
+      const reason = refusedLive ? control.reason : run.liveFallback;
       const proof = await probeLiveBackend();
       if (proof.ok) {
-        pushLog(run, 'warn', `Detection said “${control.reason}”, but the machine answers natively (${proof.detail}); initial detection was wrong — the run continues live.`, null);
+        const wasSimulated = run.dryRun;
+        run.dryRun = false;
+        run.liveFallback = null;
         run.detectionCorrected = true;
-      } else {
+        pushLog(run, 'warn', wasSimulated
+          ? `The run was downgraded to simulated (“${reason}”), but the machine answers natively (${proof.detail}) — initial detection was wrong. Workaround applied: the run continues live.`
+          : `Detection said “${control.reason}”, but the machine answers natively (${proof.detail}); initial detection was wrong — the run continues live.`, null);
+      } else if (refusedLive) {
         run.dryRun = true;
         run.liveFallback = `${control.reason || 'no live backend'} (probe: ${proof.detail || 'no answer'})`;
         pushLog(run, 'warn', `Live refused on this machine (${run.liveFallback}); the run continues simulated instead.`, null);
         try {
           recordAction({ kind: 'run', action: `start-run:${run.workflowName}`, error: run.liveFallback, detail: { runId: run.id, requestedMode: 'live' } });
         } catch { /* logging never blocks the run */ }
+      } else {
+        pushLog(run, 'info', `Simulated run: the earlier refusal (“${reason}”) still holds (probe: ${proof.detail || 'no answer'}).`, null);
       }
     }
   }

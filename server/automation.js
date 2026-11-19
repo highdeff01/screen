@@ -848,6 +848,13 @@ Write-Output ('sent ${repeat}x ' + ${psQuote(shortcuts.join(', '))})`;
       const launchArgs = Array.isArray(p.args) ? p.args : p.args ? [p.args] : [];
       const argList = launchArgs.map((arg) => psQuote(arg)).join(', ');
       const argSuffix = launchArgs.length ? ` -ArgumentList @(${argList})` : '';
+      // Everything below has to finish inside the step's timeout: PowerShell
+      // start-up, a Get-StartApps lookup, Start-Process and the fronting poll.
+      // A fixed 8 second poll overran a 15 second budget when the lookup was
+      // slow, so the step was killed ("Command timed out.") and its retry
+      // launched the app again — the second window in the report. The poll now
+      // spends only the time the step has left.
+      const launchBudgetMs = Math.max(4000, Math.min(120000, num(step.timeoutMs, 15000)));
       // A known app may not be on PATH: its catalogue entry lists the real
       // executable paths, which also lets arguments (a video file) be passed.
       const known = catalogEntry([str(p.app), str(p.target)].filter(Boolean));
@@ -865,6 +872,8 @@ foreach ($candidate in $catalogue) {
 }`
         : '';
       return `${pre}
+$launchBudgetMs = ${launchBudgetMs}
+$scriptStarted = Get-Date
 $target = ${psQuote(str(p.target))}
 if (-not $target) { throw 'Launch app step needs a target app name, executable or document path.' }
 $leaf = [System.IO.Path]::GetFileNameWithoutExtension($target)
@@ -883,9 +892,17 @@ $setupPattern = '(?i)(setup|installer|installing|installation|uninstall|download
 # back to a name search when the launched process never shows one.
 function Show-SightlineFront($processLeaf, $preferPid) {
   if (-not $processLeaf) { return }
-  $deadline = (Get-Date).AddSeconds(8)
+  # Spend only what the step has left, keeping 3s for PowerShell to shut down.
+  # A slow Get-StartApps lookup therefore shortens the poll instead of pushing
+  # the script past the step timeout, which killed it and let the retry launch
+  # a second window. At most 8s is ever spent looking for the window.
+  $left = $launchBudgetMs - 3000 - ((Get-Date) - $scriptStarted).TotalMilliseconds
+  $budget = [Math]::Max(0, [Math]::Min(8000, $left))
+  $deadline = (Get-Date).AddMilliseconds($budget)
   $front = $null
-  while ((Get-Date) -lt $deadline) {
+  # Check once even with no budget left: the window may already be there, and
+  # the front line is the evidence the following steps rely on.
+  while ($true) {
     if ($preferPid) {
       $own = @(Get-Process -Id $preferPid -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 })
       if ($own.Count) { $front = $own[0]; break }
@@ -895,6 +912,7 @@ function Show-SightlineFront($processLeaf, $preferPid) {
       if (-not $front) { $front = $hits | Sort-Object Id -Descending | Select-Object -First 1 }
       if ($front) { break }
     }
+    if ((Get-Date) -ge $deadline) { break }
     Start-Sleep -Milliseconds 300
   }
   if (-not $front -and $preferPid) {

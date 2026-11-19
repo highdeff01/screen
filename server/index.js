@@ -2534,7 +2534,7 @@ route('POST', /^\/api\/workflows\/([^/]+)\/runs$/, async (req, res, [id]) => {
   } catch (err) {
     return fail(res, 400, `Could not auto-create steps: ${err.message}`);
   }
-  const run = createRun(wf, { trigger: body.trigger || 'manual', dryRun });
+  const run = createRun(wf, { trigger: body.trigger || 'manual', dryRun, liveFallback });
   sendJson(res, 200, { ok: true, run: findRun(run.id), autoPlan, liveFallback });
 });
 
