@@ -1,19 +1,275 @@
 {
   "version": 1,
   "by": "sentinel",
-  "updatedAt": "2026-11-19T04:32:01.439Z",
-  "head": "0c2420e3590f",
+  "updatedAt": "2026-11-19T04:43:00.528Z",
+  "head": "c5b262ef7fda",
   "lastRun": {
-    "at": "2026-11-19T04:32:01.438Z",
-    "ok": true,
-    "tests": 543,
-    "pass": 538,
-    "fail": 0,
+    "at": "2026-11-19T04:43:00.516Z",
+    "ok": false,
+    "tests": null,
+    "pass": null,
+    "fail": 30,
     "isolated": true,
-    "failingTests": []
+    "failingTests": [
+      "test\\continuity.test.js (79.9954ms)",
+      "test\\deliberation.test.js (78.3565ms)",
+      "test\\engine-screen.test.js (131.8504ms)",
+      "test\\focus-launch.test.js (124.8242ms)",
+      "test\\foreground-presenter.test.js (84.5865ms)",
+      "test\\goal-status.test.js (80.3731ms)",
+      "test\\live-fallback.test.js (91.5261ms)",
+      "test\\live-monitor.test.js (83.8296ms)",
+      "HTTP endpoints expose state, validate actions and reject cross-origin starts (6228.7243ms)",
+      "test\\nudge.test.js (148.6406ms)",
+      "observation review uses stored evidence and is read-only (175.992ms)",
+      "test\\output-file.test.js (94.8571ms)",
+      "test\\planner.test.js (86.9786ms)",
+      "test\\preflight.test.js (77.808ms)",
+      "test\\presentation-audit.test.js (87.0381ms)",
+      "test\\presentation-index.test.js (101.1471ms)",
+      "test\\presentation-live.test.js (104.3109ms)",
+      "test\\presentations-deep.test.js (131.7373ms)",
+      "test\\repair.test.js (91.8068ms)",
+      "test\\replan.test.js (95.308ms)",
+      "test\\research.test.js (97.8226ms)",
+      "test\\run-recovery.test.js (86.7559ms)",
+      "test\\run-retry.test.js (111.6173ms)",
+      "test\\sendkeys.test.js (73.3519ms)",
+      "test\\shortcuts.test.js (78.8317ms)",
+      "test\\silent-file-check.test.js (93.7943ms)",
+      "test\\step-effects.test.js (104.9355ms)",
+      "test\\step-factoring.test.js (144.0802ms)",
+      "test\\verification-loop.test.js (89.0851ms)",
+      "unavailable backend falls back for every resolved live mode before queuing (209.1636ms)"
+    ]
   },
-  "open": 2,
+  "open": 3,
   "items": [
+    {
+      "id": "sent_mwn2e0x0c70fd5",
+      "at": "2026-11-19T04:43:00.516Z",
+      "status": "queued",
+      "attempts": 1,
+      "fail": 30,
+      "pass": null,
+      "tests": [
+        "test\\continuity.test.js (79.9954ms)",
+        "test\\deliberation.test.js (78.3565ms)",
+        "test\\engine-screen.test.js (131.8504ms)",
+        "test\\focus-launch.test.js (124.8242ms)",
+        "test\\foreground-presenter.test.js (84.5865ms)",
+        "test\\goal-status.test.js (80.3731ms)",
+        "test\\live-fallback.test.js (91.5261ms)",
+        "test\\live-monitor.test.js (83.8296ms)",
+        "HTTP endpoints expose state, validate actions and reject cross-origin starts (6228.7243ms)",
+        "test\\nudge.test.js (148.6406ms)",
+        "observation review uses stored evidence and is read-only (175.992ms)",
+        "test\\output-file.test.js (94.8571ms)",
+        "test\\planner.test.js (86.9786ms)",
+        "test\\preflight.test.js (77.808ms)",
+        "test\\presentation-audit.test.js (87.0381ms)",
+        "test\\presentation-index.test.js (101.1471ms)",
+        "test\\presentation-live.test.js (104.3109ms)",
+        "test\\presentations-deep.test.js (131.7373ms)",
+        "test\\repair.test.js (91.8068ms)",
+        "test\\replan.test.js (95.308ms)",
+        "test\\research.test.js (97.8226ms)",
+        "test\\run-recovery.test.js (86.7559ms)",
+        "test\\run-retry.test.js (111.6173ms)",
+        "test\\sendkeys.test.js (73.3519ms)",
+        "test\\shortcuts.test.js (78.8317ms)",
+        "test\\silent-file-check.test.js (93.7943ms)",
+        "test\\step-effects.test.js (104.9355ms)",
+        "test\\step-factoring.test.js (144.0802ms)",
+        "test\\verification-loop.test.js (89.0851ms)",
+        "unavailable backend falls back for every resolved live mode before queuing (209.1636ms)"
+      ],
+      "details": [
+        {
+          "name": "test\\continuity.test.js",
+          "file": "test/continuity.test.js",
+          "line": null,
+          "message": ""
+        },
+        {
+          "name": "test\\deliberation.test.js",
+          "file": "test/deliberation.test.js",
+          "line": null,
+          "message": ""
+        },
+        {
+          "name": "test\\engine-screen.test.js",
+          "file": "test/engine-screen.test.js",
+          "line": null,
+          "message": ""
+        },
+        {
+          "name": "test\\focus-launch.test.js",
+          "file": "test/focus-launch.test.js",
+          "line": null,
+          "message": ""
+        },
+        {
+          "name": "test\\foreground-presenter.test.js",
+          "file": "test/foreground-presenter.test.js",
+          "line": null,
+          "message": ""
+        },
+        {
+          "name": "test\\goal-status.test.js",
+          "file": "test/goal-status.test.js",
+          "line": null,
+          "message": ""
+        },
+        {
+          "name": "test\\live-fallback.test.js",
+          "file": "test/live-fallback.test.js",
+          "line": null,
+          "message": ""
+        },
+        {
+          "name": "test\\live-monitor.test.js",
+          "file": "test/live-monitor.test.js",
+          "line": null,
+          "message": ""
+        },
+        {
+          "name": "HTTP endpoints expose state, validate actions and reject cross-origin starts",
+          "file": "/Users/Dan/.config/freebuff-desktop/local-projects/40af3ced-48bf-4a9d-a8b7-cb42815bab8f/data/worktrees/sentinel-1795063352219-34484/test/live-preview.test.js",
+          "line": 281,
+          "message": "AssertionError [ERR_ASSERTION]: server started"
+        },
+        {
+          "name": "test\\nudge.test.js",
+          "file": "test/nudge.test.js",
+          "line": null,
+          "message": ""
+        },
+        {
+          "name": "observation review uses stored evidence and is read-only",
+          "file": "/Users/Dan/.config/freebuff-desktop/local-projects/40af3ced-48bf-4a9d-a8b7-cb42815bab8f/data/worktrees/sentinel-1795063352219-34484/server/automation.js",
+          "line": 1156,
+          "message": "SyntaxError: Unexpected token 'case'"
+        },
+        {
+          "name": "test\\output-file.test.js",
+          "file": "test/output-file.test.js",
+          "line": null,
+          "message": ""
+        },
+        {
+          "name": "test\\planner.test.js",
+          "file": "test/planner.test.js",
+          "line": null,
+          "message": ""
+        },
+        {
+          "name": "test\\preflight.test.js",
+          "file": "test/preflight.test.js",
+          "line": null,
+          "message": ""
+        },
+        {
+          "name": "test\\presentation-audit.test.js",
+          "file": "test/presentation-audit.test.js",
+          "line": null,
+          "message": ""
+        },
+        {
+          "name": "test\\presentation-index.test.js",
+          "file": "test/presentation-index.test.js",
+          "line": null,
+          "message": ""
+        },
+        {
+          "name": "test\\presentation-live.test.js",
+          "file": "test/presentation-live.test.js",
+          "line": null,
+          "message": ""
+        },
+        {
+          "name": "test\\presentations-deep.test.js",
+          "file": "test/presentations-deep.test.js",
+          "line": null,
+          "message": ""
+        },
+        {
+          "name": "test\\repair.test.js",
+          "file": "test/repair.test.js",
+          "line": null,
+          "message": ""
+        },
+        {
+          "name": "test\\replan.test.js",
+          "file": "test/replan.test.js",
+          "line": null,
+          "message": ""
+        },
+        {
+          "name": "test\\research.test.js",
+          "file": "test/research.test.js",
+          "line": null,
+          "message": ""
+        },
+        {
+          "name": "test\\run-recovery.test.js",
+          "file": "test/run-recovery.test.js",
+          "line": null,
+          "message": ""
+        },
+        {
+          "name": "test\\run-retry.test.js",
+          "file": "test/run-retry.test.js",
+          "line": null,
+          "message": ""
+        },
+        {
+          "name": "test\\sendkeys.test.js",
+          "file": "test/sendkeys.test.js",
+          "line": null,
+          "message": ""
+        },
+        {
+          "name": "test\\shortcuts.test.js",
+          "file": "test/shortcuts.test.js",
+          "line": null,
+          "message": ""
+        },
+        {
+          "name": "test\\silent-file-check.test.js",
+          "file": "test/silent-file-check.test.js",
+          "line": null,
+          "message": ""
+        },
+        {
+          "name": "test\\step-effects.test.js",
+          "file": "test/step-effects.test.js",
+          "line": null,
+          "message": ""
+        },
+        {
+          "name": "test\\step-factoring.test.js",
+          "file": "test/step-factoring.test.js",
+          "line": null,
+          "message": ""
+        },
+        {
+          "name": "test\\verification-loop.test.js",
+          "file": "test/verification-loop.test.js",
+          "line": null,
+          "message": ""
+        },
+        {
+          "name": "unavailable backend falls back for every resolved live mode before queuing",
+          "file": "/Users/Dan/.config/freebuff-desktop/local-projects/40af3ced-48bf-4a9d-a8b7-cb42815bab8f/data/worktrees/sentinel-1795063352219-34484/server/automation.js",
+          "line": 1156,
+          "message": "SyntaxError: Unexpected token 'case'"
+        }
+      ],
+      "plan": "",
+      "planError": "",
+      "report": "must-check/2026-11-19T04-43-00-test-continuity-test-js-79-9954ms.md"
+    },
     {
       "id": "sent_mwn15mo1c07156",
       "at": "2026-11-19T04:08:29.185Z",

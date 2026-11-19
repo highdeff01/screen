@@ -1574,10 +1574,32 @@ $processes = @($windows | ForEach-Object { $_.process } | Sort-Object -Unique)
 }
 
 export async function readForegroundWindow() {
-  if (!IS_WINDOWS) return { title: '', process: '', id: null, className: '', path: '', version: '' };
+  if (!IS_WINDOWS) return { title: '', process: '', id: null, hwnd: 0, className: '', path: '', version: '' };
   const script = `${BASE_PRELUDE}
 $fg = [SightlineInput]::GetForegroundWindow()
-$p = Get-Process | Where-Object { $_.MainWindowHandle -ne 0 -and $_.MainWindowHandle -eq $fg } | Select-Object -First 1
+# Read the title and process from the handle itself: a process can own several
+# windows, and a dialog is nobody's MainWindow.
+$fgTitle = ''
+if ($fg -ne [IntPtr]::Zero) {
+  $len = [SightlineInput]::GetWindowTextLength($fg)
+  if ($len -gt 0) {
+    $sb = New-Object System.Text.StringBuilder ($len + 2)
+    [void][SightlineInput]::GetWindowText($fg, $sb, $sb.Capacity)
+    $fgTitle = [string]$sb.ToString()
+  }
+}
+$fgPid = 0
+if ($fg -ne [IntPtr]::Zero) { [void][SightlineInput]::GetWindowThreadProcessId($fg, [ref]$fgPid) }
+$p = if ($fgPid -gt 0) { Get-Process -Id $fgPid -ErrorAction SilentlyContinue | Select-Object -First 1 } else { $null }
+if (-not $fgTitle -and $p) { $fgTitle = [string]$p.MainWindowTitle }
+if (-not $fgTitle -and $fg -ne [IntPtr]::Zero) {
+  try {
+    Add-Type -AssemblyName UIAutomationClient
+    Add-Type -AssemblyName UIAutomationTypes
+    $fgElement = [System.Windows.Automation.AutomationElement]::FromHandle($fg)
+    if ($fgElement) { $fgTitle = [string]$fgElement.Current.Name }
+  } catch { }
+}
 $class = New-Object System.Text.StringBuilder 256
 if ($fg -ne [IntPtr]::Zero) { [void][SightlineInput]::GetClassName($fg, $class, $class.Capacity) }
 $path = ''
@@ -1592,9 +1614,10 @@ if ($path) {
 }
 
 [pscustomobject]@{
-  title = if ($p) { [string]$p.MainWindowTitle } else { '' }
+  title = $fgTitle
   process = if ($p) { [string]$p.ProcessName } else { '' }
   id = if ($p) { [int]$p.Id } else { 0 }
+  hwnd = if ($fg -ne [IntPtr]::Zero) { $fg.ToInt64() } else { 0 }
   className = [string]$class.ToString()
   path = $path
   version = $version
@@ -1608,12 +1631,78 @@ if ($path) {
       title: str(parsed.title),
       process: str(parsed.process),
       id: Number(parsed.id) || null,
+      hwnd: Number(parsed.hwnd) || 0,
       className: str(parsed.className),
       path: str(parsed.path),
       version: str(parsed.version),
     };
   } catch {
-    return { title: '', process: '', id: null, className: '', path: '', version: '', error: 'Foreground window was not JSON.' };
+    return { title: '', process: '', id: null, hwnd: 0, className: '', path: '', version: '', error: 'Foreground window was not JSON.' };
+  }
+}
+
+/**
+ * Read the text a window exposes through UI Automation. This is the free half
+ * of a screen judgement: no model call, no pixels, and it can prove that the
+ * expected text is in the run's own document (or that stale text is gone).
+ */
+export async function readWindowText({ handle = 0, title = '', limit = 20000 } = {}) {
+  if (!IS_WINDOWS) return { text: '', source: '', error: 'UI Automation text is only available on Windows.' };
+  const maxChars = Math.max(200, Math.min(200000, Number(limit) || 20000));
+  const script = `${BASE_PRELUDE}
+Add-Type -AssemblyName UIAutomationClient
+Add-Type -AssemblyName UIAutomationTypes
+$handle = [int64]${Math.max(0, Number(handle) || 0)}
+$title = ${psQuote(String(title || ''))}
+$win = $null
+if ($handle -gt 0) {
+  try { $win = [System.Windows.Automation.AutomationElement]::FromHandle([IntPtr]$handle) } catch { $win = $null }
+}
+if (-not $win -and $title) {
+  $root = [System.Windows.Automation.AutomationElement]::RootElement
+  foreach ($child in $root.FindAll([System.Windows.Automation.TreeScope]::Children, [System.Windows.Automation.Condition]::TrueCondition)) {
+    if ([string]$child.Current.Name -like ('*' + $title + '*')) { $win = $child; break }
+  }
+}
+if (-not $win) { Write-Output '{"text":"","source":""}'; exit 0 }
+$docType = [System.Windows.Automation.ControlType]::Document
+$docCond = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty, $docType)
+$docs = $win.FindAll([System.Windows.Automation.TreeScope]::Descendants, $docCond)
+$parts = New-Object System.Collections.Generic.List[string]
+$total = 0
+foreach ($doc in $docs) {
+  try {
+    $tp = $doc.GetCurrentPattern([System.Windows.Automation.TextPattern]::Pattern)
+    $text = [string]$tp.DocumentRange.GetText(${maxChars})
+    if ($text) { $parts.Add($text); $total += $text.Length }
+  } catch { }
+  if ($total -ge ${maxChars}) { break }
+}
+$source = 'document'
+if ($parts.Count -eq 0) {
+  # Apps without a Document control still expose their visible labels; the
+  # concatenated names are enough to prove a passage is on screen.
+  $source = 'labels'
+  $cond = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::IsControlElementProperty, $true)
+  foreach ($el in $win.FindAll([System.Windows.Automation.TreeScope]::Descendants, $cond)) {
+    $name = [string]$el.Current.Name
+    if (-not $name) { continue }
+    $parts.Add($name)
+    $total += $name.Length
+    if ($total -ge ${maxChars}) { break }
+  }
+}
+$text = ($parts -join "`n")
+if ($text.Length -gt ${maxChars}) { $text = $text.Substring(0, ${maxChars}) }
+[pscustomobject]@{ text = $text; source = $source } | ConvertTo-Json -Compress`;
+  const res = await runPowerShell(script, 20000);
+  if (!res.ok) return { text: '', source: '', error: res.stderr || res.stdout };
+  const line = String(res.stdout || '').split(/\r?\n/).filter(Boolean).pop() || '';
+  try {
+    const parsed = JSON.parse(line);
+    return { text: str(parsed.text).slice(0, maxChars), source: str(parsed.source) };
+  } catch {
+    return { text: '', source: '', error: 'Window text was not JSON.' };
   }
 }
 
@@ -4103,23 +4192,58 @@ try {
         skipped: true,
       };
     }
+    // The subject is the window this run opened, not the whole desktop. A
+    // lookalike document behind it used to be enough to make the model pass.
+    const target = judgeTargetFor(step, ctx.run);
+    if (target.scoped) {
+      try {
+        await executeStep(
+          {
+            id: uid('chk'),
+            type: 'focusWindow',
+            name: `Bring the run's own window forward for “${caption}”`,
+            params: {
+              ...(target.hwnd ? { handle: target.hwnd } : {}),
+              ...(target.title ? { title: target.title } : {}),
+              ...(target.process ? { process: target.process } : {}),
+            },
+            timeoutMs: 15000,
+          },
+          { ...ctx, live: true }
+        );
+      } catch (err) {
+        // The deterministic judge below decides whether this matters; onError
+        // warn keeps a missing window from failing the whole run.
+        if (str(p.onError, 'fail') !== 'warn') {
+          throw new Error(
+            `Screen check could not reach “${target.title || target.process || 'the run window'}”: ${err.message}`
+          );
+        }
+      }
+    }
     const shot = await liveScreenshot(ctx.runId, {
       maxWidth: VISION_ENABLED ? VISION_MAX_WIDTH : 0,
       quality: VISION_JPEG_QUALITY,
+      ...(target.hwnd ? { crop: { window: target.hwnd } } : target.scoped ? { crop: 'foreground' } : {}),
     });
     const foreground = await readForegroundWindow();
     const expected = str(p.title || p.expected).trim();
     const expectedApp = str(p.app || p.expectedApp).trim();
-    if (expectedApp) {
-      const seen = `${foreground.title} ${foreground.process}`.toLowerCase();
-      if (!seen.includes(expectedApp.toLowerCase())) {
-        const error = new Error(
-          `Screen check failed before vision: the active window is "${foreground.title || '(unknown)'}" (${foreground.process || 'unknown process'}), not "${expectedApp}". Switch to the right app instead of accepting another window.`
-        );
-        error.evidence = [{ kind: 'screenshot', caption: `${caption} (wrong foreground app)`, ...shot }];
-        throw error;
-      }
-    }
+    const expectedText = str(p.text || p.expectedText || p.contains).trim();
+    const absentText = str(p.absent).trim();
+    const windowText =
+      target.scoped && (expectedText || absentText)
+        ? await readWindowText({ handle: target.hwnd, title: target.title }).catch(() => ({ text: '', source: '' }))
+        : { text: '', source: '' };
+    const facts = windowFacts({
+      target: { ...target, process: target.process || expectedApp },
+      foreground,
+      expectedApp,
+      expectedText,
+      absentText,
+      windowText: windowText.text,
+      textSource: windowText.source,
+    });
     const question =
       str(p.question).trim() ||
       `Does the screenshot clearly show ${expected || 'the expected application page'} in the expected state?`;
@@ -4133,66 +4257,92 @@ try {
       `Check: ${question}${expected ? `\nExpected app/page: ${expected}` : ''}` +
       `${expectedApp ? `\nExpected app/process: ${expectedApp}` : ''}` +
       `\nActive foreground window: "${foreground.title || '(unknown)'}" (process: ${foreground.process || 'unknown'}). ` +
+      `${target.scoped ? `The image is cropped to ${target.hwnd ? `the run's own window (hwnd ${target.hwnd})` : `“${target.title || target.process}”`}, not the whole desktop. ` : ''}` +
       `If the expected app is named and this foreground window is a different program, fail even when another window behind it looks correct.`;
     const cachedVerdict = readVerdict(question, shot.signature);
-    if (cachedVerdict) {
-      return {
-        output: `${cachedVerdict.output} (screen unchanged, cached verdict)`,
-        evidence: [{ kind: 'screenshot', caption, ...shot }],
-      };
-    }
-    const reply = await chat(
-      [
-        { role: 'system', content: system },
-        { role: 'user', content: user },
-      ],
-      {
-        images: [modelImage(shot)],
-        format: 'json',
-        kind: 'screen-check',
-        timeoutMs: Math.min(120000, Math.max(20000, Number(step.timeoutMs) || 90000)),
-        temperature: 0,
-        numCtx: 4096,
+    let reply = null;
+    let parsed = cachedVerdict ? { pass: true, observed: cachedVerdict.output } : null;
+    if (!cachedVerdict) {
+      reply = await chat(
+        [
+          { role: 'system', content: system },
+          { role: 'user', content: user },
+        ],
+        {
+          images: [modelImage(shot)],
+          format: 'json',
+          kind: 'screen-check',
+          timeoutMs: Math.min(120000, Math.max(20000, Number(step.timeoutMs) || 90000)),
+          temperature: 0,
+          numCtx: 4096,
+        }
+      );
+      if (!reply.ok) {
+        if (str(p.onError, 'fail') === 'warn') {
+          return {
+            output: `Screen check could not run (${reply.error}); continuing because onError=warn.`,
+            evidence: [{ kind: 'screenshot', caption: `${caption} (unverified)`, ...shot }],
+          };
+        }
+        const error = new Error(`Screen check could not read the screenshot: ${reply.error}`);
+        error.evidence = [{ kind: 'screenshot', caption: `${caption} (unreadable)`, ...shot }];
+        throw error;
       }
-    );
-    if (!reply.ok) {
-      if (str(p.onError, 'fail') === 'warn') {
-        return {
-          output: `Screen check could not run (${reply.error}); continuing because onError=warn.`,
-          evidence: [{ kind: 'screenshot', caption: `${caption} (unverified)`, ...shot }],
-        };
-      }
-      const error = new Error(`Screen check could not read the screenshot: ${reply.error}`);
-      error.evidence = [{ kind: 'screenshot', caption: `${caption} (unreadable)`, ...shot }];
-      throw error;
+      parsed = parseJsonLoose(reply.content);
     }
-    const parsed = parseJsonLoose(reply.content);
     const rawConfidence = parsed?.confidence != null ? Number(parsed.confidence) : null;
     const confidence = Number.isFinite(rawConfidence)
       ? Math.round((rawConfidence > 1 ? rawConfidence / 100 : rawConfidence) * 100)
       : null;
     const minConfidence = Math.max(0, Math.min(1, Number(p.minConfidence ?? 0.7)));
-    const pass = Boolean(
-      parsed &&
-        (parsed.pass === true || parsed.ok === true || parsed.verified === true) &&
-        (confidence == null || confidence >= minConfidence * 100)
-    );
-    const observed = String(parsed?.observed || parsed?.reason || reply.content || '').slice(0, 700);
-    const mismatch = String(parsed?.mismatch || '').slice(0, 400);
-    if (!pass) {
+    const vision = {
+      pass: Boolean(
+        parsed &&
+          (parsed.pass === true || parsed.ok === true || parsed.verified === true) &&
+          (confidence == null || confidence >= minConfidence * 100)
+      ),
+      confidence,
+      observed: String(parsed?.observed || parsed?.reason || reply?.content || '').slice(0, 700),
+      mismatch: String(parsed?.mismatch || '').slice(0, 400),
+      cached: Boolean(cachedVerdict),
+    };
+    // Two judges, one verdict. The mode is the operator's switch; agreement and
+    // any repeated disagreement feed the review list, never an auto-change.
+    const mode = judgeModeFor(ctx.workflow);
+    const judge = mergeJudgement({ mode, facts, vision });
+    const record = recordJudgement({
+      mode: judge.mode,
+      facts,
+      vision,
+      agreement: judge.agreement,
+      decidedBy: judge.decidedBy,
+      pass: judge.pass,
+      workflowId: ctx.workflow?.id,
+      runId: ctx.runId,
+      stepId: step.id,
+      question,
+      target,
+      detail: judge.detail,
+    });
+    const factsNote = `window facts: ${facts.status}${facts.status === 'unknown' ? '' : ` — ${facts.detail}`}`;
+    if (!judge.pass) {
+      const reason = judge.decidedBy === 'facts' && facts.status === 'fail' ? facts.detail : vision.observed || 'no usable observation';
       const error = new Error(
-        `Screen check failed${confidence != null ? ` (${confidence}%)` : ''}: ${observed || 'no usable observation'}${
-          mismatch ? ` | ${mismatch}` : ''
-        } [${shot.path}]`
+        `Screen check failed${vision.confidence != null ? ` (vision ${vision.confidence}%)` : ''}${
+          vision.mismatch ? ` | ${vision.mismatch}` : ''
+        }: ${reason || 'no usable observation'} · ${factsNote} [${shot.path}]`
       );
       error.evidence = [{ kind: 'screenshot', caption: `${caption} (failed check)`, ...shot }];
       throw error;
     }
-    const verified = `Screen verified${confidence != null ? ` (${confidence}%)` : ''}: ${observed}`;
+    const verified = `Screen verified${vision.confidence != null ? ` (vision ${vision.confidence}%)` : ''}${
+      judge.agreement === 'agree' ? ', both judges agree' : judge.decidedBy === 'facts' ? ', facts decided' : ''
+    }: ${vision.observed}${cachedVerdict ? ' (screen unchanged, cached verdict)' : ''} · ${factsNote}`;
     writeVerdict(question, shot.signature, { output: verified });
     return {
       output: verified,
       evidence: [{ kind: 'screenshot', caption, ...shot }],
+      judgement: record,
     };
   }
 
