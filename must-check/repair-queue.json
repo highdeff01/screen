@@ -1,19 +1,51 @@
 {
   "version": 1,
   "by": "sentinel",
-  "updatedAt": "2026-11-19T03:53:57.555Z",
-  "head": "db819ca3ee67",
+  "updatedAt": "2026-11-19T04:08:29.736Z",
+  "head": "5fdad909766a",
   "lastRun": {
-    "at": "2026-11-19T03:53:57.555Z",
-    "ok": true,
-    "tests": 539,
-    "pass": 534,
-    "fail": 0,
+    "at": "2026-11-19T04:08:29.185Z",
+    "ok": false,
+    "tests": 540,
+    "pass": 533,
+    "fail": 2,
     "isolated": true,
-    "failingTests": []
+    "failingTests": [
+      "a no-op click that changed nothing and has no confirmation still fails (12908.7133ms)",
+      "C:\\Users\\Dan\\.config\\freebuff-desktop\\local-projects\\40af3ced-48bf-4a9d-a8b7-cb42815bab8f\\data\\worktrees\\sentinel-1795061109088-36368\\test\\engine-screen.test.js (441.7849ms)"
+    ]
   },
-  "open": 1,
+  "open": 2,
   "items": [
+    {
+      "id": "sent_mwn15mo1c07156",
+      "at": "2026-11-19T04:08:29.185Z",
+      "status": "queued",
+      "attempts": 1,
+      "fail": 2,
+      "pass": 533,
+      "tests": [
+        "a no-op click that changed nothing and has no confirmation still fails (12908.7133ms)",
+        "C:\\Users\\Dan\\.config\\freebuff-desktop\\local-projects\\40af3ced-48bf-4a9d-a8b7-cb42815bab8f\\data\\worktrees\\sentinel-1795061109088-36368\\test\\engine-screen.test.js (441.7849ms)"
+      ],
+      "details": [
+        {
+          "name": "a no-op click that changed nothing and has no confirmation still fails",
+          "file": "",
+          "line": null,
+          "message": ""
+        },
+        {
+          "name": "C:\\Users\\Dan\\.config\\freebuff-desktop\\local-projects\\40af3ced-48bf-4a9d-a8b7-cb42815bab8f\\data\\worktrees\\sentinel-1795061109088-36368\\test\\engine-screen.test.js",
+          "file": "",
+          "line": null,
+          "message": ""
+        }
+      ],
+      "plan": "",
+      "planError": "",
+      "report": "must-check/2026-11-19T04-08-29-a-no-op-click-that-changed-nothing-and-h.md"
+    },
     {
       "id": "sent_mwmzriu0d108c8",
       "at": "2026-11-19T03:29:31.416Z",
