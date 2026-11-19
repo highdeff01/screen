@@ -514,5 +514,47 @@ test('planning stages and the retry verdict are recorded per candidate source', 
   assert.equal(aiBucket.passRate, 100);
   assert.equal(summary.stageAveragesMs.revision, pack.timings.revisionMs);
   assert.equal(recovery.listRecoveryTelemetry(5)[0].packId, pack.id);
+
+  const rearrange = summary.byDecision.find((entry) => entry.decision === 'rearrange');
+  assert.equal(rearrange.planned, 1);
+  assert.equal(rearrange.aiRetries, 1);
+  assert.equal(rearrange.passRate, 100);
+  assert.equal(rearrange.aiPassRate, 100);
+  assert.equal(rearrange.blocked, 0);
+  assert.equal(rearrange.avgRevisionMs, pack.timings.revisionMs);
+  assert.deepEqual(
+    summary.byDecision.map((entry) => entry.decision),
+    ['continue', 'rearrange', 'rebuild'],
+    'every decision is listed even before it has been tried'
+  );
+  assert.equal(summary.byDecision.find((entry) => entry.decision === 'continue').planned, 0);
+  assert.equal(summary.byBlockedReason.length, 0);
+
+  // A revision that would replay the failed step is grouped by that reason, and
+  // its outcome is not counted as a win for the decision it wanted to take.
+  const replay = notepadFixture('run_telemetry_blocked', 'Refusing to type: foreground window is another document');
+  replay.workflow.id = 'wf_telemetry_blocked';
+  replay.run.workflowId = replay.workflow.id;
+  d.workflows = [replay.workflow];
+  d.runs = [replay.run];
+  const refused = await recovery.prepareRecovery(replay.run, {
+    plan: async () => null,
+    desktop: {},
+    ask: async () => JSON.stringify({ decision: 'continue', note: 'the plan is right', steps: [] }),
+  });
+  assert.equal(refused.pack.aiStatus, 'replayed');
+  const refusedRow = d.recoveryTelemetry.find((entry) => entry.packId === refused.pack.id);
+  assert.equal(refusedRow.blockedReason, 'replayed-failed-step');
+
+  const after = recovery.recoveryTelemetrySummary();
+  const replayReason = after.byBlockedReason.find((entry) => entry.reason === 'replayed-failed-step');
+  assert.equal(replayReason.planned, 1);
+  assert.equal(replayReason.passRate, null, 'nothing was retried for a blocked replay');
+  assert.equal(replayReason.blocked, 1);
+  const continueGroup = after.byDecision.find((entry) => entry.decision === 'continue');
+  assert.equal(continueGroup.planned, 1);
+  assert.equal(continueGroup.blocked, 1);
+  assert.equal(continueGroup.aiRetries, 0, 'the blocked decision never carried a retry');
+  assert.equal(continueGroup.passRate, null);
   store.flush();
 });

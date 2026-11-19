@@ -227,6 +227,7 @@ export function recordRecoveryTelemetry(pack, { outcome = null } = {}) {
     createdAt: existing?.createdAt || now(),
     updatedAt: now(),
     aiStatus: pack.aiStatus || 'off',
+    aiError: clip(pack.aiError || '', 300) || null,
     ai: aiRevision
       ? {
           decision: aiRevision.decision || null,
@@ -252,6 +253,7 @@ export function recordRecoveryTelemetry(pack, { outcome = null } = {}) {
       : null,
     outcome: outcome || existing?.outcome || null,
   };
+  row.blockedReason = blockedReasonOf(row);
   d.recoveryTelemetry = [row, ...d.recoveryTelemetry.filter((entry) => entry.packId !== pack.id)].slice(0, MAX_TELEMETRY);
   return row;
 }
@@ -261,7 +263,51 @@ export function listRecoveryTelemetry(limit = 30) {
   return rows.slice(0, Math.max(1, Math.min(MAX_TELEMETRY, Number(limit) || 30)));
 }
 
-/** Aggregate the ledger into the one comparison the recovery agent exists for. */
+/**
+ * Why the AI revision did not supply the retry plan. A refused replay is a
+ * different miss from a model that never answered, so outcomes are grouped by
+ * the reason itself instead of one "blocked" bucket.
+ */
+function blockedReasonOf(row) {
+  if (row?.blockedReason !== undefined && row?.blockedReason !== null) return row.blockedReason;
+  if (row?.ai?.blocked) return 'replayed-failed-step';
+  if (row?.aiStatus === 'unavailable') {
+    return /tim(?:ed|e)[ -]?out|timeout/i.test(String(row.aiError || '')) ? 'model-timeout' : 'model-unavailable';
+  }
+  if (row?.aiStatus === 'off') return 'revision-off';
+  if (row?.aiStatus === 'skipped') return 'revision-skipped';
+  if (row?.aiStatus === 'pending') return 'revision-incomplete';
+  if (row?.ai?.offered) return null;
+  return 'unknown';
+}
+
+/** Pass rate and planning cost for one slice of the ledger. */
+function groupStats(rows) {
+  const finished = rows.filter((row) => row.outcome);
+  const passed = finished.filter((row) => row.outcome.passed).length;
+  // A retry carried by the fresh rebuild does not test the AI decision, so its
+  // pass rate is kept apart from the whole group's.
+  const aiFinished = finished.filter((row) => row.selected?.source === 'ai-replan');
+  const aiPassed = aiFinished.filter((row) => row.outcome.passed).length;
+  return {
+    planned: rows.length,
+    blocked: rows.filter((row) => blockedReasonOf(row)).length,
+    aiSelected: rows.filter((row) => row.selected?.source === 'ai-replan').length,
+    retries: finished.length,
+    passed,
+    passRate: finished.length ? Math.round((passed / finished.length) * 100) : null,
+    aiRetries: aiFinished.length,
+    aiPassed,
+    aiPassRate: aiFinished.length ? Math.round((aiPassed / aiFinished.length) * 100) : null,
+    avgScore: average(rows.map((row) => row.selected?.score)),
+    avgPlanningMs: average(rows.map((row) => row.timings?.totalMs)),
+    avgRevisionMs: average(rows.map((row) => row.timings?.revisionMs)),
+  };
+}
+
+const DECISION_ORDER = ['continue', 'rearrange', 'rebuild'];
+
+/** Aggregate the ledger into the comparisons the recovery agent exists for. */
 export function recoveryTelemetrySummary() {
   const rows = Array.isArray(db().recoveryTelemetry) ? db().recoveryTelemetry : [];
   const sources = new Map();
@@ -292,6 +338,24 @@ export function recoveryTelemetrySummary() {
   }));
   const ai = bySource.find((bucket) => bucket.source === 'ai-replan') || null;
   const fresh = bySource.find((bucket) => bucket.source === 'planner') || null;
+  // Every decision is listed even before it has been tried, so a strategy that
+  // never wins is visible instead of silently absent.
+  const decisions = [...new Set([...DECISION_ORDER, ...rows.map((row) => row.ai?.decision).filter(Boolean)])];
+  const byDecision = decisions.map((decision) => ({
+    decision,
+    ...groupStats(rows.filter((row) => row.ai?.decision === decision)),
+  }));
+  const withoutDecision = groupStats(rows.filter((row) => !row.ai?.decision));
+  const reasons = new Map();
+  for (const row of rows) {
+    const reason = blockedReasonOf(row);
+    if (!reason) continue;
+    if (!reasons.has(reason)) reasons.set(reason, []);
+    reasons.get(reason).push(row);
+  }
+  const byBlockedReason = [...reasons.entries()]
+    .map(([reason, reasonRows]) => ({ reason, ...groupStats(reasonRows) }))
+    .sort((a, b) => b.planned - a.planned || a.reason.localeCompare(b.reason));
   return {
     total: rows.length,
     withOutcome: rows.filter((row) => row.outcome).length,
@@ -299,6 +363,9 @@ export function recoveryTelemetrySummary() {
     aiSelected: rows.filter((row) => row.selected?.source === 'ai-replan').length,
     aiBlocked: rows.filter((row) => row.ai?.blocked).length,
     bySource,
+    byDecision,
+    withoutDecision,
+    byBlockedReason,
     stageAveragesMs: {
       desktopRead: average(rows.map((row) => row.timings?.desktopReadMs)),
       planner: average(rows.map((row) => row.timings?.plannerMs)),
@@ -625,6 +692,7 @@ export async function prepareRecovery(
   if (aiRevisionEnabled) pack.timings.revisionMs = elapsedMs(revisionStartedAt);
   if (revision?.error) {
     pack.aiStatus = 'unavailable';
+    pack.aiError = clip(revision.error, 300);
     aiOutageUntil = Date.now() + AI_OUTAGE_MS;
     log(pack, 'warn', 'plan', `AI plan revision unavailable: ${revision.error}`);
   } else if (revision?.skipped) {
