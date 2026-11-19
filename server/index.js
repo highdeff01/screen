@@ -39,6 +39,7 @@ import {
   stopAutoSync,
   syncOverview,
 } from './git-sync.js';
+import { backupStatus, checkBackupNow, startBackup, backupTick } from './backup.js';
 import { addNote, deleteCommand, listCommands, listNotes, runCommand, saveCommand } from './handoff.js';
 import {
   addLink,
@@ -468,6 +469,7 @@ function buildState() {
     runs: d.runs.slice(0, 80).map(summary),
     verificationLoop: loopStatus(),
     gitSync: gitSyncStatus(),
+    backup: backupStatus(),
     sentinel: sentinelStatus(),
     relay: relayStatus(),
     inbox: { open: listInbox({ status: 'open', limit: 12 }), lenses: lensList() },
@@ -620,6 +622,29 @@ route('GET', /^\/api\/git-sync$/, async (req, res) => {
 route('POST', /^\/api\/git-sync\/now$/, async (req, res) => {
   const status = await checkAndSync({ force: true });
   sendJson(res, 200, { ok: status.status !== 'error' && status.status !== 'push-failed', gitSync: status });
+});
+
+// The local copy of this repository: the mirror folder and the 10-second link test.
+route('GET', /^\/api\/backup$/, async (req, res) => {
+  sendJson(res, 200, { ok: true, backup: backupStatus() });
+});
+
+route('POST', /^\/api\/backup\/check$/, async (req, res) => {
+  const backup = await checkBackupNow();
+  sendJson(res, 200, {
+    ok: backup.consecutiveFailures === 0 && !backup.held,
+    backup,
+    message: backup.lastError || (backup.inSync ? 'Local copy matches GitHub.' : 'Checked; see the details.'),
+  });
+});
+
+route('POST', /^\/api\/backup\/sync$/, async (req, res) => {
+  const backup = await backupTick({ force: true });
+  sendJson(res, 200, {
+    ok: !backup.lastError,
+    backup,
+    message: backup.lastError || (backup.inSync ? 'Local copy matches GitHub.' : 'Sync pass finished.'),
+  });
 });
 
 /* ---------------- Sync page: pull, push, merge, PRs, conflicts ---------------- */
@@ -3664,6 +3689,19 @@ route('PATCH', /^\/api\/settings$/, async (req, res) => {
     s.autoSyncIntervalMs = Math.max(5000, Math.min(600000, Number(body.autoSyncIntervalMs) || 20000));
     if (gitSyncStatus().running) startAutoSync({ intervalMs: s.autoSyncIntervalMs });
   }
+  if (body.autoSyncMaxDeletes !== undefined) {
+    s.autoSyncMaxDeletes = Math.max(1, Math.min(1000, Number(body.autoSyncMaxDeletes) || 25));
+  }
+  // A second copy of this repository on this machine, kept level with GitHub.
+  if (body.localBackupEnabled !== undefined) s.localBackupEnabled = Boolean(body.localBackupEnabled);
+  if (body.localBackupPath !== undefined) s.localBackupPath = String(body.localBackupPath || '').trim();
+  if (body.localBackupIntervalMs !== undefined) {
+    s.localBackupIntervalMs = Math.max(5000, Math.min(600000, Number(body.localBackupIntervalMs) || 10000));
+  }
+  if (body.localBackupEnabled !== undefined || body.localBackupIntervalMs !== undefined) {
+    startBackup({ intervalMs: Number(s.localBackupIntervalMs) || undefined });
+    if (s.localBackupEnabled === true) backupTick().catch(() => {});
+  }
   if (body.autoNotes !== undefined) s.autoNotes = Boolean(body.autoNotes);
   if (body.aiSuggestions !== undefined) s.aiSuggestions = Boolean(body.aiSuggestions);
   if (body.requireToolApproval !== undefined) s.requireToolApproval = Boolean(body.requireToolApproval);
@@ -4233,6 +4271,8 @@ server.listen(PORT, HOST, () => {
   startVerificationLoop({ intervalMs: Number(db().settings.verificationReviewMs) || undefined });
   // Keep the GitHub copy of this source current with the machine.
   startAutoSync({ intervalMs: Number(db().settings.autoSyncIntervalMs) || undefined });
+  // Keep a second on-disk copy level with GitHub, and prove the link every 10s.
+  startBackup({ intervalMs: Number(db().settings.localBackupIntervalMs) || undefined });
   // Watch the project's own files and auto-test them in a separate process.
   startSentinel();
   // The pipeline handlers: what the parallel workers actually do.

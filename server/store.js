@@ -50,6 +50,13 @@ function seed() {
       // Explicit opt-in: sync tracked working-tree changes outside data/.
       autoSync: false,
       autoSyncIntervalMs: 20000,
+      // Refuse a pass that would delete this many tracked files at once.
+      autoSyncMaxDeletes: 25,
+      // A second copy of this repository on this machine, kept level with
+      // origin in both directions, with a link test every 10 seconds.
+      localBackupEnabled: false,
+      localBackupPath: '',
+      localBackupIntervalMs: 10000,
       visionEnabled: true,
       // Screen checks are read by two judges: the vision model on a crop of the
       // run's own window, and a free deterministic check of that window's
