@@ -38,6 +38,12 @@ test('literal prose with braces and modifiers stays literal', () => {
   assert.equal(decoded('a+b(c)'), 'a{+}b{(}c{)}');
 });
 
+test('focusing a window checks its title, not only its app', () => {
+  const script = automation.buildScript({ type: 'focusWindow', name: 'Focus Notepad', params: { title: 'Notepad' } });
+
+  assert.match(script, /\$fgProc\.MainWindowTitle -like \$pattern/, 'another document of the same app is not already focused');
+});
+
 test('known key phrases are never double-escaped', () => {
   assert.equal(decoded('{ESC}'), '{ESC}');
   assert.equal(decoded('{BACKSPACE} {F5} {DOWN}'), '{BACKSPACE} {F5} {DOWN}');

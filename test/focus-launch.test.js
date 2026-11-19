@@ -172,6 +172,33 @@ test('createRun repairs a plan whose first app step is not the first step', asyn
   store.flush();
 });
 
+test('a generic focus step is aimed at the window this run opened', () => {
+  const run = { log: [], lastWindow: { process: 'Notepad', title: 'Untitled - Notepad' } };
+  const step = { id: 'stp_focus', type: 'focusWindow', name: 'Focus Notepad', params: { title: 'Notepad' } };
+
+  engine.deriveFocusTarget(step, run);
+
+  assert.equal(step.params.title, 'Untitled - Notepad', 'the window this run opened wins over a loose app name');
+  assert.ok(run.log.some((entry) => /the window this run opened/i.test(entry.message || '')));
+});
+
+test('a focus step naming a different window keeps its own target', () => {
+  const run = { log: [], lastWindow: { process: 'Notepad', title: 'Untitled - Notepad' } };
+  const step = { id: 'stp_save', type: 'focusWindow', name: 'Focus Save As', params: { title: 'Save As' } };
+
+  engine.deriveFocusTarget(step, run);
+
+  assert.equal(step.params.title, 'Save As');
+});
+
+test('a focus step is left alone before this run opened a window', () => {
+  const step = { id: 'stp_focus', type: 'focusWindow', name: 'Focus Notepad', params: { title: 'Notepad' } };
+
+  engine.deriveFocusTarget(step, { log: [] });
+
+  assert.equal(step.params.title, 'Notepad');
+});
+
 test('planSteps applies the launch prerequisite to the plan it returns', async () => {
   const result = await planner.planSteps('ask chrome a question', null, {
     planBuilder: async () => ({
