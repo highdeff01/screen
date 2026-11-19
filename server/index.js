@@ -112,6 +112,7 @@ import { estimateTokens } from './context.js';
 import { readTextChunk, writeTextChunk, digestForSummary, isTextFile } from './longfiles.js';
 import { planSteps, ensureWorkflowSteps, analyzeRun, writeRunNote, addSuggestion, normalizeStep, lintWorkflow } from './planner.js';
 import { listProposals, findProposal, proposalView, createProposal, approveProposal, rejectProposal, createProposalForRun, shadowTestProposal } from './proposals.js';
+import { JUDGE_MODES, judgementSummary, resolveJudgementReview } from './judgement.js';
 import { visualTesterStatus, testScreenshot, rememberVisualTest } from './visual-tester.js';
 import { stepMarks, normalizeMarks } from './research.js';
 import { resumeRecoveryPlan, carryForwardPassedEffects } from './step-effects.js';
@@ -483,6 +484,7 @@ function buildState() {
     proposals: proposalState.proposals,
     proposalStats: { count: proposalState.count, pending: proposalState.pending },
     visualTester: visualTesterStatus(),
+    judgement: judgementSummary(d.settings),
     agents: d.agents,
     recoveryPacks: listRecoveryPacks(20),
     recoveryTelemetry: recoveryTelemetrySummary(),
@@ -2712,6 +2714,30 @@ route('POST', /^\/api\/runs\/([^/]+)\/capture$/, async (req, res, [id]) => {
   }
 });
 
+route('GET', /^\/api\/judgement$/, async (req, res) => {
+  sendJson(res, 200, { ok: true, judgement: judgementSummary(db().settings) });
+});
+
+// The operator's switch between the two judges; the learned habits stay as
+// suggestions in GET /api/judgement until one is accepted here.
+route('POST', /^\/api\/judgement\/mode$/, async (req, res) => {
+  const body = await readBody(req);
+  if (!JUDGE_MODES.includes(body.mode)) return fail(res, 400, `Unknown judge mode: ${body.mode}`);
+  db().settings.verifyJudgeMode = body.mode;
+  persist();
+  logActivity('judgement', `Screen judgement mode set to ${body.mode}`);
+  sendJson(res, 200, { ok: true, judgement: judgementSummary(db().settings) });
+});
+
+route('POST', /^\/api\/judgement\/reviews\/([^/]+)\/(accept|dismiss)$/, async (req, res, [id, action]) => {
+  try {
+    const review = resolveJudgementReview(decodeURIComponent(id), action);
+    sendJson(res, 200, { ok: true, review, judgement: judgementSummary(db().settings) });
+  } catch (err) {
+    fail(res, 404, err.message);
+  }
+});
+
 route('GET', /^\/api\/recovery-packs$/, async (req, res, _params, url) => {
   const workflowId = url.searchParams.get('workflowId') || '';
   const packs = listRecoveryPacks(url.searchParams.get('limit') || 30).filter((pack) => !workflowId || pack.workflowId === workflowId);
@@ -3554,6 +3580,11 @@ route('PATCH', /^\/api\/settings$/, async (req, res) => {
   if (body.requireToolApproval !== undefined) s.requireToolApproval = Boolean(body.requireToolApproval);
   if (body.visionEnabled !== undefined) s.visionEnabled = Boolean(body.visionEnabled);
   if (body.replanModel !== undefined) s.replanModel = String(body.replanModel || '').trim();
+  // Which judge decides a screen check: both in parallel (facts gate), vision
+  // alone, facts alone, or strict (both must pass).
+  if (body.verifyJudgeMode !== undefined) {
+    s.verifyJudgeMode = JUDGE_MODES.includes(body.verifyJudgeMode) ? body.verifyJudgeMode : 'parallel';
+  }
   if (body.visualTesterUrl !== undefined) s.visualTesterUrl = String(body.visualTesterUrl || '').trim();
   if (body.visualTesterEnabled !== undefined) s.visualTesterEnabled = Boolean(body.visualTesterEnabled);
   if (body.visualTesterTimeoutMs !== undefined) {

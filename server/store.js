@@ -51,6 +51,10 @@ function seed() {
       autoSync: false,
       autoSyncIntervalMs: 20000,
       visionEnabled: true,
+      // Screen checks are read by two judges: the vision model on a crop of the
+      // run's own window, and a free deterministic check of that window's
+      // handle and text. Parallel keeps the free check as a gate.
+      verifyJudgeMode: 'parallel',
       visualChecks: true,
       missionCheckIntervalMs: 5000,
       replanModel: '',

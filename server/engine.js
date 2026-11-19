@@ -685,11 +685,26 @@ async function applyStepContext(step, run, workflow, probe = null) {
  * run that has waited past `presenceMaxDeferMs` continues anyway and says so.
  */
 /** Remember the window this run opened or focused, so typing has a guard. */
-const WINDOW_OUTPUT = /(?:front|already focused|focused existing|focused window)\s+(\S[^:]*?)\s*::\s*(.+)/;
-function rememberWindow(run, step) {
+const WINDOW_OUTPUT = /(?:front|already focused|focused existing|focused window|focused)\s+(\S[^:]*?)\s*::\s*(.+)/;
+/**
+ * A launch or focus reports the exact window it raised, including its handle.
+ * The handle is what makes a later check read that window and not a lookalike.
+ */
+export function parseWindowOutput(output) {
+  const match = WINDOW_OUTPUT.exec(String(output || ''));
+  if (!match) return null;
+  const hwnd = Number((/\[hwnd=(\d+)\]/.exec(match[2]) || [])[1]) || 0;
+  const title = match[2]
+    .replace(/\s*\[(?:hwnd=\d+|[^\]]*)\]/g, '')
+    .trim();
+  return { process: match[1].trim(), title, hwnd };
+}
+export function rememberWindow(run, step) {
   if (!['launchApp', 'focusWindow'].includes(step.type) || step.status !== 'passed') return;
-  const match = WINDOW_OUTPUT.exec(String(step.output || ''));
-  if (match) run.lastWindow = { process: match[1].trim(), title: match[2].trim(), at: now(), by: step.id };
+  const parsed = parseWindowOutput(step.output);
+  if (!parsed) return;
+  const carried = !parsed.hwnd && parsed.title && parsed.title === run.lastWindow?.title ? Number(run.lastWindow?.hwnd) || 0 : 0;
+  run.lastWindow = { ...parsed, hwnd: parsed.hwnd || carried, at: now(), by: step.id };
 }
 
 /**
@@ -704,11 +719,18 @@ function deriveTypingGuard(step, run) {
   if (typing && String(step.params?.foreground || '').trim()) return;
   const window = run.lastWindow;
   if (!window?.title) return;
-  step.params = { ...(step.params || {}), ...(typing ? { foreground: window.title } : { window: window.title }) };
+  step.params = {
+    ...(step.params || {}),
+    ...(typing
+      ? { foreground: window.title, ...(window.hwnd ? { foregroundHandle: window.hwnd } : {}) }
+      : { window: window.title }),
+  };
   pushLog(
     run,
     'info',
-    `No window named for “${step.name}”; it inherits “${window.title}”, the window this run opened.`,
+    `No window named for “${step.name}”; it inherits “${window.title}”${
+      window.hwnd ? ` (hwnd ${window.hwnd})` : ''
+    }, the window this run opened.`,
     step.id
   );
 }
@@ -730,7 +752,7 @@ export function deriveFocusTarget(step, run) {
     ? String(window.process || '').toLowerCase().includes(process.toLowerCase())
     : window.title.toLowerCase().includes(asked.toLowerCase());
   if (!sameApp) return;
-  step.params = { ...(step.params || {}), title: window.title };
+  step.params = { ...(step.params || {}), title: window.title, ...(window.hwnd ? { handle: window.hwnd } : {}) };
   pushLog(
     run,
     'info',
@@ -1973,6 +1995,7 @@ async function executeRun(runId) {
 
     if (succeeded) {
       step.output = result?.output || '';
+      if (result?.judgement) step.judgement = result.judgement;
       step.completion = completionFor(step, { ...(result || {}), output: step.output });
       if (step.completion.pending.length) {
         run.pendingVerification = [
