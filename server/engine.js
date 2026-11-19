@@ -310,7 +310,7 @@ export async function waitForRun(id, { timeoutMs = 30000, intervalMs = 100 } = {
   return findRun(id);
 }
 
-export function createRun(workflow, { trigger = 'manual', dryRun = null, agentRole = null, missionId = null, shortcutReplayHabitId = null, workflowSnapshot = null, shadowProposalId = null, probe = null, repair = null, aiReplan = null, liveFallback = null } = {}) {
+export function createRun(workflow, { trigger = 'manual', dryRun = null, agentRole = null, missionId = null, shortcutReplayHabitId = null, workflowSnapshot = null, shadowProposalId = null, probe = null, repair = null, aiReplan = null, liveFallback = null, liveConsent = false } = {}) {
   const d = db();
   if (!workflow || !workflow.steps?.length) {
     throw new Error('Workflow has no steps to run.');
@@ -359,6 +359,9 @@ export function createRun(workflow, { trigger = 'manual', dryRun = null, agentRo
     // Why a live request became a simulated run, when it did. Kept on the run
     // so the engine can test the refusal instead of trusting it.
     ...(liveFallback ? { liveFallback: String(liveFallback) } : {}),
+    // The operator saw the offer and asked for the real desktop. Without this,
+    // a run that was shown as simulated is never switched to live input.
+    ...(liveConsent ? { liveConsent: true } : {}),
     liveRepair: repair == null ? null : Boolean(repair),
     aiReplan: aiReplan == null ? db().settings.agentReplans !== false : Boolean(aiReplan),
     replanCount: 0,
@@ -1352,12 +1355,32 @@ async function executeRun(runId) {
       const proof = await probeLiveBackend();
       if (proof.ok) {
         const wasSimulated = run.dryRun;
-        run.dryRun = false;
-        run.liveFallback = null;
-        run.detectionCorrected = true;
-        pushLog(run, 'warn', wasSimulated
-          ? `The run was downgraded to simulated (“${reason}”), but the machine answers natively (${proof.detail}) — initial detection was wrong. Workaround applied: the run continues live.`
-          : `Detection said “${control.reason}”, but the machine answers natively (${proof.detail}); initial detection was wrong — the run continues live.`, null);
+        if (wasSimulated && run.liveConsent !== true) {
+          // The console already told the operator this run is a simulation.
+          // Switching it to driving the real desktop mid-run would change what
+          // they were shown without asking them, so the correction is offered
+          // instead: the run stays simulated and the offer waits for an
+          // explicit live start.
+          run.liveOffer = {
+            at: now(),
+            reason: String(reason || 'no live backend'),
+            detail: String(proof.detail || 'answered'),
+          };
+          pushLog(
+            run,
+            'warn',
+            `The run was downgraded to simulated (“${reason}”), but the machine answers natively (${proof.detail}). It stays simulated: switching to real desktop input needs the operator's consent, and a live run can be started from this offer.`,
+            null
+          );
+        } else {
+          run.dryRun = false;
+          run.liveFallback = null;
+          run.liveOffer = null;
+          run.detectionCorrected = true;
+          pushLog(run, 'warn', wasSimulated
+            ? `The run was downgraded to simulated (“${reason}”), but the machine answers natively (${proof.detail}) — initial detection was wrong. Workaround applied: the run continues live.`
+            : `Detection said “${control.reason}”, but the machine answers natively (${proof.detail}); initial detection was wrong — the run continues live.`, null);
+        }
       } else if (refusedLive) {
         run.dryRun = true;
         run.liveFallback = `${control.reason || 'no live backend'} (probe: ${proof.detail || 'no answer'})`;

@@ -107,7 +107,7 @@ test('detection refuses but the machine answers natively: the run continues live
   assert.equal(finished.status, 'passed');
 });
 
-test('a run downgraded to simulation by a stale Linux refusal continues live when the machine answers', async () => {
+test('a run downgraded to simulation by a stale Linux refusal offers live but never switches silently', async () => {
   platform.setProbeOverride(() => ({ ok: true, detail: 'answered' }));
   const workflow = probeWorkflow();
   // Exactly what the API stores when it downgrades a live request: the refusal
@@ -118,12 +118,40 @@ test('a run downgraded to simulation by a stale Linux refusal continues live whe
       'Live control is not implemented for linux. Set SIGHTLINE_TARGET=android with adb and a device attached, or run the console on Windows, macOS or Linux.',
   });
   const finished = await engine.waitForRun(run.id, { timeoutMs: 30000, intervalMs: 20 });
-  assert.equal(finished.dryRun, false, 'the downgrade was undone once the machine answered');
+  assert.equal(finished.dryRun, true, 'the operator was told simulated, so it stays simulated');
+  assert.equal(finished.detectionCorrected ?? false, false, 'nothing was switched mid-run');
+  assert.match(String(finished.liveOffer?.detail || ''), /answered/, 'the offer carries the probe answer');
+  assert.match(String(finished.liveOffer?.reason || ''), /linux/i, 'the offer carries the refusal it corrects');
+  assert.ok(
+    (finished.log || []).some((line) => /needs the operator's consent/i.test(line.message || '')),
+    'the run log says live input needs consent'
+  );
+  assert.ok(
+    !(finished.log || []).some((line) => /continues live|Workaround applied/i.test(line.message || '')),
+    'the log never claims the run switched to live'
+  );
+  assert.equal(finished.status, 'passed');
+});
+
+test('the offered live run continues live once the operator has consented', async () => {
+  platform.setProbeOverride(() => ({ ok: true, detail: 'answered' }));
+  const workflow = probeWorkflow();
+  // What POST /api/runs/:id/run-live creates: the same downgraded workflow, with
+  // the operator's consent recorded on the new run only.
+  const run = engine.createRun(workflow, {
+    dryRun: true,
+    liveConsent: true,
+    liveFallback:
+      'Live control is not implemented for linux. Set SIGHTLINE_TARGET=android with adb and a device attached, or run the console on Windows, macOS or Linux.',
+  });
+  const finished = await engine.waitForRun(run.id, { timeoutMs: 30000, intervalMs: 20 });
+  assert.equal(finished.dryRun, false, 'consent lets the stale refusal be corrected');
   assert.equal(finished.liveFallback, null, 'the stale refusal is cleared');
   assert.equal(finished.detectionCorrected, true);
+  assert.equal(finished.liveOffer ?? null, null, 'no offer is left waiting');
   assert.ok(
     (finished.log || []).some((line) => /Workaround applied: the run continues live/i.test(line.message || '')),
-    'the run log names the workaround'
+    'the run log names the correction'
   );
   assert.equal(finished.status, 'passed');
 });

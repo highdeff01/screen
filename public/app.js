@@ -1923,6 +1923,7 @@ function renderRunDetail(run) {
           ${full.replannedAfterFailure ? `<div class="hint-box" style="margin-top:8px"><strong>AI replanned the remainder</strong><div class="small" style="margin-top:4px">${esc((full.supersededSteps || []).length)} failed action step(s) were superseded; later steps were rebuilt from the current screen.</div></div>` : ''}
         </div>
           ${full.presence?.holding ? `<div class="hint-box" style="margin-top:8px;border-color:rgba(251,191,36,.4)"><strong>Waiting for your desktop to go quiet</strong><div class="small" style="margin-top:3px">${esc(full.presence.reason || 'the presence guard is holding this step')} · held ${Math.round((Number(full.presence.deferredMs) || 0) / 1000)}s so far — live steps start the moment you stop moving the mouse, or press <b>Run now anyway</b>.</div></div>` : ''}
+          ${full.liveOffer ? `<div class="hint-box" style="margin-top:8px;border-color:rgba(56,189,248,.35)"><strong>This machine can run it live</strong><div class="small" style="margin-top:4px">The run was downgraded to simulated (“${esc(full.liveOffer.reason || 'no live backend')}”) but a probe answered (${esc(full.liveOffer.detail || 'ok')}). It stayed simulated — switching to real desktop input needs your consent. <button class="btn btn-sm" data-act="run-live-offer" data-id="${esc(full.id)}" style="margin-left:6px">Start it live</button></div></div>` : ''}
           ${renderDeepFocusCard(full)}
         <div class="row wrap">
           <button class="btn btn-sm" data-act="retry-run" data-id="${full.id}" ${retryBusy ? 'disabled' : ''}>${retryBusy ? 'Re-planning…' : '↻ Re-plan & retry'}</button>
@@ -7252,6 +7253,24 @@ async function runAction(name, ds, el) {
       const res = await api(`/api/workflows/${encodeURIComponent(ds.id)}`, { method: 'PATCH', body: { status: ds.status } });
       if (!res.ok) return toast(res.error, 'error');
       toast(ds.status === 'ready' ? 'Workflow marked Ready — background agents may queue it.' : 'Workflow marked Draft — manual runs only.', 'ok');
+      await refresh();
+      break;
+    }
+    case 'run-live-offer': {
+      openModal('confirm', {
+        title: 'Run this workflow live',
+        message:
+          'The console will drive your real desktop for this workflow: the pointer moves and keystrokes are typed into the focused window. The simulated run you just reviewed stays as it is.',
+        confirmLabel: 'Run live now',
+        action: { act: 'run-live-consent', id: ds.id },
+      });
+      break;
+    }
+    case 'run-live-consent': {
+      closeModal();
+      const res = await api(`/api/runs/${encodeURIComponent(ds.id)}/run-live`, { method: 'POST', body: {} });
+      if (!res.ok) return toast(res.error, 'error');
+      toast('Live run started with your consent.', 'ok');
       await refresh();
       break;
     }

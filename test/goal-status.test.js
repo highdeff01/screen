@@ -459,6 +459,17 @@ test('a launch spends its window wait from the step budget instead of a fixed 8s
   assert.match(short, /while \(\$true\)/, 'the poll always checks once, even with no budget left');
 });
 
+test('composite steps hand their sub-steps only the time the step has left', async () => {
+  const { compositeBudget, budgetLeft } = await load('server/automation.js');
+  const budget = compositeBudget(undefined, { fallbackMs: 60000 });
+  assert.equal(budget.totalMs, 60000, 'an untimed composite step uses its own fallback, not the 15s generic default');
+  assert.equal(budgetLeft(budget, 3000, 1000, budget.startedAt), 57000, 'a fresh budget leaves the reserve');
+  assert.equal(budgetLeft(budget, 3000, 1000, budget.startedAt + 45000), 12000, 'a slow launch shrinks the next wait');
+  assert.equal(budgetLeft(budget, 3000, 1000, budget.startedAt + 90000), 1000, 'the floor keeps one last check possible');
+  assert.equal(compositeBudget(15000).totalMs, 15000, 'a declared step timeout sets the budget');
+  assert.equal(compositeBudget(600).totalMs, 6000, 'a tiny declaration cannot go below the floor');
+});
+
 test('an installer window in front never counts as the app being open', async () => {
   quietSettings();
   const workflow = workflowWith(

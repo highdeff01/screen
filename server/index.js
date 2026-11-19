@@ -2540,6 +2540,31 @@ route('POST', /^\/api\/workflows\/([^/]+)\/runs$/, async (req, res, [id]) => {
   sendJson(res, 200, { ok: true, run: findRun(run.id), autoPlan, liveFallback });
 });
 
+route('POST', /^\/api\/runs\/([^/]+)\/run-live$/, async (req, res, [id]) => {
+  const previous = findRun(id);
+  if (!previous) return fail(res, 404, 'Run not found');
+  const wf = db().workflows.find((w) => w.id === previous.workflowId);
+  if (!wf) return fail(res, 404, 'Workflow not found');
+  if (wf.status === 'archived') return fail(res, 400, 'Archived workflows cannot run');
+  if (!wf.steps?.length) return fail(res, 400, 'Workflow has no steps to run');
+  // The operator accepted the "this machine can run it live" offer. Consent is
+  // recorded on the new run only: the simulated run that raised the offer keeps
+  // its own record of what actually happened.
+  let run;
+  try {
+    run = createRun(wf, {
+      trigger: 'manual',
+      dryRun: false,
+      liveConsent: true,
+      workflowSnapshot: previous.workflowSnapshot || null,
+    });
+  } catch (err) {
+    return fail(res, 400, err.message);
+  }
+  logActivity('run', `Operator accepted the live offer for "${wf.name}"`, { workflowId: wf.id, previousRunId: previous.id });
+  sendJson(res, 200, { ok: true, run: findRun(run.id) });
+});
+
 route('GET', /^\/api\/runs\/([^/]+)$/, async (req, res, [id]) => {
   const run = findRun(id);
   if (!run) return fail(res, 404, 'Run not found');
