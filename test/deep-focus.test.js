@@ -55,14 +55,14 @@ after(() => {
 });
 
 const liveState = {
-  readForeground: async () => ({ title: 'Untitled - Notepad', process: 'Notepad' }),
+  readForeground: async () => ({ title: 'Untitled - Notepad', process: 'Notepad', minimized: false }),
   readFocused: async () => ({ found: true, name: 'text area', controlType: 'Edit', editable: true }),
   listWindows: async () => [{ title: 'Untitled - Notepad' }],
 };
 
 test('reflex checks catch the wrong window, unsaved work and minimization', () => {
   const checks = deepFocus.reflexChecks({
-    foreground: { title: '*knack convo.txt - Notepad', process: 'Notepad' },
+    foreground: { title: '*knack convo.txt - Notepad', process: 'Notepad', minimized: false },
     focused: { found: true, controlType: 'Edit', editable: false },
     windows: [{ title: 'a' }, { title: 'b' }],
     guard: 'Untitled - Notepad',
@@ -80,7 +80,7 @@ test('deep focus is for finished runs that need thought', async () => {
   await assert.rejects(async () => deepFocus.startDeepFocus('run_focus_1', { rounds: 2 }, liveState), /finished runs that need thought/);
 });
 
-test('the cycle reads live state each round and reshapes at the rethink round', async () => {
+test('the cycle reads live state each round and reshapes after observing', async () => {
   seedRun();
   const chat = async () => ({
     ok: true,
@@ -105,12 +105,136 @@ test('the cycle reads live state each round and reshapes at the rethink round', 
   assert.equal(focus.rounds.length, 3, 'one round per requested cycle');
   assert.equal(focus.rounds[0].foreground, 'Untitled - Notepad', 'live focus was read');
   assert.equal(focus.rounds[0].caret, 'Edit “text area”', 'the caret was read live');
-  assert.equal(focus.rounds[1].decision, 'reshape', 'the rethink round reshaped the plan');
+  assert.equal(focus.rounds[2].decision, 'reshape', 'the final round reshaped the plan');
   assert.ok(focus.reshaped.steps.length === 2);
   assert.match(focus.conclusion, /reshaped into 2 step/);
   assert.equal(focus.diff.added.length, 1, 'the retyped step is new against the baseline');
   assert.equal(focus.diff.removed.length, 2, 'the failed step is replaced and the re-launch is dropped (the caret is already there)');
   assert.ok(focus.lessons.length, 'the conclusion was kept as a lesson');
+});
+
+test('rethink receives the goal, step parameters and every observation before drafting', async () => {
+  const run = seedRun();
+  run.workflowGoal = 'Write hello, then verify the Notepad window';
+  run.steps[1].params.foreground = 'Untitled - Notepad';
+  run.steps[0].output = 'launch output: notepad is open';
+  let round = 0;
+  let prompt;
+  let applications = 0;
+  store.db().settings.deepFocus.autoApply = true;
+  deepFocus.startDeepFocus(run.id, { rounds: 3 }, {
+    readForeground: async () => ({ title: `Round ${++round} window`, process: `proc${round}` }),
+    readFocused: async () => ({ name: `caret${round}`, editable: round !== 2, controlType: 'Edit' }),
+    listWindows: async () => [{ title: `window list ${round}` }],
+    chat: async (messages) => {
+      assert.equal(round, 3, 'the model is called after the last read');
+      prompt = messages[1].content;
+      return { ok: true, content: JSON.stringify({ conclusion: 'review the caret', reshaped: [{ type: 'type', name: 'type', params: { text: 'hello' } }], retry: true }) };
+    },
+    snapshot: async () => { applications += 1; return { ok: true }; },
+    applyAndRetry: async () => { applications += 1; return { ok: true }; },
+  });
+  for (let i = 0; i < 40 && !deepFocus.deepFocusStatus(run.id)?.finishedAt; i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  assert.ok(prompt, 'the model received a prompt');
+  assert.match(prompt, /Write hello, then verify/);
+  assert.match(prompt, /launch output: notepad is open/);
+  assert.match(prompt, /the caret was elsewhere/);
+  assert.match(prompt, /"text":"hello"/);
+  assert.match(prompt, /"foreground":"Untitled - Notepad"/);
+  assert.match(prompt, /"kind":"window","value":"Notepad"/);
+  for (let i = 1; i <= 3; i += 1) {
+    assert.match(prompt, new RegExp(`Round ${i} window`));
+    assert.match(prompt, new RegExp(`caret${i}`));
+    assert.match(prompt, new RegExp(`window list ${i}`));
+  }
+  assert.match(prompt, /"typingFlow":\{"ok":false/, 'round reflexes reach the model');
+  assert.equal(applications, 0, 'even autoApply cannot apply an unreviewed model proposal');
+  assert.match(deepFocus.deepFocusStatus(run.id).conclusion, /review required/);
+});
+
+test('one round still sends observations to rethink', async () => {
+  const run = seedRun();
+  let calls = 0;
+  deepFocus.startDeepFocus(run.id, { rounds: 1 }, {
+    ...liveState,
+    chat: async (messages) => {
+      calls += 1;
+      assert.match(messages[1].content, /Round 1:/);
+      assert.match(messages[1].content, /text area/);
+      return { ok: true, content: JSON.stringify({ conclusion: 'inspect', reshaped: [], retry: false }) };
+    },
+  });
+  for (let i = 0; i < 40 && !deepFocus.deepFocusStatus(run.id)?.finishedAt; i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  const focus = deepFocus.deepFocusStatus(run.id);
+  assert.equal(calls, 1);
+  assert.equal(focus.rounds.length, 1);
+  assert.equal(focus.rethinkStatus, 'completed');
+  assert.match(focus.conclusion, /model proposed no reshaped steps/);
+});
+
+test('unavailable and failed readers are unknown, not evidence of success', async () => {
+  const run = seedRun();
+  let prompt;
+  deepFocus.startDeepFocus(run.id, { rounds: 1 }, {
+    readForeground: async () => { throw new Error('desktop offline'); },
+    chat: async (messages) => {
+      prompt = messages[1].content;
+      return { ok: false };
+    },
+  });
+  for (let i = 0; i < 40 && !deepFocus.deepFocusStatus(run.id)?.finishedAt; i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  const focus = deepFocus.deepFocusStatus(run.id);
+  assert.match(prompt, /failed: desktop offline/);
+  assert.match(prompt, /"focused":"unavailable"/);
+  assert.match(prompt, /"windows":"unavailable"/);
+  assert.equal(focus.reflexes.windowFocus.ok, null);
+  assert.equal(focus.reflexes.saveCheck.ok, null);
+  assert.equal(focus.reflexes.minimizeCheck.ok, null);
+  assert.equal(focus.reflexes.tabCheck.count, null);
+  assert.match(focus.conclusion, /observations unavailable or failed/);
+  assert.match(focus.conclusion, /not verified/);
+  assert.match(focus.conclusion, /model request failed/);
+  assert.doesNotMatch(focus.conclusion, /reflexes clear/);
+});
+
+test('an empty foreground response is not proof of a visible window', async () => {
+  const run = seedRun();
+  deepFocus.startDeepFocus(run.id, { rounds: 1 }, {
+    ...liveState,
+    readForeground: async () => ({ title: '', process: '', id: null }),
+  });
+  for (let i = 0; i < 40 && !deepFocus.deepFocusStatus(run.id)?.finishedAt; i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  const focus = deepFocus.deepFocusStatus(run.id);
+  assert.equal(focus.rounds[0].observation.availability.foreground, 'empty or invalid');
+  assert.equal(focus.reflexes.minimizeCheck.ok, null);
+  assert.match(focus.conclusion, /not verified/);
+  assert.doesNotMatch(focus.conclusion, /reflexes clear/);
+});
+
+test('an unverified goal with no failed step sends the whole workflow to rethink', async () => {
+  const run = seedRun({ status: 'needs_review' });
+  for (const step of run.steps) step.status = 'passed';
+  run.errorSummary = 'Goal not verified';
+  let prompt;
+  deepFocus.startDeepFocus(run.id, { rounds: 1 }, {
+    ...liveState,
+    chat: async (messages) => { prompt = messages[1].content; return { ok: false }; },
+  });
+  for (let i = 0; i < 40 && !deepFocus.deepFocusStatus(run.id)?.finishedAt; i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  assert.match(prompt, /Goal not verified/);
+  assert.match(prompt, /"target":"notepad.exe"/);
+  assert.match(prompt, /"text":"hello"/);
+  assert.match(prompt, /"kind":"window"/);
 });
 
 test('applying reshaped steps passes the snapshot gate first', async () => {
@@ -133,6 +257,13 @@ test('applying reshaped steps passes the snapshot gate first', async () => {
   assert.equal(blocked.ok, false);
   assert.equal(applied, null, 'nothing was applied behind a closed gate');
   assert.equal(deepFocus.deepFocusStatus('run_focus_1').applyGate.blocked, true);
+
+  const missing = await deepFocus.applyReshaped('run_focus_1', {
+    snapshot: async () => null,
+    applyAndRetry: async () => { applied = true; return { ok: true }; },
+  });
+  assert.equal(missing.status, 'gate-blocked');
+  assert.equal(applied, null);
 
   // An open gate snapshots, then applies and re-runs. In production the apply
   // path (index.js) patches the workflow; here the stub records the handover.
@@ -160,7 +291,8 @@ test('without a model the rounds still conclude from the reflexes', async () => 
   const focus = deepFocus.deepFocusStatus('run_focus_1');
   assert.ok(focus.finishedAt);
   assert.ok(!focus.reshaped, 'no model means no reshape, but the loop still concludes');
-  assert.match(focus.conclusion, /reflexes clear/);
+  assert.match(focus.conclusion, /model unavailable/);
+  assert.match(focus.conclusion, /observed reflexes clear/);
 });
 
 test('stop ends the cycle early', async () => {

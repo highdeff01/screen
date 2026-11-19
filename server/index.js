@@ -21,7 +21,7 @@ import {
   resolveInside,
   writeFileDurable,
 } from './store.js';
-import { executeStep, runPowerShell, STEP_TYPES, IS_WINDOWS, describe, findUiElement, readFocusedElement, readForegroundWindow } from './automation.js';
+import { executeStep, runPowerShell, STEP_TYPES, IS_WINDOWS, describe, findUiElement, readFocusedElement, readForegroundWindow, readScreenContext } from './automation.js';
 import { liveControl } from './platform.js';
 import { loopStatus, reviewPendingVerifications, startVerificationLoop, stopVerificationLoop } from './verification-loop.js';
 import {
@@ -74,7 +74,9 @@ async function applyReshapedToRun(runId, reshapedSteps, focus) {
   const workflow = db().workflows.find((entry) => entry.id === run.workflowId);
   if (!workflow) throw new Error('Workflow for this run no longer exists');
   const firstFailedIndex = (run.steps || []).findIndex((step) => step.status === 'failed');
-  const keepCount = firstFailedIndex === -1 ? (run.steps || []).length : firstFailedIndex;
+  // With no failed step, the goal itself needs review: replace the entire plan.
+  const firstUnfinishedIndex = (run.steps || []).findIndex((step) => !['passed', 'skipped'].includes(step.status));
+  const keepCount = firstFailedIndex >= 0 ? firstFailedIndex : Math.max(0, firstUnfinishedIndex);
   const kept = (workflow.steps || []).slice(0, keepCount);
   const reshaped = (reshapedSteps || []).map((step, index) => ({
     ...step,
@@ -4125,6 +4127,7 @@ server.listen(PORT, HOST, () => {
   configureDeepFocus({
     readForeground: readForegroundWindow,
     readFocused: readFocusedElement,
+    listWindows: async () => (await readScreenContext()).windows,
     chat,
     snapshot: (label) => createSnapshot(label),
     applyAndRetry: applyReshapedToRun,

@@ -6442,12 +6442,10 @@ function renderDeepFocusCard(run) {
           ${(focus.diff.removed || []).map((step) => `<div class="small"><span class="badge warnbadge">−</span> ${esc(step.type)}: ${esc(step.name || '')}</div>`).join('')}
         </div></details>` : ''}
         ${focus.conclusion ? `<p class="small"><b>Conclusion:</b> ${esc(focus.conclusion)}</p>` : ''}
-        ${focus.reshaped?.steps?.length ? `<p class="small dim">${focus.reshaped.steps.length} reshaped step(s): ${focus.reshaped.steps.map((step) => esc(step.type)).join(' → ')}</p>` : ''}
+        ${focus.reshaped?.steps?.length ? `<details open><summary class="small">Proposed commands — review before applying</summary><div class="stack" style="gap:6px;margin-top:6px">${focus.reshaped.steps.map((step, index) => `<div class="small"><b>${index + 1}. ${esc(step.name || step.type)}</b> <span class="dim">(${esc(step.type)})</span><pre style="white-space:pre-wrap;overflow-wrap:anywhere;margin:4px 0">${esc(JSON.stringify(step.params || {}, null, 2))}</pre></div>`).join('')}</div></details>` : ''}
         ${focus.applyGate ? `<p class="small dim">Apply gate: snapshot ${esc(String(focus.applyGate.snapshot || '').slice(0, 8))} ${focus.applyGate.blocked ? '(blocked — nothing applied)' : 'ok'}</p>` : ''}
         ${focus.error ? `<p class="small" style="color:var(--bad)">${esc(focus.error)}</p>` : ''}
       </div>`}
-              ${(focus.rounds || []).length ? '' : ''}
-        ${(focus.rounds || []).length ? '' : ''}
         <div class="row wrap" style="gap:8px;margin-top:10px">${actions.join('')}<button class="btn btn-sm" data-act="df-presentation" data-id="${esc(run.id)}" title="Turn the focus rounds into a Presentation deck">Form presentation</button></div>
     </div>
   </section>`;
