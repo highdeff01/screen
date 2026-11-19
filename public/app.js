@@ -9259,6 +9259,79 @@ document.addEventListener('error', (event) => {
   updatePreviewCard();
 }, true);
 
+/* Drag-to-draw annotation boxes: in annotate mode, a drag over the capture
+   draws a rectangle and asks what it marks; a plain click still drops a pin. */
+let annotateDraw = null;
+document.addEventListener('mousedown', (event) => {
+  if (!ui.annotateMode || !event.target.matches?.('#annotate-stage img')) return;
+  const rect = event.target.getBoundingClientRect();
+  annotateDraw = {
+    image: event.target,
+    startX: (event.clientX - rect.left) / rect.width,
+    startY: (event.clientY - rect.top) / rect.height,
+    endX: null,
+    endY: null,
+    box: null,
+  };
+  event.preventDefault();
+});
+document.addEventListener('mousemove', (event) => {
+  if (!annotateDraw) return;
+  const rect = annotateDraw.image.getBoundingClientRect();
+  annotateDraw.endX = Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width));
+  annotateDraw.endY = Math.min(1, Math.max(0, (event.clientY - rect.top) / rect.height));
+  let ghost = document.getElementById('annotate-ghost');
+  if (!ghost) {
+    ghost = document.createElement('div');
+    ghost.id = 'annotate-ghost';
+    ghost.style.cssText = 'position:absolute;border:2px dashed #7c5cff;background:rgba(124,92,255,.12);border-radius:4px;pointer-events:none';
+    annotateDraw.image.parentElement.appendChild(ghost);
+  }
+  const left = Math.min(annotateDraw.startX, annotateDraw.endX);
+  const top = Math.min(annotateDraw.startY, annotateDraw.endY);
+  const w = Math.abs(annotateDraw.endX - annotateDraw.startX);
+  const h = Math.abs(annotateDraw.endY - annotateDraw.startY);
+  ghost.style.left = `${left * 100}%`;
+  ghost.style.top = `${top * 100}%`;
+  ghost.style.width = `${w * 100}%`;
+  ghost.style.height = `${h * 100}%`;
+});
+document.addEventListener('mouseup', async (event) => {
+  if (!annotateDraw) return;
+  const draw = annotateDraw;
+  annotateDraw = null;
+  document.getElementById('annotate-ghost')?.remove();
+  if (draw.endX === null) return; // a click without movement: the pin handler takes it
+  const w = Math.abs(draw.endX - draw.startX);
+  const h = Math.abs(draw.endY - draw.startY);
+  if (w < 0.03 || h < 0.03) return; // too small to be deliberate: treat as a click
+  ui.annotateDragged = true;
+  setTimeout(() => { ui.annotateDragged = false; }, 250); // the click event fires after mouseup
+  const capture = ui.modal?.payload?.capture;
+  if (!capture?.id) return;
+  const text = window.prompt('What does this region mark?') || '';
+  if (!text) return;
+  const res = await api('/api/annotations', {
+    method: 'POST',
+    body: {
+      ref: { captureId: capture.id, runId: capture.runId || null },
+      kind: 'box',
+      x: Math.min(draw.startX, draw.endX),
+      y: Math.min(draw.startY, draw.endY),
+      w,
+      h,
+      text,
+      by: 'operator',
+      color: '#7c5cff',
+    },
+  });
+  if (!res.ok) return toast(res.error, 'error');
+  const list = await api(`/api/annotations?captureId=${encodeURIComponent(capture.id)}`);
+  ui.captureAnnotations = list.ok ? list.annotations || [] : [];
+  renderModal();
+  toast('Box annotation added.', 'ok');
+});
+
 document.addEventListener('click', (event) => {
   if (event.target.hasAttribute?.('data-modal-backdrop')) return closeModal();
   if (event.target.hasAttribute?.('data-lightbox-backdrop')) return closeModal();
@@ -9380,6 +9453,7 @@ document.addEventListener('click', (event) => {
       return;
     }
     if (ui.annotateMode && event.target.matches?.('#annotate-stage img')) {
+      if (ui.annotateDragged) { ui.annotateDragged = false; return; } // a drag just drew a box
       const capture = ui.modal?.payload?.capture;
       if (!capture?.id) return toast('This screenshot has no saved capture id', 'error');
       const rect = event.target.getBoundingClientRect();
