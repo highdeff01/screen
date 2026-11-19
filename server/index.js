@@ -64,6 +64,7 @@ import { presentationFromDeepFocus, deepFocusMarkdown } from './presentations-de
 import { addFirewallRule, firewallCheck, firewallStatus, firewallTest, removeFirewallRule, resetFirewallRules, setFirewallMode } from './firewall.js';
 import { factoringStatus, pinStepIntents, planRefactoring, pushRefactorToBuilder, similarSolutions } from './step-factoring.js';
 import { appendCloseout, recordCloseout } from './closeout.js';
+import { monitorsStatus } from './monitors.js';
 
 /**
  * Apply the deep-focus reshaped steps: keep everything the run passed, replace
@@ -1236,6 +1237,11 @@ route('POST', /^\/api\/closeout\/([^/]+)\/append$/, async (req, res, [id]) => {
   } catch (err) {
     fail(res, err.message === 'Run not found' ? 404 : 400, err.message);
   }
+});
+
+/* ---------------- Monitor tracking: which screen got the click ------------ */
+route('GET', /^\/api\/monitors$/, async (req, res, _params, url) => {
+  sendJson(res, 200, { ok: true, monitors: await monitorsStatus({ fresh: url.searchParams.get('fresh') === '1' }) });
 });
 
 /* ---------------- Notes for other agents, custom commands ---------------- */

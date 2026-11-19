@@ -27,6 +27,7 @@ import { firewallCheck } from './firewall.js';
 import { addNote } from './handoff.js';
 import { noteStepOutcome, pinStepIntents, similarSolutions, spotIntent } from './step-factoring.js';
 import { recordCloseout } from './closeout.js';
+import { checkStepMonitor } from './monitors.js';
 import { beginRunObservation, endRunObservation } from './app-observer.js';
 import { liveControl, probeLiveBackend, isPlatformRefusal } from './platform.js';
 import { expectsScreenChange, windowChecksFor, resumePlan, corroboratesNoChange, lookupWindowFor, screenChangeVerdict } from './step-effects.js';
@@ -1989,6 +1990,16 @@ async function executeRun(runId) {
             await waitBeforeRetry(run, pause ? Math.min(pause, 10000) : 300);
           }
         }
+      }
+      // Monitor reflex: a coordinate step that landed on a different screen
+      // than the window it drives is visible here instead of mysterious.
+      if (succeeded && !run.dryRun) {
+        try {
+          const monitor = await checkStepMonitor(step, run);
+          if (monitor?.kind === 'mismatch') {
+            pushLog(run, 'warn', `Monitor note: ${step.monitorNote}`, step.id);
+          }
+        } catch { /* the reflex never fails a passed step */ }
       }
       if (succeeded && step.type === 'launchApp' && !probe) {
         // A launch that only re-raised a window already on the desktop did not
