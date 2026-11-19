@@ -4082,6 +4082,16 @@ setRunFinishedHook(async (run) => {
   }
 });
 
+// A bind failure (another console instance or another app on the port) should
+// end with a clear message, not a crash report — the fix is picking a free
+// PORT, and the crash-report round-trip hides that.
+server.on('error', (err) => {
+  if (err?.code === 'EADDRINUSE') {
+    console.error(`Port ${PORT} is already in use — another instance or app is bound to it. Start with a different port: PORT=<port> npm start`);
+    process.exit(1);
+  }
+});
+
 server.listen(PORT, HOST, () => {
   ensureToolFiles();
   ensurePythonFiles();

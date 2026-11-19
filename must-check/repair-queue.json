@@ -1,61 +1,34 @@
 {
   "version": 1,
   "by": "sentinel",
-  "updatedAt": "2026-11-19T03:26:32.775Z",
-  "head": "ded41c9df8b6",
+  "updatedAt": "2026-11-19T03:29:31.429Z",
+  "head": "a1c45ddbb814",
   "lastRun": {
-    "at": "2026-11-19T03:26:32.775Z",
-    "ok": true,
-    "tests": 530,
-    "pass": 525,
-    "fail": 0,
+    "at": "2026-11-19T03:29:31.416Z",
+    "ok": false,
+    "tests": 534,
+    "pass": 528,
+    "fail": 1,
     "isolated": true,
-    "failingTests": []
+    "failingTests": [
+      "literal prose with braces and modifiers stays literal (1.1069ms)"
+    ]
   },
-  "open": 3,
+  "open": 1,
   "items": [
     {
-      "id": "sent_mwmwi2lgacfe49",
-      "at": "2026-11-19T01:58:11.620Z",
-      "status": "queued",
-      "attempts": 1,
-      "fail": 2,
-      "pass": 510,
-      "tests": [
-        "a workflow that does not start with focusWindow is left unchanged (60.6968ms)",
-        "an already repaired plan does not get a second launch step (0.9232ms)"
-      ],
-      "details": [
-        {
-          "name": "a workflow that does not start with focusWindow is left unchanged",
-          "file": "",
-          "line": null,
-          "message": ""
-        },
-        {
-          "name": "an already repaired plan does not get a second launch step",
-          "file": "",
-          "line": null,
-          "message": ""
-        }
-      ],
-      "plan": "",
-      "planError": "",
-      "report": "must-check/2026-11-19T01-58-11-a-workflow-that-does-not-start-with-focu.md"
-    },
-    {
-      "id": "sent_mwmw6swqfa250d",
-      "at": "2026-11-19T01:49:25.850Z",
+      "id": "sent_mwmzriu0d108c8",
+      "at": "2026-11-19T03:29:31.416Z",
       "status": "queued",
       "attempts": 1,
       "fail": 1,
-      "pass": 505,
+      "pass": 528,
       "tests": [
-        "a repair that opens another app is adopted by the presenter and verifier (25060.143ms)"
+        "literal prose with braces and modifiers stays literal (1.1069ms)"
       ],
       "details": [
         {
-          "name": "a repair that opens another app is adopted by the presenter and verifier",
+          "name": "literal prose with braces and modifiers stays literal",
           "file": "",
           "line": null,
           "message": ""
@@ -63,78 +36,7 @@
       ],
       "plan": "",
       "planError": "",
-      "report": "must-check/2026-11-19T01-49-25-a-repair-that-opens-another-app-is-adopt.md"
-    },
-    {
-      "id": "sent_mwmuvv974d8bca",
-      "at": "2026-11-19T01:12:56.059Z",
-      "status": "queued",
-      "attempts": 1,
-      "fail": 8,
-      "pass": null,
-      "tests": [
-        "the engine rewrites the remainder after an irreparable action and still passes (20041.2022ms)",
-        "C:\\Users\\Dan\\.config\\freebuff-desktop\\local-projects\\40af3ced-48bf-4a9d-a8b7-cb42815bab8f\\data\\worktrees\\sentinel-1795050402033-29612\\test\\agent-replan.test.js (292.4871ms)",
-        "a failed launch is repaired by focusing the existing window and the run passes (30163.413ms)",
-        "repairs that fail are reported and safe later steps still run (30106.7536ms)",
-        "C:\\Users\\Dan\\.config\\freebuff-desktop\\local-projects\\40af3ced-48bf-4a9d-a8b7-cb42815bab8f\\data\\worktrees\\sentinel-1795050402033-29612\\test\\repair.test.js (759.7139ms)",
-        "cancellation during retry backoff prevents another attempt (15000.3286ms)",
-        "pause during retry backoff holds the retry until resumed (15005.9006ms)",
-        "cancellation during a failed attempt does not start a retry (3003.297ms)"
-      ],
-      "details": [
-        {
-          "name": "the engine rewrites the remainder after an irreparable action and still passes",
-          "file": "/Users/Dan/.config/freebuff-desktop/local-projects/40af3ced-48bf-4a9d-a8b7-cb42815bab8f/data/worktrees/sentinel-1795050402033-29612/test/agent-replan.test.js",
-          "line": 426,
-          "message": "AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:"
-        },
-        {
-          "name": "C:\\Users\\Dan\\.config\\freebuff-desktop\\local-projects\\40af3ced-48bf-4a9d-a8b7-cb42815bab8f\\data\\worktrees\\sentinel-1795050402033-29612\\test\\agent-replan.test.js",
-          "file": "/Users/Dan/.config/freebuff-desktop/local-projects/40af3ced-48bf-4a9d-a8b7-cb42815bab8f/data/worktrees/sentinel-1795050402033-29612/test/agent-replan.test.js",
-          "line": 21,
-          "message": ""
-        },
-        {
-          "name": "a failed launch is repaired by focusing the existing window and the run passes",
-          "file": "/Users/Dan/.config/freebuff-desktop/local-projects/40af3ced-48bf-4a9d-a8b7-cb42815bab8f/data/worktrees/sentinel-1795050402033-29612/test/repair.test.js",
-          "line": 283,
-          "message": "AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:"
-        },
-        {
-          "name": "repairs that fail are reported and safe later steps still run",
-          "file": "/Users/Dan/.config/freebuff-desktop/local-projects/40af3ced-48bf-4a9d-a8b7-cb42815bab8f/data/worktrees/sentinel-1795050402033-29612/test/repair.test.js",
-          "line": 311,
-          "message": "AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:"
-        },
-        {
-          "name": "C:\\Users\\Dan\\.config\\freebuff-desktop\\local-projects\\40af3ced-48bf-4a9d-a8b7-cb42815bab8f\\data\\worktrees\\sentinel-1795050402033-29612\\test\\repair.test.js",
-          "file": "/Users/Dan/.config/freebuff-desktop/local-projects/40af3ced-48bf-4a9d-a8b7-cb42815bab8f/data/worktrees/sentinel-1795050402033-29612/test/repair.test.js",
-          "line": 20,
-          "message": ""
-        },
-        {
-          "name": "cancellation during retry backoff prevents another attempt",
-          "file": "/Users/Dan/.config/freebuff-desktop/local-projects/40af3ced-48bf-4a9d-a8b7-cb42815bab8f/data/worktrees/sentinel-1795050402033-29612/test/run-retry.test.js",
-          "line": 121,
-          "message": ""
-        },
-        {
-          "name": "pause during retry backoff holds the retry until resumed",
-          "file": "/Users/Dan/.config/freebuff-desktop/local-projects/40af3ced-48bf-4a9d-a8b7-cb42815bab8f/data/worktrees/sentinel-1795050402033-29612/test/run-retry.test.js",
-          "line": 121,
-          "message": ""
-        },
-        {
-          "name": "cancellation during a failed attempt does not start a retry",
-          "file": "/Users/Dan/.config/freebuff-desktop/local-projects/40af3ced-48bf-4a9d-a8b7-cb42815bab8f/data/worktrees/sentinel-1795050402033-29612/test/run-retry.test.js",
-          "line": 121,
-          "message": ""
-        }
-      ],
-      "plan": "",
-      "planError": "",
-      "report": "must-check/2026-11-19T01-12-56-the-engine-rewrites-the-remainder-after-.md"
+      "report": "must-check/2026-11-19T03-29-31-literal-prose-with-braces-and-modifiers-.md"
     }
   ]
 }

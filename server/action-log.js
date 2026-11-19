@@ -108,7 +108,10 @@ export function writeActionReport(item) {
   try {
     const dir = path.join(ROOT, MUST_CHECK);
     fs.mkdirSync(dir, { recursive: true });
-    const slug = normalize(`${item.action} ${item.error}`).replace(/[^a-z0-9#]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 48) || 'action';
+    // '#' is deliberately excluded: it breaks URL fragments, so a report whose
+    // name carried it (e.g. a media timestamp “02:36 / 02:36” → “#-#-#”) could
+    // never be fetched from the shared folder.
+    const slug = normalize(`${item.action} ${item.error}`).replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 48) || 'action';
     const file = path.join(dir, `action-${slug}.md`);
     const existing = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
     // Keep an operator/AI notes section appended by humans across updates.
