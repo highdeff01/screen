@@ -526,6 +526,22 @@ Write-Output ($record | ConvertTo-Json -Compress)`;
   };
 }
 
+/**
+ * Composite steps (testApp, watchVideo) run several sub-steps. Each sub-step
+ * used to carry its own fixed timeout, so the total could overrun the step's
+ * budget: PowerShell was killed mid-launch ("Command timed out.") and the retry
+ * launched the app into a second window. These helpers hand out what is left of
+ * one budget instead, keeping a reserve for the last sub-step to shut down.
+ */
+export function compositeBudget(timeoutMs, { fallbackMs = 60000, minMs = 6000, maxMs = 1900000 } = {}) {
+  const declared = Number(timeoutMs) > 0 ? Number(timeoutMs) : fallbackMs;
+  return { startedAt: Date.now(), totalMs: Math.max(minMs, Math.min(maxMs, declared)) };
+}
+
+export function budgetLeft(budget, reserveMs = 3000, floorMs = 1000, at = Date.now()) {
+  return Math.max(floorMs, budget.totalMs - reserveMs - (at - budget.startedAt));
+}
+
 function describe(step) {
   const p = step.params || {};
   switch (step.type) {
@@ -3664,23 +3680,35 @@ try {
     const title = String(p.title || '').trim();
     const processName = String(p.process || '').trim();
     const waitMs = Math.max(500, Math.min(120000, num(p.waitMs, 15000)));
+    // One budget for the whole smoke test: the launch, the settle, the window
+    // wait, the capture and the vision check all spend what is left of it, so
+    // the step cannot be killed mid-launch and retried into a second window.
+    const testBudget = compositeBudget(step.timeoutMs, { fallbackMs: 60000, minMs: 6000, maxMs: 240000 });
     const evidence = [];
     const steps = [];
     try {
       if (flag(p.launch, true)) {
-        const launched = await executeStep({ type: 'launchApp', name: `Launch ${target}`, params: { target }, timeoutMs: 30000 }, ctx);
+        const launched = await executeStep(
+          { type: 'launchApp', name: `Launch ${target}`, params: { target }, timeoutMs: Math.min(30000, budgetLeft(testBudget, 4000)) },
+          ctx
+        );
         steps.push(launched.output);
       }
-      await new Promise((resolve) => setTimeout(resolve, Math.max(100, Math.min(10000, num(p.settleMs, 1500)))));
+      await new Promise((resolve) =>
+        setTimeout(resolve, Math.max(100, Math.min(10000, num(p.settleMs, 1500), budgetLeft(testBudget, 2500))))
+      );
+      // The wait gets only what the launch left; asking for its full timeout
+      // after a slow launch is what pushed the step past its own budget.
+      const readyMs = Math.min(waitMs, budgetLeft(testBudget, 2000));
       if (processName) {
         const ready = await executeStep(
-          { type: 'waitFor', name: `Wait for ${processName}`, params: { kind: 'process', value: processName, mode: 'present', timeoutMs: waitMs }, timeoutMs: waitMs + 5000 },
+          { type: 'waitFor', name: `Wait for ${processName}`, params: { kind: 'process', value: processName, mode: 'present', timeoutMs: readyMs }, timeoutMs: readyMs + 1000 },
           ctx
         );
         steps.push(ready.output);
       } else if (title) {
         const ready = await executeStep(
-          { type: 'waitFor', name: `Wait for ${title}`, params: { kind: 'window', value: title, mode: 'present', timeoutMs: waitMs }, timeoutMs: waitMs + 5000 },
+          { type: 'waitFor', name: `Wait for ${title}`, params: { kind: 'window', value: title, mode: 'present', timeoutMs: readyMs }, timeoutMs: readyMs + 1000 },
           ctx
         );
         steps.push(ready.output);
@@ -3689,11 +3717,24 @@ try {
       if (title && !`${foreground.title} ${foreground.process}`.toLowerCase().includes(title.toLowerCase())) {
         throw new Error(`App test expected “${title}” in front, but the foreground window is “${foreground.title || '(unknown)'}”.`);
       }
-      const shot = await executeStep({ type: 'screenshot', name: `Capture ${title || target}`, params: { caption: str(p.caption, `${target || title} smoke test`) }, timeoutMs: 20000 }, ctx);
+      const shot = await executeStep(
+        {
+          type: 'screenshot',
+          name: `Capture ${title || target}`,
+          params: { caption: str(p.caption, `${target || title} smoke test`) },
+          timeoutMs: Math.min(20000, budgetLeft(testBudget, 1500)),
+        },
+        ctx
+      );
       evidence.push(...(shot.evidence || []));
       if (p.question) {
         const check = await executeStep(
-          { type: 'verifyScreen', name: `Verify ${target}`, params: { question: p.question, title: p.title, app: p.process, caption: str(p.caption, `${target} verification`) }, timeoutMs: 120000 },
+          {
+            type: 'verifyScreen',
+            name: `Verify ${target}`,
+            params: { question: p.question, title: p.title, app: p.process, caption: str(p.caption, `${target} verification`) },
+            timeoutMs: Math.min(120000, budgetLeft(testBudget, 1000, 5000)),
+          },
           ctx
         );
         evidence.push(...(check.evidence || []));
@@ -3711,7 +3752,10 @@ try {
       }
       if (flag(p.close, false)) {
         const closeTitle = title || processName || target;
-        await executeStep({ type: 'closeWindow', name: `Close ${closeTitle}`, params: { title: closeTitle }, timeoutMs: 15000 }, ctx);
+        await executeStep(
+          { type: 'closeWindow', name: `Close ${closeTitle}`, params: { title: closeTitle }, timeoutMs: Math.min(15000, budgetLeft(testBudget, 1000)) },
+          ctx
+        );
       }
       return { output: `App test passed: ${title || target} is running${evidence[0]?.path ? ` and captured in data/${evidence[0].path}` : ''}.`, evidence };
     } catch (err) {
@@ -3735,6 +3779,12 @@ try {
     const title = str(p.title, 'YouTube');
     if (!live) return { output: `Simulated watch of “${title}” with notes.`, evidence: [], skipped: true };
     const noteText = p.textVar ? ctx.run?.variables?.[p.textVar] : p.notes;
+    // The hold legitimately lasts as long as the media does, so this step's
+    // budget comes from how long the hold may run (maxMs), not from the small
+    // generic step timeout; the hold and the captures then share what is left
+    // instead of being killed by a budget the hold never knew about.
+    const holdCapMs = Math.max(30000, Math.min(1800000, num(p.maxMs, 900000)));
+    const videoBudget = compositeBudget(holdCapMs + 60000, { fallbackMs: 960000, minMs: 60000, maxMs: 1900000 });
     const evidence = [];
     let startShot = null;
     if (flag(p.startCapture, true)) {
@@ -3751,13 +3801,13 @@ try {
           params: {
             title,
             bufferMs: p.bufferMs,
-            maxMs: p.maxMs,
+            maxMs: Math.min(holdCapMs, budgetLeft(videoBudget, 5000)),
             checkMs: p.checkMs,
             stallMs: p.stallMs,
             adGraceMs: p.adGraceMs,
             caption: str(p.caption, `${title} ended`),
           },
-          timeoutMs: step.timeoutMs,
+          timeoutMs: budgetLeft(videoBudget, 2000),
         },
         ctx
       );
