@@ -1216,6 +1216,7 @@ function renderBuilderRail(wf) {
     ['inspector', 'Step'],
     ['rules', 'Rules'],
     ['copilot', 'AI'],
+    ['factoring', 'Factors'],
     ['control', 'Control'],
   ];
   const suggestions = ui.data.suggestions.filter((s) => !s.workflowId || s.workflowId === wf.id);
@@ -1227,8 +1228,33 @@ function renderBuilderRail(wf) {
     ${ui.railTab === 'inspector' ? renderInspector(wf) : ''}
     ${ui.railTab === 'rules' ? renderRules(wf) : ''}
     ${ui.railTab === 'copilot' ? renderCopilot(wf, suggestions) : ''}
+    ${ui.railTab === 'factoring' ? renderFactoringPanel(wf) : ''}
     ${ui.railTab === 'control' ? renderControlPanel() : ''}
   </aside>`;
+}
+
+function renderFactoringPanel(wf) {
+  const factoring = ui.data?.factoring || {};
+  const patterns = factoring.patterns || [];
+  const plans = (factoring.plans || []).slice(0, 5);
+  const pinned = (wf.steps || []).filter((step) => step.intent);
+  const intentCounts = {};
+  for (const step of pinned) intentCounts[step.intent] = (intentCounts[step.intent] || 0) + 1;
+  const intents = Object.entries(intentCounts).map(([intent, count]) => `<span class="badge" title="${esc(intent)}">${esc(intent)} ×${count}</span>`).join(' ');
+  return `
+  <div class="side-card">
+    <div class="side-card-head"><h3>Step factoring</h3><span class="dim small">${factoring.patternCount || 0} pattern(s)</span></div>
+    <div class="side-card-body">
+      <p class="muted small" style="margin-bottom:8px">Every run fingerprints each step (type + params) into a shared ledger. Steps that keep passing in any workflow grow stronger — their proven form is offered to later runs that hit the same step form.</p>
+      <div class="row wrap" style="gap:5px;margin-bottom:8px">${intents || '<span class="dim small">No intents pinned yet — they pin automatically on the next run.</span>'}</div>
+      <div class="row wrap" style="gap:6px">
+        <button class="btn btn-sm" data-act="factoring-pin" data-id="${esc(wf.id)}">Pin intents</button>
+        <button class="btn btn-sm" data-act="factoring-plan">Scan for refactors</button>
+      </div>
+      ${patterns.length ? `<div class="stack" style="gap:6px;margin-top:10px"><div class="dim small">Strongest proven forms (upscaled learning)</div>${patterns.map((pattern) => `<div class="hint-box small"><strong>${esc(pattern.intent)}</strong> · strength ${pattern.strength} · passed ${pattern.successes}×${pattern.failures ? `, failed ${pattern.failures}×` : ''}${pattern.sample ? `<br><span class="dim">“${esc(pattern.sample.stepName)}” in “${esc(pattern.sample.workflowName)}”</span>` : ''}</div>`).join('')}</div>` : ''}
+      ${plans.length ? `<div class="stack" style="gap:6px;margin-top:10px"><div class="dim small">Refactor plans</div>${plans.map((plan) => `<div class="hint-box small"><strong>${esc(plan.summary)}</strong><br><span class="dim">${fmtTime(plan.at)} · ${esc(plan.status)}</span>${plan.status === 'proposed' ? ` <button class="btn btn-sm" data-act="factoring-apply" data-id="${esc(plan.id)}" style="margin-left:6px">Push to builder</button>` : ''}</div>`).join('')}</div>` : ''}
+    </div>
+  </div>`;
 }
 
 function renderInspector(wf) {
@@ -6971,6 +6997,31 @@ async function runAction(name, ds, el) {
     case 'fw-mode': {
       const res = await api('/api/firewall/mode', { method: 'POST', body: { mode: ui.data?.firewall?.mode === 'enforce' ? 'log' : 'enforce' } });
       if (!res.ok) return toast(res.error, 'error');
+      await refresh();
+      render();
+      break;
+    }
+    case 'factoring-pin': {
+      const res = await api('/api/factoring/pin', { method: 'POST', body: { workflowId: ds.id } });
+      if (!res.ok) return toast(res.error, 'error');
+      toast(`Pinned ${res.pinned?.pinned ?? 0} intent(s) — ${res.pinned?.kept ?? 0} already set.`, 'ok');
+      await refresh();
+      render();
+      break;
+    }
+    case 'factoring-plan': {
+      toast('Scanning every workflow for duplication…');
+      const res = await api('/api/factoring/plan', { method: 'POST', body: {} });
+      if (!res.ok) return toast(res.error, 'error');
+      toast(res.plan?.summary || 'Scan complete.', 'ok');
+      await refresh();
+      render();
+      break;
+    }
+    case 'factoring-apply': {
+      const res = await api('/api/factoring/apply', { method: 'POST', body: { planId: ds.id } });
+      if (!res.ok) return toast(res.error, 'error');
+      toast(`Pushed ${res.applied?.suggestions?.length ?? 0} refactor suggestion(s) to the builder for your approval.`, 'ok');
       await refresh();
       render();
       break;
