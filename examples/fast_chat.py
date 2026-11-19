@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """fast_chat.py - a low-latency, non-repetitive chat client for a local Ollama-style server.
 
-State (cache, telemetry, notes, history) lives next to THIS SCRIPT, not in the
-current directory, so it works when launched from C:\\Windows\\System32.
-Override with FASTCHAT_HOME.
+State (cache, telemetry, notes, history) lives in the project's data/ folder
+next to the examples/ directory, not in the current directory, so it works
+when launched from C:\\Windows\\System32. Override with FASTCHAT_HOME.
+State is runtime data and stays untracked: data/ is git-ignored, so
+conversation history and telemetry are never committed or pushed.
 
 Latency techniques, tagged in the code:
   [#1]  keep-alive + pooling          - one requests.Session with an HTTPAdapter
@@ -148,11 +150,16 @@ SAMPLING = {
 
 
 # --------------------------------------------------------------------------- #
-# state location: next to this script, never the current directory
+# state location: the project's git-ignored data/ folder, never the current
+# directory and never the tracked examples/ folder — conversation history and
+# telemetry are private runtime data
 # --------------------------------------------------------------------------- #
 def state_dir():
     override = os.environ.get("FASTCHAT_HOME")
-    path = Path(override) if override else Path(__file__).resolve().parent
+    if override:
+        path = Path(override)
+    else:
+        path = Path(__file__).resolve().parent.parent / "data" / "fastchat"
     try:
         path.mkdir(parents=True, exist_ok=True)
         probe = path / ".write-test"

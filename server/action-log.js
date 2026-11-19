@@ -175,6 +175,10 @@ export function recordAction({ kind = 'ui', action = '', error = '', detail = nu
   if (item) {
     item.count += 1;
     item.lastAt = now();
+    // The newest occurrence's evidence wins: a request that now records its
+    // method and URL should not be described by the first sighting's detail.
+    if (detail && typeof detail === 'object') item.detail = { ...(item.detail && typeof item.detail === 'object' ? item.detail : {}), ...detail };
+    else if (detail) item.detail = detail;
   } else {
     item = {
       id: uid('act'),
@@ -227,15 +231,18 @@ export async function triageItem({ id } = {}, deps = {}) {
     ask = async (messages) => mod.chat(messages, { timeoutMs: 90000 });
   }
   try {
+    const detailText = item.detail && typeof item.detail === 'object'
+      ? JSON.stringify(item.detail).slice(0, 600)
+      : String(item.detail || '');
     const reply = await ask([
       {
         role: 'system',
         content:
-          'You are triaging a recurring error from a Node.js screen-automation console. Reply with at most 8 lines: what is most likely happening, whether it is safe to ignore, and the smallest concrete fix (file and change) if it is not. Plain text. You are advising; do not claim to have changed anything.',
+          'You are triaging a recurring error from a Node.js screen-automation console. Reply with at most 8 lines: what is most likely happening, whether it is safe to ignore, and the smallest concrete fix (file and change) if it is not. Plain text. You are advising; do not claim to have changed anything. Ground every claim in the recorded evidence (action, error text, detail). Never suggest generic browser or cache remedies unless the evidence actually names a browser; for 404/“not found” errors the usual cause is a stale caller — an open page, a retry loop or a script holding an old id or polling an endpoint that no longer exists — and the recorded method and URL point at which caller.',
       },
       {
         role: 'user',
-        content: `Action: ${item.action || item.kind}\nSeen ${item.count}× (${item.firstAt} → ${item.lastAt})\nError: ${String(item.error).slice(0, 2000)}\n${item.pattern?.advice ? `Known advice: ${item.pattern.advice}\n` : ''}`,
+        content: `Action: ${item.action || item.kind}\nSeen ${item.count}× (${item.firstAt} → ${item.lastAt})\nError: ${String(item.error).slice(0, 2000)}\nDetail: ${detailText || '(none)'}\n${item.pattern?.advice ? `Known advice: ${item.pattern.advice}\n` : ''}`,
       },
     ]);
     item.suggestion = reply?.ok

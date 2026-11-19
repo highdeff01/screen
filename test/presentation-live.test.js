@@ -95,7 +95,9 @@ test('three real failing runs pause the shared budget and reset re-enables the s
   };
   for (let attempt = 1; attempt <= 3; attempt += 1) {
     const run = engine.createRun(workflow, { trigger: 'live-test', dryRun: false, probe });
-    const finished = await engine.waitForRun(run.id, { timeoutMs: 5000, intervalMs: 20 });
+    // The run returns the moment it fails; the ceiling only matters under
+    // suite-wide load, where observer and scheduler work can take seconds.
+    const finished = await engine.waitForRun(run.id, { timeoutMs: 20000, intervalMs: 20 });
     assert.equal(finished.status, 'failed', `attempt ${attempt} failed`);
     assert.equal(budget.getRetryBudget(workflow.id).failures, attempt);
   }

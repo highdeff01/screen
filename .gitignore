@@ -14,3 +14,8 @@ force-rollback.ps1
 graphicsdrivers-backup.reg
 # The Python environment for the Respan Gateway (requirements.txt).
 .venv/
+
+# Chat runtime state (fast_chat examples) — private conversation history and
+# telemetry; the scripts now write to data/fastchat/, belt-and-braces here too.
+examples/chat_*
+examples/__pycache__/

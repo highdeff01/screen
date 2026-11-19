@@ -1,24 +1,89 @@
 {
   "version": 1,
   "by": "sentinel",
-  "updatedAt": "2026-11-19T00:35:11.544Z",
-  "head": "8ed6c59f24dc",
+  "updatedAt": "2026-11-19T01:22:46.901Z",
+  "head": "77c707ab0585",
   "lastRun": {
-    "at": "2026-11-19T00:25:52.646Z",
-    "ok": false,
-    "tests": 500,
-    "pass": 490,
-    "fail": 6,
-    "isolated": false,
-    "failingTests": [
-      "three real failing runs pause the shared budget and reset re-enables the scheduler (5083.9996ms)",
-      "C:\\Users\\Dan\\.config\\freebuff-desktop\\local-projects\\40af3ced-48bf-4a9d-a8b7-cb42815bab8f\\test\\presentation-live.test.js (490.8252ms)",
-      "repairs that fail are reported and safe later steps still run (30058.4528ms)",
-      "C:\\Users\\Dan\\.config\\freebuff-desktop\\local-projects\\40af3ced-48bf-4a9d-a8b7-cb42815bab8f\\test\\repair.test.js (382.4758ms)",
-      "cancellation during retry backoff prevents another attempt (15004.0704ms)",
-      "C:\\Users\\Dan\\.config\\freebuff-desktop\\local-projects\\40af3ced-48bf-4a9d-a8b7-cb42815bab8f\\test\\step-effects.test.js (23590.8025ms)"
-    ]
+    "at": "2026-11-19T01:22:46.901Z",
+    "ok": true,
+    "tests": 510,
+    "pass": 505,
+    "fail": 0,
+    "isolated": true,
+    "failingTests": []
   },
-  "open": 0,
-  "items": []
+  "open": 1,
+  "items": [
+    {
+      "id": "sent_mwmuvv974d8bca",
+      "at": "2026-11-19T01:12:56.059Z",
+      "status": "queued",
+      "attempts": 1,
+      "fail": 8,
+      "pass": null,
+      "tests": [
+        "the engine rewrites the remainder after an irreparable action and still passes (20041.2022ms)",
+        "C:\\Users\\Dan\\.config\\freebuff-desktop\\local-projects\\40af3ced-48bf-4a9d-a8b7-cb42815bab8f\\data\\worktrees\\sentinel-1795050402033-29612\\test\\agent-replan.test.js (292.4871ms)",
+        "a failed launch is repaired by focusing the existing window and the run passes (30163.413ms)",
+        "repairs that fail are reported and safe later steps still run (30106.7536ms)",
+        "C:\\Users\\Dan\\.config\\freebuff-desktop\\local-projects\\40af3ced-48bf-4a9d-a8b7-cb42815bab8f\\data\\worktrees\\sentinel-1795050402033-29612\\test\\repair.test.js (759.7139ms)",
+        "cancellation during retry backoff prevents another attempt (15000.3286ms)",
+        "pause during retry backoff holds the retry until resumed (15005.9006ms)",
+        "cancellation during a failed attempt does not start a retry (3003.297ms)"
+      ],
+      "details": [
+        {
+          "name": "the engine rewrites the remainder after an irreparable action and still passes",
+          "file": "/Users/Dan/.config/freebuff-desktop/local-projects/40af3ced-48bf-4a9d-a8b7-cb42815bab8f/data/worktrees/sentinel-1795050402033-29612/test/agent-replan.test.js",
+          "line": 426,
+          "message": "AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:"
+        },
+        {
+          "name": "C:\\Users\\Dan\\.config\\freebuff-desktop\\local-projects\\40af3ced-48bf-4a9d-a8b7-cb42815bab8f\\data\\worktrees\\sentinel-1795050402033-29612\\test\\agent-replan.test.js",
+          "file": "/Users/Dan/.config/freebuff-desktop/local-projects/40af3ced-48bf-4a9d-a8b7-cb42815bab8f/data/worktrees/sentinel-1795050402033-29612/test/agent-replan.test.js",
+          "line": 21,
+          "message": ""
+        },
+        {
+          "name": "a failed launch is repaired by focusing the existing window and the run passes",
+          "file": "/Users/Dan/.config/freebuff-desktop/local-projects/40af3ced-48bf-4a9d-a8b7-cb42815bab8f/data/worktrees/sentinel-1795050402033-29612/test/repair.test.js",
+          "line": 283,
+          "message": "AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:"
+        },
+        {
+          "name": "repairs that fail are reported and safe later steps still run",
+          "file": "/Users/Dan/.config/freebuff-desktop/local-projects/40af3ced-48bf-4a9d-a8b7-cb42815bab8f/data/worktrees/sentinel-1795050402033-29612/test/repair.test.js",
+          "line": 311,
+          "message": "AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:"
+        },
+        {
+          "name": "C:\\Users\\Dan\\.config\\freebuff-desktop\\local-projects\\40af3ced-48bf-4a9d-a8b7-cb42815bab8f\\data\\worktrees\\sentinel-1795050402033-29612\\test\\repair.test.js",
+          "file": "/Users/Dan/.config/freebuff-desktop/local-projects/40af3ced-48bf-4a9d-a8b7-cb42815bab8f/data/worktrees/sentinel-1795050402033-29612/test/repair.test.js",
+          "line": 20,
+          "message": ""
+        },
+        {
+          "name": "cancellation during retry backoff prevents another attempt",
+          "file": "/Users/Dan/.config/freebuff-desktop/local-projects/40af3ced-48bf-4a9d-a8b7-cb42815bab8f/data/worktrees/sentinel-1795050402033-29612/test/run-retry.test.js",
+          "line": 121,
+          "message": ""
+        },
+        {
+          "name": "pause during retry backoff holds the retry until resumed",
+          "file": "/Users/Dan/.config/freebuff-desktop/local-projects/40af3ced-48bf-4a9d-a8b7-cb42815bab8f/data/worktrees/sentinel-1795050402033-29612/test/run-retry.test.js",
+          "line": 121,
+          "message": ""
+        },
+        {
+          "name": "cancellation during a failed attempt does not start a retry",
+          "file": "/Users/Dan/.config/freebuff-desktop/local-projects/40af3ced-48bf-4a9d-a8b7-cb42815bab8f/data/worktrees/sentinel-1795050402033-29612/test/run-retry.test.js",
+          "line": 121,
+          "message": ""
+        }
+      ],
+      "plan": "",
+      "planError": "",
+      "report": "must-check/2026-11-19T01-12-56-the-engine-rewrites-the-remainder-after-.md"
+    }
+  ]
 }
