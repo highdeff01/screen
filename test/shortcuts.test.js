@@ -281,6 +281,22 @@ test('workflow lint catches new-chat, duplicate, and unguarded key steps', () =>
   assert.ok(codes.includes('key step has no foreground guard'));
 });
 
+test('workflow lint warns when runnable steps are missing required configuration', () => {
+  const result = planner.lintWorkflow({
+    name: 'Configure workflow',
+    steps: [
+      { id: 'launch', type: 'launchApp', params: {} },
+      { id: 'drag-copy', type: 'dragCopy', params: {} },
+      { id: 'ready', type: 'windowAction', params: { title: 'Notepad', action: 'restore' } },
+    ],
+  });
+  const incomplete = result.issues.filter((issue) => issue.code === 'incomplete step configuration');
+  assert.equal(incomplete.length, 2);
+  assert.deepEqual(incomplete.map((issue) => issue.stepId), ['launch', 'drag-copy']);
+  assert.ok(incomplete.every((issue) => issue.severity === 'warning'));
+  assert.equal(result.errors, 1, 'existing workflow plan checks remain errors');
+});
+
 test('planner flags missing and unrequested new-chat conditions', () => {
   const steps = Array.from({ length: 6 }, (_, index) => ({ type: 'wait', name: `Wait ${index}`, params: { ms: 500 } }));
   const conditional = steps.map((step, index) => (index === 0 ? { ...step, condition: 'newChat' } : step));

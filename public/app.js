@@ -297,11 +297,13 @@ const TYPE_META = {
   launchApp: { label: 'Launch app', glyph: '▸' },
   openUrl: { label: 'Open URL', glyph: '↗' },
   focusWindow: { label: 'Focus window', glyph: '▣' },
+  windowAction: { label: 'Minimize / maximize / restore / close window', glyph: '▣' },
   move: { label: 'Move pointer', glyph: '✥' },
   click: { label: 'Click', glyph: '●' },
   doubleClick: { label: 'Double click', glyph: '◎' },
   rightClick: { label: 'Right click', glyph: '◑' },
   drag: { label: 'Drag / highlight', glyph: '↔' },
+  dragCopy: { label: 'Drag-highlight and copy', glyph: '↔' },
   playMedia: { label: 'Start media playback', glyph: '▶' },
   closeWindow: { label: 'Close guarded window', glyph: '✕' },
   verifyScreen: { label: 'Verify screen (vision)', glyph: '◉' },
@@ -343,6 +345,11 @@ const FIELDS = {
     { key: 'title', label: 'Window title contains', type: 'text', placeholder: 'Kiro' },
     { key: 'process', label: 'Process name (optional)', type: 'text', placeholder: 'Kiro' },
   ],
+  windowAction: [
+    { key: 'action', label: 'Action', type: 'select', options: ['minimize', 'maximize', 'restore', 'close'], default: 'minimize' },
+    { key: 'title', label: 'Window title contains', type: 'text', placeholder: 'Notepad' },
+    { key: 'process', label: 'Process name (optional)', type: 'text', placeholder: 'notepad' },
+  ],
   move: [
     { key: 'x', label: 'X', type: 'number', placeholder: '400' },
     { key: 'y', label: 'Y', type: 'number', placeholder: '300' },
@@ -371,6 +378,17 @@ const FIELDS = {
     { key: 'durationMs', label: 'Duration (ms)', type: 'number', placeholder: '600' },
     { key: 'button', label: 'Button', type: 'select', options: ['left', 'right', 'middle'], default: 'left' },
     { key: 'foreground', label: 'Require foreground window contains', type: 'text', placeholder: 'YouTube' },
+  ],
+  dragCopy: [
+    { key: 'text', label: 'Visible text to select (optional with coordinates)', type: 'text', placeholder: 'The sentence to copy' },
+    { key: 'window', label: 'Window title contains', type: 'text', placeholder: 'Notepad' },
+    { key: 'x1', label: 'Start X (optional)', type: 'number', placeholder: '400' },
+    { key: 'y1', label: 'Start Y (optional)', type: 'number', placeholder: '300' },
+    { key: 'x2', label: 'End X (optional)', type: 'number', placeholder: '700' },
+    { key: 'y2', label: 'End Y (optional)', type: 'number', placeholder: '300' },
+    { key: 'outputVar', label: 'Save copied text to variable', type: 'text', placeholder: 'selectedText' },
+    { key: 'minChars', label: 'Minimum copied characters', type: 'number', placeholder: '1' },
+    { key: 'expectText', label: 'Expected copied text (optional)', type: 'text', placeholder: 'Text that must be present' },
   ],
   scroll: [
     { key: 'amount', label: 'Wheel lines', type: 'number', placeholder: '3', help: 'Positive scrolls up, negative down.' },
@@ -569,11 +587,13 @@ const DEFAULTS = {
   launchApp: { target: '' },
   openUrl: { url: 'https://example.com', urlVar: '' },
   focusWindow: { title: '', process: '' },
+  windowAction: { action: 'minimize', title: '', process: '' },
   move: { x: 400, y: 300 },
   click: { x: 400, y: 300, button: 'left' },
   doubleClick: { x: 400, y: 300 },
   rightClick: { x: 400, y: 300 },
   drag: { x1: 400, y1: 300, x2: 700, y2: 300, durationMs: 600, button: 'left' },
+  dragCopy: { text: '', window: '', x1: '', y1: '', x2: '', y2: '', outputVar: 'selectedText', minChars: 1, expectText: '' },
   scroll: { amount: 3 },
   type: { text: 'Hello from Sightline' },
   key: { keys: 'ctrl+a, ctrl+c', repeat: 1, intervalMs: 120 },
@@ -612,6 +632,8 @@ function stepSummary(step) {
       return p.url || '(no url)';
     case 'focusWindow':
       return `title contains “${p.title || ''}”`;
+    case 'windowAction':
+      return `${p.action || 'minimize'} · ${p.title || p.process || '(foreground window)'}`;
     case 'move':
       return `to ${p.x ?? 0}, ${p.y ?? 0}`;
     case 'click':
@@ -620,6 +642,8 @@ function stepSummary(step) {
       return `${p.button || 'left'} at ${p.x ?? 0}, ${p.y ?? 0}${p.foreground ? ` · guarded by “${p.foreground}”` : ''}`;
     case 'drag':
       return `${p.x1 ?? 0},${p.y1 ?? 0} → ${p.x2 ?? 0},${p.y2 ?? 0}${p.foreground ? ` · guarded by “${p.foreground}”` : ''}`;
+    case 'dragCopy':
+      return `${p.text || `${p.x1 ?? '?'},${p.y1 ?? '?'} → ${p.x2 ?? '?'},${p.y2 ?? '?'}`} → ${p.outputVar || 'selectedText'}`;
     case 'verifyScreen':
       return String(p.question || p.title || 'visual check').slice(0, 90);
     case 'verifyPlayback':

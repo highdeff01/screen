@@ -1642,7 +1642,34 @@ export function lintWorkflow(workflow) {
     } else {
       seen.set(signature, index);
     }
-    if (step.type === 'key' && !String(step.params?.foreground || '').trim()) {
+    const params = step.params || {};
+    let missing = '';
+    if (step.type === 'launchApp' && !String(params.target || '').trim()) missing = 'an app or document target';
+    else if (step.type === 'openUrl' && !String(params.url || params.urlVar || '').trim()) missing = 'a URL or URL variable';
+    else if (step.type === 'focusWindow' && !String(params.title || params.process || '').trim()) missing = 'a window title or process';
+    else if (step.type === 'windowAction' && !String(params.title || params.process || '').trim()) missing = 'a window title or process';
+    else if (['move', 'click', 'doubleClick', 'rightClick'].includes(step.type) && (params.x == null || params.y == null)) missing = 'both X and Y coordinates';
+    else if (step.type === 'drag' && ['x1', 'y1', 'x2', 'y2'].some((key) => params[key] == null)) missing = 'start and end coordinates';
+    else if (step.type === 'dragCopy') {
+      const hasCoordinates = ['x1', 'y1', 'x2', 'y2'].every((key) => Number(params[key]) > 0);
+      if (!hasCoordinates && !String(params.text || params.name || '').trim()) missing = 'selection text or start and end coordinates';
+    } else if (step.type === 'clickElement' && !String(params.name || '').trim()) missing = 'an element name';
+    else if (step.type === 'type' && !String(params.text || params.textVar || '').trim()) missing = 'text or a text variable';
+    else if (step.type === 'key' && !String(params.keys || '').trim()) missing = 'a key or shortcut';
+    else if (step.type === 'runTool' && !String(params.toolId || '').trim()) missing = 'a tool';
+    else if (step.type === 'downloadMedia' && !String(params.url || params.urlVar || '').trim()) missing = 'a file URL or URL variable';
+    else if (step.type === 'note' && !String(params.text || '').trim()) missing = 'note text';
+    if (missing) {
+      issues.push({
+        code: 'incomplete step configuration',
+        severity: 'warning',
+        scope: 'step',
+        stepId: step.id || null,
+        stepNumber: index + 1,
+        message: `Step ${index + 1} needs ${missing}.`,
+      });
+    }
+    if (step.type === 'key' && !String(params.foreground || '').trim()) {
       issues.push({
         code: 'key step has no foreground guard',
         severity: 'warning',

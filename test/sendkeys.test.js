@@ -44,6 +44,19 @@ test('focusing a window checks its title, not only its app', () => {
   assert.match(script, /\$fgProc\.MainWindowTitle -like \$pattern/, 'another document of the same app is not already focused');
 });
 
+test('window actions use guarded native Win32 window controls', () => {
+  const script = automation.buildScript({
+    type: 'windowAction',
+    name: 'Restore Notepad',
+    params: { title: 'Notepad', process: 'notepad', action: 'restore' },
+  });
+  assert.match(script, /\$title = 'Notepad'/);
+  assert.match(script, /\$process = 'notepad'/);
+  assert.match(script, /\[SightlineInput\]::ShowWindow\(\$h, 9\)/);
+  assert.match(script, /\[SightlineInput\]::SetForegroundWindow\(\$h\)/);
+  assert.match(script, /No window matched title/);
+});
+
 test('known key phrases are never double-escaped', () => {
   assert.equal(decoded('{ESC}'), '{ESC}');
   assert.equal(decoded('{BACKSPACE} {F5} {DOWN}'), '{BACKSPACE} {F5} {DOWN}');

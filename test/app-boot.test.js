@@ -36,6 +36,21 @@ test('boot renders state without waiting for optional startup requests', async (
   assert.deepEqual(calls.filter((call) => ['auth', 'captures', 'health', 'chat'].includes(call)).sort(), ['auth', 'captures', 'chat', 'health']);
 });
 
+test('window actions and drag-copy have editor metadata', async () => {
+  const source = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+  const definitions = source.slice(source.indexOf('const TYPE_META ='), source.indexOf('function stepSummary('));
+  const context = {};
+  vm.runInNewContext(`${definitions}\nglobalThis.editor = { TYPE_META, FIELDS, DEFAULTS };`, context);
+  const editor = context.editor;
+  for (const type of ['windowAction', 'dragCopy']) {
+    assert.ok(editor.TYPE_META[type]);
+    assert.ok(editor.FIELDS[type]?.length);
+    assert.ok(editor.DEFAULTS[type]);
+  }
+  assert.ok(editor.FIELDS.windowAction.some((field) => field.key === 'action'));
+  assert.ok(editor.FIELDS.dragCopy.some((field) => field.key === 'outputVar'));
+});
+
 test('header renders and clears the relay review badge', () => {
   const source = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
   const header = source.slice(source.indexOf('function renderHeader()'), source.indexOf('/* ------------------------------------------------------------------ views */'));
