@@ -1693,7 +1693,7 @@ if ($parts.Count -eq 0) {
     if ($total -ge ${maxChars}) { break }
   }
 }
-$text = ($parts -join "`n")
+$text = ($parts -join [Environment]::NewLine)
 if ($text.Length -gt ${maxChars}) { $text = $text.Substring(0, ${maxChars}) }
 [pscustomobject]@{ text = $text; source = $source } | ConvertTo-Json -Compress`;
   const res = await runPowerShell(script, 20000);

@@ -712,7 +712,7 @@ export function rememberWindow(run, step) {
  * window this run last opened or focused — “type anywhere that looks like a
  * text area” is exactly how text ended up in the wrong place.
  */
-function deriveTypingGuard(step, run) {
+export function deriveTypingGuard(step, run) {
   const typing = ['type', 'key', 'clipboard'].includes(step.type);
   const clicking = step.type === 'clickElement' && !String(step.params?.window || '').trim();
   if (!typing && !clicking) return;
