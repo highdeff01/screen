@@ -4,7 +4,7 @@ import { db, persist, uid, now, DATA, NOTES, logActivity, slug, writeFileDurable
 import { executeStep } from './automation.js';
 import { createRun, findRun, cancelRun, controlRun } from './engine.js';
 import { chat, parseJsonLoose, listModels } from './llm.js';
-import { normalizeStep, addSuggestion, writeRunNote } from './planner.js';
+import { normalizeStep, resolveToolRef, addSuggestion, writeRunNote } from './planner.js';
 import { queueShortcutCandidates, recordShortcutOutcomes } from './shortcuts.js';
 
 const ACTIVE_STATUSES = ['queued', 'planning', 'running', 'verifying', 'reviewing', 'replanning'];
@@ -1140,7 +1140,11 @@ async function supervisorReview(mission) {
 function applyReplan(mission, replan, source, signature = null) {
   const workflow = db().workflows.find((entry) => entry.id === mission.workflowId);
   if (!workflow) return false;
-  const steps = (replan.steps || []).map((step, index) => normalizeStep(step, index)).filter(Boolean);
+  const steps = (replan.steps || [])
+    .map((step, index) => normalizeStep(step, index))
+    // A supervisor replan bypasses the goal alignment check, so drop any tool
+    // step that names no approved tool rather than failing the run on it.
+    .filter((step) => step && (step.type !== 'runTool' || resolveToolRef(step.params)));
   if (!steps.length) return false;
   const run = mission.lastRunId ? findRun(mission.lastRunId) : null;
   const failedIndex = run ? run.steps.findIndex((step) => step.status === 'failed') : -1;

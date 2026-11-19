@@ -154,6 +154,23 @@ function coerceRawStep(raw) {
   return { type: match[1], params };
 }
 
+/**
+ * Resolve the approved tool a runTool step names. A plan may hold the tool's id
+ * or only its name; execution knows ids, so every insertion path resolves here
+ * instead of running a step that fails with "Tool not found: (missing id)".
+ * Returns null when nothing matches, which callers treat as unusable.
+ */
+export function resolveToolRef(params = {}, tools = db().tools) {
+  const id = String(params?.toolId || '').trim();
+  const name = String(params?.toolName || '').trim();
+  const list = Array.isArray(tools) ? tools : [];
+  const tool =
+    (id && list.find((entry) => entry.id === id || entry.name === id)) ||
+    (name && list.find((entry) => entry.name === name || entry.id === name)) ||
+    null;
+  return tool || null;
+}
+
 function normalizeStep(input, index = 0) {
   const raw = coerceRawStep(input);
   if (!raw || typeof raw !== 'object') return null;
@@ -206,6 +223,8 @@ function normalizeStep(input, index = 0) {
   p('maxMB', 'maxSizeMB', 'sizeLimitMB');
   p('question', 'testQuestion', 'expectedState');
   p('state', 'operation', 'windowAction');
+  p('toolId', 'tool_id', 'toolID');
+  p('toolName', 'tool_name', 'toolLabel');
 
   if (type === 'key') {
     const modifierHint =
@@ -240,6 +259,15 @@ function normalizeStep(input, index = 0) {
       if (normalized.length) params.keys = normalized;
     } catch {
       // Keep the raw value so execution reports the exact bad shortcut.
+    }
+  }
+
+  if (type === 'runTool') {
+    // Store the concrete id: a name alone cannot be executed.
+    const tool = resolveToolRef(params);
+    if (tool) {
+      params.toolId = tool.id;
+      params.toolName = tool.name;
     }
   }
 
@@ -505,12 +533,15 @@ export function alignPlanToGoal(steps, goal, context = {}) {
       continue;
     }
     if (step.type === 'runTool') {
-      const toolExists = db().tools.some((tool) => tool.id === p.toolId || tool.name === p.toolName);
-      if (!String(p.toolId || p.toolName || '').trim() || !toolExists) {
+      const tool = resolveToolRef(p);
+      if (!tool) {
         steps.splice(i, 1);
         corrected = true;
         continue;
       }
+      // A step that named its tool by name must carry the id execution reads.
+      p.toolId = tool.id;
+      p.toolName = tool.name;
     }
     if (step.type === 'type' && !String(p.text || '').trim() && !String(p.textVar || '').trim()) {
       steps.splice(i, 1);

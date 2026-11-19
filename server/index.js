@@ -63,6 +63,8 @@ import { addAnnotation, annotationsForRun, listAnnotations, pinFindings, removeA
 import { presentationFromDeepFocus, deepFocusMarkdown } from './presentations-deep.js';
 import { addFirewallRule, firewallCheck, firewallStatus, firewallTest, removeFirewallRule, resetFirewallRules, setFirewallMode } from './firewall.js';
 import { factoringStatus, pinStepIntents, planRefactoring, pushRefactorToBuilder, similarSolutions } from './step-factoring.js';
+import { appendCloseout, recordCloseout } from './closeout.js';
+import { monitorsStatus } from './monitors.js';
 
 /**
  * Apply the deep-focus reshaped steps: keep everything the run passed, replace
@@ -127,6 +129,8 @@ import { latestMonitorSuggestions, monitorState, startLiveMonitor, stopLiveMonit
 import { observerState } from './app-observer.js';
 import { livePreview } from './live-preview.js';
 import { findSimulation, listSimulations, simulationSummary, startSimulation } from './screenshot-sim.js';
+import { buildTestReview, SORTS as TEST_REVIEW_SORTS } from './test-review.js';
+import { replicateRun } from './alt-env.js';
 import { prepareObservationReview } from './observation-review.js';
 import {
   companionState,
@@ -1216,6 +1220,30 @@ route('POST', /^\/api\/factoring\/solutions$/, async (req, res) => {
   } catch (err) {
     fail(res, 400, err.message);
   }
+});
+
+/* ---------------- Closeout: predicted follow-up steps after a run ---------- */
+route('GET', /^\/api\/closeout\/([^/]+)$/, async (req, res, [id]) => {
+  try {
+    const run = findRun(id);
+    if (!run) throw new Error('Run not found');
+    sendJson(res, 200, { ok: true, closeout: run.closeout || recordCloseout(run) });
+  } catch (err) {
+    fail(res, err.message === 'Run not found' ? 404 : 400, err.message);
+  }
+});
+
+route('POST', /^\/api\/closeout\/([^/]+)\/append$/, async (req, res, [id]) => {
+  try {
+    sendJson(res, 200, { ok: true, appended: appendCloseout(id) });
+  } catch (err) {
+    fail(res, err.message === 'Run not found' ? 404 : 400, err.message);
+  }
+});
+
+/* ---------------- Monitor tracking: which screen got the click ------------ */
+route('GET', /^\/api\/monitors$/, async (req, res, _params, url) => {
+  sendJson(res, 200, { ok: true, monitors: await monitorsStatus({ fresh: url.searchParams.get('fresh') === '1' }) });
 });
 
 /* ---------------- Notes for other agents, custom commands ---------------- */
@@ -2508,8 +2536,33 @@ route('POST', /^\/api\/workflows\/([^/]+)\/runs$/, async (req, res, [id]) => {
   } catch (err) {
     return fail(res, 400, `Could not auto-create steps: ${err.message}`);
   }
-  const run = createRun(wf, { trigger: body.trigger || 'manual', dryRun });
+  const run = createRun(wf, { trigger: body.trigger || 'manual', dryRun, liveFallback });
   sendJson(res, 200, { ok: true, run: findRun(run.id), autoPlan, liveFallback });
+});
+
+route('POST', /^\/api\/runs\/([^/]+)\/run-live$/, async (req, res, [id]) => {
+  const previous = findRun(id);
+  if (!previous) return fail(res, 404, 'Run not found');
+  const wf = db().workflows.find((w) => w.id === previous.workflowId);
+  if (!wf) return fail(res, 404, 'Workflow not found');
+  if (wf.status === 'archived') return fail(res, 400, 'Archived workflows cannot run');
+  if (!wf.steps?.length) return fail(res, 400, 'Workflow has no steps to run');
+  // The operator accepted the "this machine can run it live" offer. Consent is
+  // recorded on the new run only: the simulated run that raised the offer keeps
+  // its own record of what actually happened.
+  let run;
+  try {
+    run = createRun(wf, {
+      trigger: 'manual',
+      dryRun: false,
+      liveConsent: true,
+      workflowSnapshot: previous.workflowSnapshot || null,
+    });
+  } catch (err) {
+    return fail(res, 400, err.message);
+  }
+  logActivity('run', `Operator accepted the live offer for "${wf.name}"`, { workflowId: wf.id, previousRunId: previous.id });
+  sendJson(res, 200, { ok: true, run: findRun(run.id) });
 });
 
 route('GET', /^\/api\/runs\/([^/]+)$/, async (req, res, [id]) => {
@@ -2536,6 +2589,42 @@ route('GET', /^\/api\/simulations\/([^/]+)$/, async (req, res, [id]) => {
   const record = findSimulation(id);
   if (!record) return fail(res, 404, 'Simulation not found');
   sendJson(res, 200, { ok: true, simulation: simulationSummary(record) });
+});
+
+// One review per run: step breakdown sorted by risk/phase, cross-reference with
+// the steps that worked before, the alternate-environment replication, and the
+// immediate vs long-term app suggestions. Read-only and derived from records.
+route('GET', /^\/api\/runs\/([^/]+)\/review$/, async (req, res, [id], url) => {
+  res.setHeader('Cache-Control', 'no-store');
+  const run = findRun(id);
+  if (!run) return fail(res, 404, 'Run not found');
+  const sort = String(url.searchParams.get('sort') || 'risk');
+  if (!TEST_REVIEW_SORTS.includes(sort)) {
+    return fail(res, 400, `sort must be one of ${TEST_REVIEW_SORTS.join(', ')}`);
+  }
+  const workflow = db().workflows.find((entry) => entry.id === run.workflowId) || null;
+  if (!Array.isArray(db().workflowMemory) || !db().workflowMemory.length) backfillWorkflowMemory();
+  const review = buildTestReview({
+    run,
+    workflow,
+    episodes: db().workflowMemory || [],
+    simulation: listSimulations(run.id, 1)[0] || null,
+    sort,
+    longTermGoal: db().settings?.longTermGoal || '',
+  });
+  sendJson(res, 200, { ok: true, review });
+});
+
+route('POST', /^\/api\/runs\/([^/]+)\/replicate$/, async (req, res, [id]) => {
+  const run = findRun(id);
+  if (!run) return fail(res, 404, 'Run not found');
+  let body = {};
+  try {
+    body = (await readBody(req)) || {};
+  } catch {
+    body = {};
+  }
+  sendJson(res, 200, { ok: true, replication: replicateRun({ run, env: body.env || body }) });
 });
 
 // Only stored records are reviewed; monitor events are global, not run-correlated.
@@ -3580,10 +3669,10 @@ route('PATCH', /^\/api\/settings$/, async (req, res) => {
   if (body.requireToolApproval !== undefined) s.requireToolApproval = Boolean(body.requireToolApproval);
   if (body.visionEnabled !== undefined) s.visionEnabled = Boolean(body.visionEnabled);
   if (body.replanModel !== undefined) s.replanModel = String(body.replanModel || '').trim();
-  // Which judge decides a screen check: both in parallel (facts gate), vision
-  // alone, facts alone, or strict (both must pass).
+  // Who decides a screen check: the model with the facts as a veto (gate), or
+  // the facts alone when they are conclusive (facts, works offline).
   if (body.verifyJudgeMode !== undefined) {
-    s.verifyJudgeMode = JUDGE_MODES.includes(body.verifyJudgeMode) ? body.verifyJudgeMode : 'parallel';
+    s.verifyJudgeMode = JUDGE_MODES.includes(body.verifyJudgeMode) ? body.verifyJudgeMode : 'gate';
   }
   if (body.visualTesterUrl !== undefined) s.visualTesterUrl = String(body.visualTesterUrl || '').trim();
   if (body.visualTesterEnabled !== undefined) s.visualTesterEnabled = Boolean(body.visualTesterEnabled);

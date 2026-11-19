@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 const planner = await import('../server/planner.js');
+const store = await import('../server/store.js');
 
 const context = {
   windows: [
@@ -155,4 +156,58 @@ test('keeps a valid copy-before-write sequence and records step decisions', () =
   const writeIndex = result.steps.findIndex((step) => step.type === 'writeTextFile');
   const copyIndex = result.steps.findIndex((step) => step.type === 'clickElement' && /copy/i.test(step.name));
   assert.ok(copyIndex >= 0 && copyIndex < writeIndex);
+});
+
+test('a tool reference resolves by id or by name and refuses anything else', () => {
+  const tools = [
+    { id: 'tool_cleanup', name: 'Cleanup' },
+    { id: 'tool_window_list', name: 'List visible windows' },
+  ];
+  assert.equal(planner.resolveToolRef({ toolId: 'tool_cleanup' }, tools)?.id, 'tool_cleanup');
+  assert.equal(planner.resolveToolRef({ toolName: 'List visible windows' }, tools)?.id, 'tool_window_list');
+  assert.equal(planner.resolveToolRef({ toolId: 'List visible windows' }, tools)?.id, 'tool_window_list');
+  assert.equal(planner.resolveToolRef({ toolName: 'shell' }, tools), null);
+  assert.equal(planner.resolveToolRef({}, tools), null);
+  assert.equal(planner.resolveToolRef({ toolId: 'tool_cleanup' }, []), null);
+});
+
+/** Add an approved tool to the in-memory store for one test, then remove it. */
+function withTool(tool) {
+  const tools = store.db().tools;
+  tools.push(tool);
+  return () => {
+    const index = tools.indexOf(tool);
+    if (index >= 0) tools.splice(index, 1);
+  };
+}
+
+test('a tool step keeps the id execution looks up, even when the plan names the tool', () => {
+  const drop = withTool({ id: 'tool_under_test', name: 'Tool under test' });
+  try {
+    const step = planner.normalizeStep({ type: 'runTool', name: 'Run the tool', toolName: 'Tool under test' });
+    assert.equal(step.type, 'runTool');
+    assert.equal(step.params.toolId, 'tool_under_test');
+    assert.equal(step.params.toolName, 'Tool under test');
+  } finally {
+    drop();
+  }
+});
+
+test('a tool step that names no approved tool is dropped instead of run', () => {
+  const drop = withTool({ id: 'tool_under_test', name: 'Tool under test' });
+  try {
+    const result = planner.alignPlanToGoal(
+      [
+        { type: 'runTool', name: 'Run nothing', params: {} },
+        { type: 'runTool', name: 'Run an unapproved tool', params: { toolName: 'tool_that_does_not_exist' } },
+        { type: 'runTool', name: 'Run an approved tool by name', params: { toolName: 'Tool under test' } },
+        { type: 'screenshot', name: 'Look at the screen', params: {} },
+      ],
+      'list the windows'
+    );
+    assert.deepEqual(result.steps.map((step) => step.type), ['runTool', 'screenshot']);
+    assert.equal(result.steps[0].params.toolId, 'tool_under_test');
+  } finally {
+    drop();
+  }
 });
