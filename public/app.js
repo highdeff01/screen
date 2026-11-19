@@ -5693,7 +5693,7 @@ function renderModal() {
           <div class="row">
             ${c.runId ? `<button class="btn btn-sm" data-mact="open-run" data-id="${c.runId}">Open run</button>` : ''}
             <button class="btn btn-sm ${ui.annotateMode ? 'btn-primary' : 'btn-ghost'}" data-mact="toggle-annotate" data-id="${esc(c.id || '')}">${ui.annotateMode ? 'Annotating…' : 'Annotate'}</button>
-            <button class="btn btn-sm btn-ghost" data-mact="delete-capture" data-id="${c.id || ''}" data-path="${esc(c.path)}">Delete</button>
+            ${String(c.id || '').startsWith('live-frame:') ? '' : `<button class="btn btn-sm btn-ghost" data-mact="delete-capture" data-id="${c.id || ''}" data-path="${esc(c.path)}">Delete</button>`}
             <button class="btn btn-sm" data-mact="close">Close</button>
           </div>
         </div>
