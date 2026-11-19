@@ -44,6 +44,26 @@ test('focusing a window checks its title, not only its app', () => {
   assert.match(script, /\$fgProc\.MainWindowTitle -like \$pattern/, 'another document of the same app is not already focused');
 });
 
+test('shortcut scripts guard the foreground and send a normalized Windows chord', () => {
+  const script = automation.buildScript({
+    type: 'key',
+    name: 'Open a new tab',
+    params: { keys: 'ctrl+shift+t', foreground: 'Chrome' },
+  });
+  assert.match(script, /\$expected = 'Chrome'/);
+  assert.match(script, /Refusing to send keys/);
+  assert.match(script, /\[System\.Windows\.Forms\.SendKeys\]::SendWait\('\^\+t'\)/);
+});
+
+test('typed text is encoded before PowerShell SendKeys receives it', () => {
+  const text = 'Literal {text} with café and $HOME';
+  const script = automation.buildScript({ type: 'type', name: 'Type a note', params: { text, foreground: 'Notepad' } });
+  assert.match(script, /FromBase64String/);
+  assert.match(script, /\[System\.Windows\.Forms\.SendKeys\]::SendWait\(\$text\)/);
+  assert.ok(script.includes(automation.sendKeysText(text)));
+  assert.equal(script.includes(text), false);
+});
+
 test('window actions use guarded native Win32 window controls', () => {
   const script = automation.buildScript({
     type: 'windowAction',

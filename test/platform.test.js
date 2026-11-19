@@ -50,7 +50,13 @@ test('android letter and digit key codes match the framework constants', () => {
 test('backend detection reports what a console can actually do', () => {
   const windows = detectBackend({ platform: 'win32', env: {} });
   assert.equal(windows.id, 'win32');
+  assert.equal(windows.label, 'Windows');
   assert.equal(windows.available, true);
+  assert.equal(windows.target, 'desktop');
+  assert.equal(windows.captureReady, true);
+  assert.equal(windows.inputReady, true);
+  assert.match(windows.capture, /PowerShell.*System\.Drawing/);
+  assert.match(windows.input, /PowerShell.*Win32/);
 
   const linuxBare = detectBackend({ platform: 'linux', env: { PATH: '' } });
   assert.equal(linuxBare.available, false);
