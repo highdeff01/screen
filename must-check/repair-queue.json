@@ -1,21 +1,83 @@
 {
   "version": 1,
   "by": "sentinel",
-  "updatedAt": "2026-11-18T23:16:12.151Z",
-  "head": "10881a6c717b",
+  "updatedAt": "2026-11-19T00:25:52.658Z",
+  "head": "8ed6c59f24dc",
   "lastRun": {
-    "at": "2026-11-18T23:16:12.141Z",
+    "at": "2026-11-19T00:25:52.646Z",
     "ok": false,
-    "tests": 467,
-    "pass": 462,
-    "fail": 1,
-    "isolated": true,
+    "tests": 500,
+    "pass": 490,
+    "fail": 6,
+    "isolated": false,
     "failingTests": [
-      "a type step with a named window proves its destination instead of guessing from the screen (14003.4972ms)"
+      "three real failing runs pause the shared budget and reset re-enables the scheduler (5083.9996ms)",
+      "C:\\Users\\Dan\\.config\\freebuff-desktop\\local-projects\\40af3ced-48bf-4a9d-a8b7-cb42815bab8f\\test\\presentation-live.test.js (490.8252ms)",
+      "repairs that fail are reported and safe later steps still run (30058.4528ms)",
+      "C:\\Users\\Dan\\.config\\freebuff-desktop\\local-projects\\40af3ced-48bf-4a9d-a8b7-cb42815bab8f\\test\\repair.test.js (382.4758ms)",
+      "cancellation during retry backoff prevents another attempt (15004.0704ms)",
+      "C:\\Users\\Dan\\.config\\freebuff-desktop\\local-projects\\40af3ced-48bf-4a9d-a8b7-cb42815bab8f\\test\\step-effects.test.js (23590.8025ms)"
     ]
   },
-  "open": 9,
+  "open": 10,
   "items": [
+    {
+      "id": "sent_mwmt7cp2c1e895",
+      "at": "2026-11-19T00:25:52.646Z",
+      "status": "queued",
+      "attempts": 1,
+      "fail": 6,
+      "pass": 490,
+      "tests": [
+        "three real failing runs pause the shared budget and reset re-enables the scheduler (5083.9996ms)",
+        "C:\\Users\\Dan\\.config\\freebuff-desktop\\local-projects\\40af3ced-48bf-4a9d-a8b7-cb42815bab8f\\test\\presentation-live.test.js (490.8252ms)",
+        "repairs that fail are reported and safe later steps still run (30058.4528ms)",
+        "C:\\Users\\Dan\\.config\\freebuff-desktop\\local-projects\\40af3ced-48bf-4a9d-a8b7-cb42815bab8f\\test\\repair.test.js (382.4758ms)",
+        "cancellation during retry backoff prevents another attempt (15004.0704ms)",
+        "C:\\Users\\Dan\\.config\\freebuff-desktop\\local-projects\\40af3ced-48bf-4a9d-a8b7-cb42815bab8f\\test\\step-effects.test.js (23590.8025ms)"
+      ],
+      "details": [
+        {
+          "name": "three real failing runs pause the shared budget and reset re-enables the scheduler",
+          "file": "",
+          "line": null,
+          "message": ""
+        },
+        {
+          "name": "C:\\Users\\Dan\\.config\\freebuff-desktop\\local-projects\\40af3ced-48bf-4a9d-a8b7-cb42815bab8f\\test\\presentation-live.test.js",
+          "file": "",
+          "line": null,
+          "message": ""
+        },
+        {
+          "name": "repairs that fail are reported and safe later steps still run",
+          "file": "",
+          "line": null,
+          "message": ""
+        },
+        {
+          "name": "C:\\Users\\Dan\\.config\\freebuff-desktop\\local-projects\\40af3ced-48bf-4a9d-a8b7-cb42815bab8f\\test\\repair.test.js",
+          "file": "",
+          "line": null,
+          "message": ""
+        },
+        {
+          "name": "cancellation during retry backoff prevents another attempt",
+          "file": "",
+          "line": null,
+          "message": ""
+        },
+        {
+          "name": "C:\\Users\\Dan\\.config\\freebuff-desktop\\local-projects\\40af3ced-48bf-4a9d-a8b7-cb42815bab8f\\test\\step-effects.test.js",
+          "file": "",
+          "line": null,
+          "message": ""
+        }
+      ],
+      "plan": "",
+      "planError": "",
+      "report": "must-check/2026-11-19T00-25-52-three-real-failing-runs-pause-the-shared.md"
+    },
     {
       "id": "sent_mwmqpqzx5df295",
       "at": "2026-11-18T23:16:12.141Z",
