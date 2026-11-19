@@ -93,7 +93,7 @@ test('a live step that hits a platform guard mid-run gets one probe-based workar
     description: '',
     status: 'ready',
     failurePolicy: { onFailure: 'stop', maxRetries: 0 },
-    steps: [{ id: 'stp_click', type: 'click', name: 'Click the control', params: { x: 10, y: 10 }, timeoutMs: 3000 }],
+    steps: [{ id: 'stp_click', type: 'click', name: 'Click the control', params: { x: 10, y: 10, name: 'the control' }, timeoutMs: 3000 }],
   };
   d.workflows = [workflow];
   store.persist();
@@ -108,7 +108,7 @@ test('a live step that hits a platform guard mid-run gets one probe-based workar
     },
     captureScreenSignature: async () => ({ at: new Date().toISOString(), cells: [] }),
     inspectWindowState: async () => ({ state: 'foreground', foreground: { title: '' } }),
-    readFocusedElement: async () => ({ found: false }),
+    readFocusedElement: async () => ({ found: true, name: 'the control', window: '' }),
     findUiElement: async () => ({ found: false }),
   };
   const run = engine.createRun(workflow, { dryRun: false, probe });
