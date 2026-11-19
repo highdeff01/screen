@@ -319,18 +319,12 @@ export function createRun(workflow, { trigger = 'manual', dryRun = null, agentRo
     persist();
     logActivity('workflow', `Added a launch prerequisite before the first focus in "${workflow.name}"`, { workflowId: workflow.id });
   }
-  // Spot and pin each step's intent on the run's own step copies, so similar
-  // steps across runs carry the same tag without rewriting the saved workflow.
-  // The builder's "Pin intents" button persists them into the workflow itself.
-  try {
-    for (const step of run.steps) {
-      const spotted = spotIntent(step);
-      if (!step.intent) {
-        step.intent = spotted.intent;
-        step.intentBasis = spotted.basis;
-      }
-    }
-  } catch { /* pinning never blocks a run */ }
+  if (preparedSteps.length !== workflow.steps.length) {
+    workflow.steps = preparedSteps;
+    workflow.updatedAt = now();
+    persist();
+    logActivity('workflow', `Added a launch prerequisite before the first focus in "${workflow.name}"`, { workflowId: workflow.id });
+  }
   const run = {
     id: uid('run'),
     workflowId: workflow.id,
@@ -399,6 +393,18 @@ export function createRun(workflow, { trigger = 'manual', dryRun = null, agentRo
     analysis: null,
     review: { status: 'unreviewed', comment: '', at: null },
   };
+  // Spot and pin each step's intent on the run's own step copies, so similar
+  // steps across runs carry the same tag without rewriting the saved workflow.
+  // The builder's "Pin intents" button persists them into the workflow itself.
+  try {
+    for (const step of run.steps) {
+      const spotted = spotIntent(step);
+      if (!step.intent) {
+        step.intent = spotted.intent;
+        step.intentBasis = spotted.basis;
+      }
+    }
+  } catch { /* pinning never blocks a run */ }
   d.runs.unshift(run);
   d.runs = d.runs.slice(0, MAX_RUNS);
   persist();
