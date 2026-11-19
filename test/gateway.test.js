@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 
 const root = process.cwd();
@@ -57,6 +58,11 @@ function providerFixture() {
 
 let fixture = null;
 let fixturePort = 0;
+let gatewayRuntimeAvailable = false;
+try {
+  execFileSync(gateway.gatewayStatus().python, ['-c', 'import respan_gateway'], { stdio: 'ignore' });
+  gatewayRuntimeAvailable = true;
+} catch {}
 
 function listen(server) {
   return new Promise((resolve, reject) => {
@@ -127,7 +133,7 @@ test('the gateway stays off until it is enabled in settings', async () => {
   assert.equal(await gateway.ensureGateway(), null);
 });
 
-test('chat() reaches the console provider through the local gateway', async () => {
+test('chat() reaches the console provider through the local gateway', { skip: !gatewayRuntimeAvailable && 'Respan Gateway Python package is not installed' }, async () => {
   settings({ gatewayEnabled: true });
   fixture.seen.length = 0;
   const reply = await llm.chat([{ role: 'user', content: 'ping' }], { timeoutMs: 60000 });
