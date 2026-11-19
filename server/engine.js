@@ -1731,6 +1731,20 @@ async function executeRun(runId) {
             throw err;
           }
           if (effect.detail && !step.verification) step.verification = { kind: 'window', detail: effect.detail, at: now() };
+          // A typing step that names its window proves the destination directly:
+          // the focused element is sitting in exactly the window the step named.
+          const destination = String(step.params?.foreground || '').trim();
+          if (!step.verification && destination && ['type', 'key', 'clipboard'].includes(step.type)) {
+            try {
+              const focused = probe?.readFocusedElement ? await probe.readFocusedElement() : await readFocusedElement();
+              const focusedWindow = String(focused?.window || '').trim();
+              if (focused?.found !== false && focusedWindow.toLowerCase() === destination.toLowerCase()) {
+                step.verification = { kind: 'window', detail: `${destination} is the focused window; the destination is proven, not guessed`, at: now() };
+              }
+            } catch {
+              // No focused element to consult; the screen diff remains the proof.
+            }
+          }
           const checks = await runPostChecks(step, ctx, probe);
           // Review the step's own expectation against the screen before the next
           // action is planned from it; an open dialog here shapes what comes next.
