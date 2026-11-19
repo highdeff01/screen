@@ -177,7 +177,7 @@ export async function checkLink({ run, root = ROOT, branch = 'main', timeoutMs =
 }
 
 /** Create the mirror folder once, from the same remote the console uses. */
-async function ensureMirror({ git, dir, branch }) {
+async function ensureMirror({ git, dir, branch, root = ROOT }) {
   const inside = await git(['rev-parse', '--is-inside-work-tree'], dir);
   if (inside.ok && String(inside.stdout).trim() === 'true') return { ok: true, created: false };
 
@@ -194,7 +194,7 @@ async function ensureMirror({ git, dir, branch }) {
       error: `${dir} exists and is not empty but is not a git checkout. Pick an empty folder or remove it by hand; nothing here is ever deleted automatically.`,
     };
   }
-  const remote = await git(['remote', 'get-url', 'origin']);
+  const remote = await git(['remote', 'get-url', 'origin'], root);
   const url = String(remote.stdout || '').trim();
   if (!remote.ok || !url) {
     return { ok: false, created: false, error: remote.stderr || 'No origin remote is configured, so there is nothing to mirror.' };
@@ -204,7 +204,7 @@ async function ensureMirror({ git, dir, branch }) {
   } catch (err) {
     return { ok: false, created: false, error: `Could not create ${path.dirname(dir)}: ${err.message}` };
   }
-  const clone = await git(['clone', url, dir], ROOT, 300000);
+  const clone = await git(['clone', url, dir], root, 300000);
   if (!clone.ok) {
     return { ok: false, created: false, error: clone.stderr || clone.stdout || 'git clone failed.' };
   }
@@ -359,7 +359,7 @@ export async function backupTick({ run, root = ROOT, settings = db().settings ||
       return backupStatus();
     }
 
-    const ready = await ensureMirror({ git, dir, branch });
+    const ready = await ensureMirror({ git, dir, branch, root });
     state.mirror.exists = ready.ok || state.mirror.exists;
     if (!ready.ok) {
       state.status = 'error';
