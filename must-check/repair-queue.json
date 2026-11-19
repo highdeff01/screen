@@ -1,19 +1,51 @@
 {
   "version": 1,
   "by": "sentinel",
-  "updatedAt": "2026-11-19T01:55:13.551Z",
-  "head": "f2ee84067003",
+  "updatedAt": "2026-11-19T01:58:11.632Z",
+  "head": "ffe00c47c748",
   "lastRun": {
-    "at": "2026-11-19T01:55:13.550Z",
-    "ok": true,
+    "at": "2026-11-19T01:58:11.620Z",
+    "ok": false,
     "tests": 517,
-    "pass": 512,
-    "fail": 0,
+    "pass": 510,
+    "fail": 2,
     "isolated": true,
-    "failingTests": []
+    "failingTests": [
+      "a workflow that does not start with focusWindow is left unchanged (60.6968ms)",
+      "an already repaired plan does not get a second launch step (0.9232ms)"
+    ]
   },
-  "open": 2,
+  "open": 3,
   "items": [
+    {
+      "id": "sent_mwmwi2lgacfe49",
+      "at": "2026-11-19T01:58:11.620Z",
+      "status": "queued",
+      "attempts": 1,
+      "fail": 2,
+      "pass": 510,
+      "tests": [
+        "a workflow that does not start with focusWindow is left unchanged (60.6968ms)",
+        "an already repaired plan does not get a second launch step (0.9232ms)"
+      ],
+      "details": [
+        {
+          "name": "a workflow that does not start with focusWindow is left unchanged",
+          "file": "",
+          "line": null,
+          "message": ""
+        },
+        {
+          "name": "an already repaired plan does not get a second launch step",
+          "file": "",
+          "line": null,
+          "message": ""
+        }
+      ],
+      "plan": "",
+      "planError": "",
+      "report": "must-check/2026-11-19T01-58-11-a-workflow-that-does-not-start-with-focu.md"
+    },
     {
       "id": "sent_mwmw6swqfa250d",
       "at": "2026-11-19T01:49:25.850Z",
