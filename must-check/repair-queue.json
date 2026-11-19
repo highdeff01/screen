@@ -1,19 +1,16 @@
 {
   "version": 1,
   "by": "sentinel",
-  "updatedAt": "2026-11-19T01:58:11.632Z",
-  "head": "ffe00c47c748",
+  "updatedAt": "2026-11-19T02:53:22.035Z",
+  "head": "17f390c364e8",
   "lastRun": {
-    "at": "2026-11-19T01:58:11.620Z",
-    "ok": false,
-    "tests": 517,
-    "pass": 510,
-    "fail": 2,
+    "at": "2026-11-19T02:53:22.035Z",
+    "ok": true,
+    "tests": 524,
+    "pass": 519,
+    "fail": 0,
     "isolated": true,
-    "failingTests": [
-      "a workflow that does not start with focusWindow is left unchanged (60.6968ms)",
-      "an already repaired plan does not get a second launch step (0.9232ms)"
-    ]
+    "failingTests": []
   },
   "open": 3,
   "items": [
