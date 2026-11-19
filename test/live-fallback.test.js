@@ -68,6 +68,29 @@ test('detection refuses and the real probe confirms: the run continues simulated
   );
 });
 
+test('a run the operator asked to simulate is never flipped live by the probe', async () => {
+  let probes = 0;
+  platform.setProbeOverride(() => {
+    probes += 1;
+    return { ok: true, detail: 'answered' };
+  });
+  const workflow = probeWorkflow();
+  // An explicit simulation: no live request was refused, so there is nothing to
+  // correct. The probe must not even be asked, or a deliberate rehearsal would
+  // start driving the real screen.
+  const run = engine.createRun(workflow, { dryRun: true });
+  const finished = await engine.waitForRun(run.id, { timeoutMs: 20000, intervalMs: 20 });
+  assert.equal(probes, 0, 'an explicit simulation never asks the live probe');
+  assert.equal(finished.dryRun, true, 'the run stayed simulated');
+  assert.equal(finished.liveFallback ?? null, null, 'no refusal was invented for it');
+  assert.equal(finished.detectionCorrected ?? false, false, 'nothing was corrected');
+  assert.equal(finished.status, 'passed');
+  assert.ok(
+    !(finished.log || []).some((line) => /Workaround applied|continues live|initial detection was wrong/i.test(line.message || '')),
+    'the log never claims a live switch'
+  );
+});
+
 test('detection refuses but the machine answers natively: the run continues live — detection was wrong', async () => {
   platform.setProbeOverride(() => ({ ok: true, detail: 'answered' }));
   const workflow = probeWorkflow();
