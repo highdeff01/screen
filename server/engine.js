@@ -1316,12 +1316,16 @@ async function executeRun(runId) {
           err.verification = true;
           throw err;
         }
-        candidate.verification = {
-          kind: 'screen',
-          changedPct: delta.changedPct,
-          ...(verdict.corroborated ? { corroborated: verdict.corroborated } : {}),
-          at: after.at,
-        };
+        // A proof already on the step (the named window, a launch claim) stays:
+        // the screen diff is evidence, not a replacement for the destination.
+        if (!candidate.verification) {
+          candidate.verification = {
+            kind: 'screen',
+            changedPct: delta.changedPct,
+            ...(verdict.corroborated ? { corroborated: verdict.corroborated } : {}),
+            at: after.at,
+          };
+        }
       }
       lastSignature = after;
     }
@@ -1765,12 +1769,16 @@ async function executeRun(runId) {
                 err.verification = true;
                 throw err;
               }
-              step.verification = {
-                kind: 'screen',
-                changedPct: delta.changedPct,
-                ...(verdict.corroborated ? { corroborated: verdict.corroborated } : {}),
-                at: after.at,
-              };
+              // A proof already on the step (the named window, a launch claim)
+              // stays: the screen diff is evidence, not a replacement.
+              if (!step.verification) {
+                step.verification = {
+                  kind: 'screen',
+                  changedPct: delta.changedPct,
+                  ...(verdict.corroborated ? { corroborated: verdict.corroborated } : {}),
+                  at: after.at,
+                };
+              }
               if (verdict.corroborated) {
                 pushLog(run, 'info', `No visible change after "${step.name}"; confirmed because ${verdict.corroborated}.`, step.id);
               }
