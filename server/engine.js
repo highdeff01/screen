@@ -25,6 +25,7 @@ import { firewallCheck } from './firewall.js';
 import { addNote } from './handoff.js';
 import { noteStepOutcome, pinStepIntents, similarSolutions, spotIntent } from './step-factoring.js';
 import { beginRunObservation, endRunObservation } from './app-observer.js';
+import { liveControl } from './platform.js';
 import { expectsScreenChange, windowChecksFor, resumePlan, corroboratesNoChange, lookupWindowFor, screenChangeVerdict } from './step-effects.js';
 
 // Per-run adapters supplied by tests so the screen policy can run without a UI.
@@ -1235,6 +1236,23 @@ async function executeRun(runId) {
   const run = findRun(runId);
   if (!run || run.status !== 'queued') return;
   const probe = runProbes.get(run.id) || null;
+  // Platform fallback at the source of truth: any run that reaches the queue
+  // while no live backend is available (hosted previews, headless machines)
+  // converts to simulation here — whichever path created it. Retries,
+  // recovery packs, shortcut replays and scheduler runs all pass through.
+  if (!run.dryRun && !probe) {
+    try {
+      const control = liveControl();
+      if (!control.available) {
+        run.dryRun = true;
+        run.liveFallback = control.reason || 'no live backend';
+        pushLog(run, 'warn', `Live refused on this machine (${run.liveFallback}); the run continues simulated instead.`, null);
+        try {
+          recordAction({ kind: 'run', action: `start-run:${run.workflowName}`, error: run.liveFallback, detail: { runId: run.id, requestedMode: 'live' } });
+        } catch { /* logging never blocks the run */ }
+      }
+    } catch { /* if the backend probe itself fails, run as queued */ }
+  }
   const repairEnabled = !run.dryRun && run.liveRepair !== false && (run.liveRepair === true || !probe);
   const capture = () => (probe?.captureScreenSignature ? probe.captureScreenSignature() : captureScreenSignature());
   const workflow = run.workflowSnapshot || db().workflows.find((w) => w.id === run.workflowId);
