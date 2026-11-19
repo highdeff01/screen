@@ -280,6 +280,7 @@ async function syncMirror({ git, dir, branch, maxDeletes }) {
       // Someone else pushed first: fetch again on the next tick and fast-forward.
       return { ok: false, error: pushed.stderr || pushed.stdout || 'git push from the backup folder failed.' };
     }
+    state.mirror.ahead = 0;
     state.mirror.lastSyncAt = now();
     remember('mirror-push', `Pushed ${counts.ahead} commit(s) from the backup folder to origin/${branch}.`);
     return { ok: true, pushed: counts.ahead, pulled: 0 };
@@ -293,6 +294,7 @@ async function syncMirror({ git, dir, branch, maxDeletes }) {
         error: merge.stderr || merge.stdout || `origin/${branch} cannot fast-forward into the backup folder.`,
       };
     }
+    state.mirror.behind = 0;
     state.mirror.lastSyncAt = now();
     state.mirror.lastError = '';
     remember('mirror-pull', `Fast-forwarded the backup folder by ${counts.behind} commit(s).`);
