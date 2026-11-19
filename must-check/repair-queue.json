@@ -1,19 +1,16 @@
 {
   "version": 1,
   "by": "sentinel",
-  "updatedAt": "2026-11-19T04:08:29.736Z",
-  "head": "5fdad909766a",
+  "updatedAt": "2026-11-19T04:15:03.359Z",
+  "head": "0b32d3f19606",
   "lastRun": {
-    "at": "2026-11-19T04:08:29.185Z",
-    "ok": false,
-    "tests": 540,
-    "pass": 533,
-    "fail": 2,
+    "at": "2026-11-19T04:15:03.359Z",
+    "ok": true,
+    "tests": 543,
+    "pass": 538,
+    "fail": 0,
     "isolated": true,
-    "failingTests": [
-      "a no-op click that changed nothing and has no confirmation still fails (12908.7133ms)",
-      "C:\\Users\\Dan\\.config\\freebuff-desktop\\local-projects\\40af3ced-48bf-4a9d-a8b7-cb42815bab8f\\data\\worktrees\\sentinel-1795061109088-36368\\test\\engine-screen.test.js (441.7849ms)"
-    ]
+    "failingTests": []
   },
   "open": 2,
   "items": [
