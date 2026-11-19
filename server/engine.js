@@ -308,7 +308,10 @@ export function createRun(workflow, { trigger = 'manual', dryRun = null, agentRo
   if (!workflow || !workflow.steps?.length) {
     throw new Error('Workflow has no steps to run.');
   }
-  const preparedSteps = ensureLeadingFocusLaunch(workflow.steps);
+  // A probe simulates the whole desktop: every stub answers instantly, so a
+  // real launch prerequisite would only add steps and real-timer waits the
+  // simulation cannot use. Injection stays for live runs, which never pass one.
+  const preparedSteps = probe ? workflow.steps : ensureLeadingFocusLaunch(workflow.steps);
   if (preparedSteps.length !== workflow.steps.length) {
     workflow.steps = preparedSteps;
     workflow.updatedAt = now();
