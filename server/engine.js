@@ -1815,7 +1815,7 @@ async function executeRun(runId) {
     persist();
     pushLog(run, 'info', `Step ${step.name} (${step.type})`, step.id);
 
-    const maxAttempts = run.policy?.onFailure === 'retry' ? Math.max(1, Number(run.policy.maxRetries || 0) + 1) : 1;
+    let maxAttempts = run.policy?.onFailure === 'retry' ? Math.max(1, Number(run.policy.maxRetries || 0) + 1) : 1;
     let lastError = null;
     let verificationFailure = false;
     let succeeded = false;

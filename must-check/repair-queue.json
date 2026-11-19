@@ -1,19 +1,43 @@
 {
   "version": 1,
   "by": "sentinel",
-  "updatedAt": "2026-11-19T16:36:48.523Z",
-  "head": "806ad542a421",
+  "updatedAt": "2026-11-19T16:50:46.364Z",
+  "head": "af4ee019ed91",
   "lastRun": {
-    "at": "2026-11-19T16:36:48.522Z",
-    "ok": true,
+    "at": "2026-11-19T16:50:46.353Z",
+    "ok": false,
     "tests": 567,
-    "pass": 562,
-    "fail": 0,
+    "pass": 561,
+    "fail": 1,
     "isolated": true,
-    "failingTests": []
+    "failingTests": [
+      "a live run reaches the queue, finds no backend, and continues simulated (5782.398ms)"
+    ]
   },
-  "open": 5,
+  "open": 6,
   "items": [
+    {
+      "id": "sent_mwnsdxoxba848c",
+      "at": "2026-11-19T16:50:46.353Z",
+      "status": "queued",
+      "attempts": 1,
+      "fail": 1,
+      "pass": 561,
+      "tests": [
+        "a live run reaches the queue, finds no backend, and continues simulated (5782.398ms)"
+      ],
+      "details": [
+        {
+          "name": "a live run reaches the queue, finds no backend, and continues simulated",
+          "file": "",
+          "line": null,
+          "message": ""
+        }
+      ],
+      "plan": "",
+      "planError": "",
+      "report": "must-check/2026-11-19T16-50-46-a-live-run-reaches-the-queue-finds-no-ba.md"
+    },
     {
       "id": "sent_mwnroin42d05b4",
       "at": "2026-11-19T16:31:00.448Z",
