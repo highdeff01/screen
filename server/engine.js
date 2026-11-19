@@ -1969,6 +1969,21 @@ async function executeRun(runId) {
             step.evidenceIds.push(evidence.id);
           }
           pushLog(run, 'warn', `Attempt ${attempt}/${maxAttempts} failed: ${lastError}`, step.id);
+          // The platform workaround: a refusal that names the platform may be
+          // detection being wrong, not the step being impossible. Prove it with
+          // a real action once per run; if the machine answers natively, grant
+          // one more attempt and continue live.
+          if (!run.dryRun && !run.liveWorkaroundTried && isPlatformRefusal(lastError)) {
+            run.liveWorkaroundTried = true;
+            const proof = await probeLiveBackend();
+            if (proof.ok) {
+              run.detectionCorrected = true;
+              maxAttempts += 1;
+              pushLog(run, 'warn', `Step hit a platform guard (“${String(lastError).slice(0, 120)}”), but the machine answers natively (${proof.detail}) — initial detection was wrong. Workaround applied: one more live attempt.`, step.id);
+              continue;
+            }
+            pushLog(run, 'info', `Platform guard confirmed by probe (${proof.detail || 'no answer'}); the refusal stands.`, step.id);
+          }
           if (attempt < maxAttempts && !run.cancelRequested) {
             const pause = Math.max(0, Number(run.policy?.pauseBeforeRetryMs || 0));
             await waitBeforeRetry(run, pause ? Math.min(pause, 10000) : 300);

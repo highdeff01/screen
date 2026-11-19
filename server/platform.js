@@ -409,6 +409,7 @@ export function detectBackend({ env = process.env, platform = HOST } = {}) {
  * the workaround when a step hits a platform guard mid-run.
  */
 export function probeLiveBackend({ timeoutMs = 5000 } = {}) {
+  if (probeOverride) return Promise.resolve(probeOverride());
   const platform = process.platform;
   const attempt = (command, args) =>
     new Promise((resolve) => {
@@ -435,6 +436,13 @@ export function probeLiveBackend({ timeoutMs = 5000 } = {}) {
     return attempt('xdotool', ['getmouselocation']);
   }
   return Promise.resolve({ ok: false, detail: `no live backend for ${platform}` });
+}
+
+let probeOverride = null;
+
+/** Tests replace the real probe with a canned answer. */
+export function setProbeOverride(fn) {
+  probeOverride = fn;
 }
 
 /** The refusal messages a platform guard produces at execution time. */
