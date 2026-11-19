@@ -93,7 +93,7 @@ function setting(settings, key, fallback) {
 
 export function backupStatus() {
   const settings = db().settings || {};
-  const enabled = state.enabled;
+  const enabled = state.enabled || backupWanted(settings);
   return {
     enabled,
     running: Boolean(state.timer),
@@ -307,7 +307,7 @@ async function syncMirror({ git, dir, branch, maxDeletes }) {
  */
 export async function backupTick({ run, root = ROOT, settings = db().settings || {}, force = false } = {}) {
   const git = run || runGit;
-  state.enabled = settings.localBackupEnabled === true;
+  state.enabled = backupWanted(settings);
   if (!state.enabled && !force) {
     state.status = 'disabled';
     return backupStatus();
@@ -320,7 +320,7 @@ export async function backupTick({ run, root = ROOT, settings = db().settings ||
     const branch = String(setting(settings, 'localBackupBranch', '')) || (await git(['rev-parse', '--abbrev-ref', 'HEAD'], root)).stdout.trim() || 'main';
     state.branch = branch;
     state.remote = String((await git(['remote', 'get-url', 'origin'], root)).stdout || '').trim();
-    state.mirrorPath = String(setting(settings, 'localBackupPath', '')).trim();
+    state.mirrorPath = String(setting(settings, 'localBackupPath', '')).trim() || (fs.existsSync(path.join(suggestedBackupPath(), '.git')) ? suggestedBackupPath() : '');
 
     const link = await checkLink({ run: git, root, branch });
     state.checks += 1;
@@ -411,7 +411,7 @@ export function checkBackupNow(opts = {}) {
 
 export function startBackup({ intervalMs } = {}) {
   const settings = db().settings || {};
-  state.enabled = settings.localBackupEnabled === true;
+  state.enabled = backupWanted(settings);
   const configured = Number(intervalMs) || Number(setting(settings, 'localBackupIntervalMs', 10000)) || 10000;
   // Ten seconds by default; five is the floor, matching auto-sync.
   state.intervalMs = Math.max(5000, Math.min(600000, configured));
@@ -435,6 +435,22 @@ export function stopBackup() {
 /** Where a mirror would default to if someone just turns the feature on. */
 export function suggestedBackupPath() {
   return path.join(os.homedir(), 'Sightline-backup');
+}
+
+/**
+ * Whether a backup pass should run. Explicit opt-in wins; when the setting was
+ * never decided (`undefined`) an existing mirror folder counts as a yes, so a
+ * mirror that was created on request comes alive after a restart without the
+ * settings write surviving the old console's periodic save.
+ */
+export function backupWanted(settings = db().settings || {}) {
+  if (settings.localBackupEnabled === true) return true;
+  if (settings.localBackupEnabled === false) return false;
+  try {
+    return fs.existsSync(path.join(suggestedBackupPath(), '.git'));
+  } catch {
+    return false;
+  }
 }
 
 export { state as __backupState };
