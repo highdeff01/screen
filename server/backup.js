@@ -230,7 +230,9 @@ async function countsAgainst(git, dir, branch) {
  * small report; never throws, never force-pushes, never resets.
  */
 async function syncMirror({ git, dir, branch, maxDeletes }) {
-  const status = await git(['status', '--porcelain', '--untracked-files=no'], dir);
+  // Everything the clone would otherwise hold back: tracked edits, deletions and
+  // new files that this repository's .gitignore does not already exclude.
+  const status = await git(['status', '--porcelain', '--untracked-files=all'], dir);
   if (!status.ok) return { ok: false, error: status.stderr || 'git status failed in the backup folder.' };
   const parsed = readPorcelain(status.stdout);
   state.mirror.dirty = parsed.count;
@@ -245,7 +247,7 @@ async function syncMirror({ git, dir, branch, maxDeletes }) {
       remember('held', guard.why);
       return { ok: false, held: true, error: guard.why };
     }
-    const add = await git(['add', '-u'], dir);
+    const add = await git(['add', '-A'], dir);
     if (!add.ok) return { ok: false, error: add.stderr || 'git add failed in the backup folder.' };
     const commit = await git(['commit', '-m', `Backup changes to ${parsed.modified.concat(parsed.deletions).slice(0, 8).join(', ')}`], dir);
     if (!commit.ok && !/nothing to commit|no changes added/i.test(`${commit.stdout}\n${commit.stderr}`)) {

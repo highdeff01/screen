@@ -1,19 +1,43 @@
 {
   "version": 1,
   "by": "sentinel",
-  "updatedAt": "2026-11-19T22:19:14.877Z",
-  "head": "811179cb7bcd",
+  "updatedAt": "2026-11-19T22:22:19.924Z",
+  "head": "9bb7e0fe99e3",
   "lastRun": {
-    "at": "2026-11-19T22:19:14.877Z",
-    "ok": true,
-    "tests": 595,
-    "pass": 590,
-    "fail": 0,
+    "at": "2026-11-19T22:22:19.881Z",
+    "ok": false,
+    "tests": 600,
+    "pass": 594,
+    "fail": 1,
     "isolated": true,
-    "failingTests": []
+    "failingTests": [
+      "the mirror is cloned once, then follows GitHub in both directions (7512.5273ms)"
+    ]
   },
-  "open": 1,
+  "open": 2,
   "items": [
+    {
+      "id": "sent_mwo48bmx583b03",
+      "at": "2026-11-19T22:22:19.881Z",
+      "status": "queued",
+      "attempts": 1,
+      "fail": 1,
+      "pass": 594,
+      "tests": [
+        "the mirror is cloned once, then follows GitHub in both directions (7512.5273ms)"
+      ],
+      "details": [
+        {
+          "name": "the mirror is cloned once, then follows GitHub in both directions",
+          "file": "",
+          "line": null,
+          "message": ""
+        }
+      ],
+      "plan": "",
+      "planError": "",
+      "report": "must-check/2026-11-19T22-22-19-the-mirror-is-cloned-once-then-follows-g.md"
+    },
     {
       "id": "sent_mwo0a3580d5251",
       "at": "2026-11-19T20:31:43.724Z",
