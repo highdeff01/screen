@@ -7,6 +7,7 @@ import { CAPTURES, DATA, NOTES, ROOT, TOOLS, db, now, persist, slug, uid, writeF
 import { chat, parseJsonLoose } from './llm.js';
 import { executePortableStep, portableLiveScreenshot } from './portable.js';
 import { decidePreview, describeSurroundings } from './step-context.js';
+import { judgeModeFor, judgeTargetFor, mergeJudgement, recordJudgement, windowFacts } from './judgement.js';
 import {
   catalogEntry,
   discoverInstallerUrls,
@@ -264,7 +265,8 @@ function normalizeUrl(value) {
 
 function foregroundGuard(p, action) {
   const expected = (p.foreground === true ? str(p.window || p.title || p.expectedWindow) : str(p.foreground)).trim();
-  if (!expected) return '';
+  const expectedHandle = Math.max(0, Number(p.foregroundHandle) || 0);
+  if (!expected && !expectedHandle) return '';
   return `
 $fg = [IntPtr]::Zero
 # A foreground handle can be momentarily zero while a window is being created
@@ -298,10 +300,16 @@ if (-not $fgTitle -and $fg -ne [IntPtr]::Zero) {
 if (-not $fgTitle -and $fgProc) { $fgTitle = [string]$fgProc.MainWindowTitle }
 $fgProcess = if ($fgProc) { [string]$fgProc.ProcessName } else { '' }
 $expected = ${psQuote(expected)}
-$guardMatch = ($fgProcess -like ('*' + $expected + '*')) -or ($fgTitle -like ('*' + $expected + '*'))
+$expectedHandle = [int64]${expectedHandle}
+# An inherited handle is the exact window this run opened; a title match alone
+# would accept another document of the same app.
+$handleOk = if ($expectedHandle -gt 0) { $fg.ToInt64() -eq $expectedHandle } else { $true }
+$titleOk = if ($expected) { ($fgProcess -like ('*' + $expected + '*')) -or ($fgTitle -like ('*' + $expected + '*')) } else { $true }
+$guardMatch = $handleOk -and $titleOk
 if (-not $guardMatch) {
   $actual = if ($fgProcess -or $fgTitle) { $fgProcess + ' :: ' + $fgTitle } else { '(unknown)' }
-  throw ('Refusing to ${action}: foreground window is "' + $actual + '", expected process or window "${expected}".')
+  $wanted = if ($expected) { 'process or window "' + $expected + '"' } else { 'the window this run opened' }
+  throw ('Refusing to ${action}: foreground window is "' + $actual + '", expected ' + $wanted + '.')
 }`;
 }
 
@@ -382,22 +390,29 @@ async function liveScreenshot(runId, options = {}) {
   const quality = Math.max(30, Math.min(95, Number(options.quality) || 80));
   const wantVision = options.vision !== false && maxWidth > 0;
   const visionFile = wantVision ? path.join(CAPTURES, `${path.basename(file, '.png')}-vision.jpg`) : '';
+  // A specific window is cropped by handle, so the picture a judge reads is the
+  // run's own window rather than whichever window happens to be in front.
+  const cropWindow = options.crop && typeof options.crop === 'object' && options.crop.window ? Number(options.crop.window) : 0;
   const crop =
     options.crop === 'foreground'
       ? 'foreground'
-      : options.crop && typeof options.crop === 'object'
-        ? 'rect'
-        : 'none';
+      : cropWindow
+        ? 'window'
+        : options.crop && typeof options.crop === 'object'
+          ? 'rect'
+          : 'none';
   const rect = crop === 'rect' ? options.crop : null;
   const cropScript =
-    crop === 'foreground'
+    crop === 'foreground' || crop === 'window'
       ? `Add-Type -AssemblyName UIAutomationClient
-$fgHandle = [SightlineInput]::GetForegroundWindow()
+$fgHandle = ${crop === 'window' ? `[IntPtr]${cropWindow}` : '[SightlineInput]::GetForegroundWindow()'}
 $fgBox = [System.Windows.Automation.AutomationElement]::FromHandle($fgHandle).Current.BoundingRectangle
 $cx = [int][math]::Max(0, [math]::Floor($fgBox.X) - $b.X)
 $cy = [int][math]::Max(0, [math]::Floor($fgBox.Y) - $b.Y)
 $cw = [int][math]::Min($b.Width - $cx, [math]::Max(1, [math]::Floor($fgBox.Width)))
 $ch = [int][math]::Min($b.Height - $cy, [math]::Max(1, [math]::Floor($fgBox.Height)))
+if ($cw -lt 1) { $cw = 1 }
+if ($ch -lt 1) { $ch = 1 }
 $cropBuf = New-Object System.Text.StringBuilder 512
 [void][SightlineInput]::GetWindowText($fgHandle, $cropBuf, $cropBuf.Capacity)
 $cropTitle = [string]$cropBuf.ToString()`
@@ -894,7 +909,7 @@ function Show-SightlineFront($processLeaf, $preferPid) {
   [void][SightlineInput]::BringWindowToTop($front.MainWindowHandle)
   [void][SightlineInput]::SetForegroundWindow($front.MainWindowHandle)
   Start-Sleep -Milliseconds 250
-  Write-Output ('front ' + $front.ProcessName + ' :: ' + $front.MainWindowTitle)
+  Write-Output ('front ' + $front.ProcessName + ' :: ' + $front.MainWindowTitle + ' [hwnd=' + $front.MainWindowHandle.ToInt64() + ']')
 }
 if (-not $isPath -and ${launchArgs.length} -eq 0 -and $reuseExisting -eq 1) {
   $existing = @(Get-Process | Where-Object {
@@ -905,7 +920,7 @@ if (-not $isPath -and ${launchArgs.length} -eq 0 -and $reuseExisting -eq 1) {
     [void][SightlineInput]::ShowWindow($existing.MainWindowHandle, 9)
     [void][SightlineInput]::BringWindowToTop($existing.MainWindowHandle)
     [void][SightlineInput]::SetForegroundWindow($existing.MainWindowHandle)
-    Write-Output ('focused existing ' + $existing.ProcessName + ' :: ' + $existing.MainWindowTitle)
+    Write-Output ('focused existing ' + $existing.ProcessName + ' :: ' + $existing.MainWindowTitle + ' [hwnd=' + $existing.MainWindowHandle.ToInt64() + ']')
     exit 0
   }
 }
@@ -918,7 +933,7 @@ if ($windowMatch) {
   [void][SightlineInput]::ShowWindow($windowMatch.MainWindowHandle, 9)
   [void][SightlineInput]::BringWindowToTop($windowMatch.MainWindowHandle)
   [void][SightlineInput]::SetForegroundWindow($windowMatch.MainWindowHandle)
-  Write-Output ('focused window ' + $windowMatch.ProcessName + ' :: ' + $windowMatch.MainWindowTitle)
+  Write-Output ('focused window ' + $windowMatch.ProcessName + ' :: ' + $windowMatch.MainWindowTitle + ' [hwnd=' + $windowMatch.MainWindowHandle.ToInt64() + ']')
   exit 0
 }
 if (Test-Path -LiteralPath $target) {
@@ -973,11 +988,15 @@ Write-Output 'opened'`;
 Start-Process ${psQuote(url)}
 Write-Output 'opened'`;
     }
-    case 'focusWindow':
+    case 'focusWindow': {
+      // A handle recorded at launch names one exact window. Title and process
+      // stay as fallbacks so old steps and hand-written steps keep working.
+      const handle = Math.max(0, Number(p.handle || p.hwnd || p.windowHandle) || 0);
       return `${pre}
 $title = ${psQuote(str(p.title || p.windowName || p.windowTitle))}
 $processName = ${psQuote(str(p.process))}
-if (-not $title -and -not $processName) { throw 'Focus window needs a title or process name.' }
+$requestedHandle = [int64]${handle}
+if (-not $title -and -not $processName -and $requestedHandle -le 0) { throw 'Focus window needs a title, process name or handle.' }
 $pattern = '*' + $title + '*'
 $desiredProcess = $processName
 if (-not $desiredProcess -and $title) {
@@ -990,23 +1009,44 @@ $fgProc = Get-Process | Where-Object { $_.MainWindowHandle -ne 0 -and $_.MainWin
 # A window of the same app is not the window that was asked for: several
 # documents often share one process (Notepad, Explorer). Count the foreground
 # only when its title matches too, or the step would type into the wrong file.
-$fgMatch = if ($fgProc) {
+$handleOk = if ($requestedHandle -gt 0) { $fg.ToInt64() -eq $requestedHandle } else { $true }
+$fgMatch = if ($fgProc -and $handleOk) {
   $procOk = if ($desiredProcess) { $fgProc.ProcessName -like $procPattern } else { $true }
   $titleOk = if ($title) { $fgProc.MainWindowTitle -like $pattern } else { $true }
   $procOk -and $titleOk
 } else { $false }
 if ($fgMatch) {
-  Write-Output ('already focused ' + $fgProc.ProcessName + ' :: ' + $fgProc.MainWindowTitle)
+  Write-Output ('already focused ' + $fgProc.ProcessName + ' :: ' + $fgProc.MainWindowTitle + ' [hwnd=' + $fg.ToInt64() + ']')
   exit 0
 }
+if ($requestedHandle -gt 0) {
+  # The exact window wins over every name match, including a dialog that is not
+  # its process's MainWindow.
+  $byHandle = Get-Process | Where-Object { $_.MainWindowHandle -ne 0 -and $_.MainWindowHandle -eq ([IntPtr]$requestedHandle) } | Select-Object -First 1
+  if ($byHandle) {
+    $target = $byHandle
+  } else {
+    $hTitle = New-Object System.Text.StringBuilder 512
+    [void][SightlineInput]::GetWindowText([IntPtr]$requestedHandle, $hTitle, $hTitle.Capacity)
+    $hPid = 0
+    [void][SightlineInput]::GetWindowThreadProcessId([IntPtr]$requestedHandle, [ref]$hPid)
+    $hProc = ''
+    try { $hProc = (Get-Process -Id $hPid -ErrorAction Stop).ProcessName } catch { }
+    $target = [pscustomobject]@{ MainWindowHandle = [IntPtr]$requestedHandle; ProcessName = $hProc; MainWindowTitle = [string]$hTitle.ToString(); Id = $hPid }
+  }
+} else {
+  $target = $null
+}
 $lookalike = '(?i)(setup|installer|installing|installation|uninstall|downloading|download|wizard|extracting)'
-$candidates = @(Get-Process | Where-Object {
-  $_.MainWindowHandle -ne 0 -and (
-    ($desiredProcess -and $_.ProcessName -like $procPattern) -or
-    (-not $desiredProcess -and $_.MainWindowTitle -like $pattern)
-  )
-})
-$target = $candidates | Where-Object { $_.MainWindowTitle -notmatch $lookalike } | Sort-Object Id -Descending | Select-Object -First 1
+if (-not $target) {
+  $candidates = @(Get-Process | Where-Object {
+    $_.MainWindowHandle -ne 0 -and (
+      ($desiredProcess -and $_.ProcessName -like $procPattern) -or
+      (-not $desiredProcess -and $_.MainWindowTitle -like $pattern)
+    )
+  })
+  $target = $candidates | Where-Object { $_.MainWindowTitle -notmatch $lookalike } | Sort-Object Id -Descending | Select-Object -First 1
+}
 if (-not $target) { $target = $candidates | Sort-Object Id -Descending | Select-Object -First 1 }
 if (-not $target -and $title) {
   # Dialogs (Save As, Open, installers) are windows without being a process's
@@ -1112,7 +1152,7 @@ if (-not (Test-Focused)) {
   $actual = if ($fgNow) { $fgNow.ProcessName + ' :: ' + $fgNow.MainWindowTitle } else { '(unknown)' }
   throw ('Window "' + $label + '" was found but Windows would not bring it to the foreground after ' + $focusMethod + '. Foreground is "' + $actual + '".')
 }
-Write-Output ('focused ' + $target.ProcessName + ' :: ' + $target.MainWindowTitle + ' [' + $focusMethod + ']')`;
+Write-Output ('focused ' + $target.ProcessName + ' :: ' + $target.MainWindowTitle + ' [hwnd=' + $target.MainWindowHandle.ToInt64() + '] [' + $focusMethod + ']')`;
     case 'wait':
       return `Start-Sleep -Milliseconds ${Math.min(num(p.ms, 1000), 600000)}
 Write-Output 'waited'`;
