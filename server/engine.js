@@ -189,6 +189,7 @@ export function summary(run) {
     workflowName: run.workflowName,
     status: run.status,
     dryRun: run.dryRun,
+    liveFallback: run.liveFallback || null,
     shadow: Boolean(run.shadow),
     trigger: run.trigger,
     createdAt: run.createdAt,
