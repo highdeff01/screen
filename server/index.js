@@ -61,6 +61,7 @@ import { applyReshaped, configureDeepFocus, deepFocusStatus, startDeepFocus, sto
 import { addAnnotation, annotationsForRun, listAnnotations, pinFindings, removeAnnotation } from './annotations.js';
 import { presentationFromDeepFocus, deepFocusMarkdown } from './presentations-deep.js';
 import { addFirewallRule, firewallCheck, firewallStatus, firewallTest, removeFirewallRule, resetFirewallRules, setFirewallMode } from './firewall.js';
+import { factoringStatus, pinStepIntents, planRefactoring, pushRefactorToBuilder, similarSolutions } from './step-factoring.js';
 
 /**
  * Apply the deep-focus reshaped steps: keep everything the run passed, replace
@@ -112,13 +113,13 @@ import { planSteps, ensureWorkflowSteps, analyzeRun, writeRunNote, addSuggestion
 import { listProposals, findProposal, proposalView, createProposal, approveProposal, rejectProposal, createProposalForRun, shadowTestProposal } from './proposals.js';
 import { visualTesterStatus, testScreenshot, rememberVisualTest } from './visual-tester.js';
 import { stepMarks, normalizeMarks } from './research.js';
-import { resumeRecoveryPlan } from './step-effects.js';
+import { resumeRecoveryPlan, carryForwardPassedEffects } from './step-effects.js';
 import { retryReplaysFailure } from './replan.js';
 import { listPresentations, getPresentation, findRelatedPresentations, generatePresentation, auditPresentation, reapplyPresentation, proposalFromPresentation, reviewPresentation, setPresentationControl, compactPresentations, exportPresentation } from './presentations.js';
 import { presentationGraph } from './presentation-index.js';
 import { ensurePresentationAgent, watchPresentationDecks } from './presentation-watch.js';
 import { getRetryBudget, setRetryBudget } from './retry-budget.js';
-import { prepareRecovery, finalizeRecoveryPack, applyRecoveryPack, listRecoveryPacks, findRecoveryPack, reconcileStuckRecoveryPacks } from './run-recovery.js';
+import { prepareRecovery, finalizeRecoveryPack, applyRecoveryPack, listRecoveryPacks, findRecoveryPack, reconcileStuckRecoveryPacks, reconcileStuckReplans, recoveryTelemetrySummary, listRecoveryTelemetry } from './run-recovery.js';
 import { activePresenter, listPositionMemory, presenterUserInput } from './foreground-presenter.js';
 import { latestMonitorSuggestions, monitorState, startLiveMonitor, stopLiveMonitor } from './live-monitor.js';
 import { observerState } from './app-observer.js';
@@ -258,9 +259,10 @@ function sendJson(res, code, payload) {
 function fail(res, code, message, detail = null) {
   if (code >= 400) {
     // Every server-side error feeds the action log, so a recurring one is
-    // reported into the synced must-check folder for the fixer to read.
+    // reported into the synced must-check folder for the fixer to read. The
+    // request's method and URL ride along so the source is obvious.
     try {
-      recordAction({ kind: 'server', action: 'http-error', error: message, detail: { code, ...detail } });
+      recordAction({ kind: 'server', action: 'http-error', error: message, detail: { code, ...(res?.requestInfo || {}), ...detail } });
     } catch { /* logging must never break the response */ }
   }
   sendJson(res, code, { ok: false, error: message });
@@ -440,6 +442,7 @@ function workflowView(w) {
 }
 
 function buildState() {
+  reconcileStuckReplans({ live: replanning });
   const d = db();
   const proposalState = listProposals({ limit: 20 });
   const continuity = continuityState();
@@ -467,6 +470,7 @@ function buildState() {
     actionLog: actionLogStatus(),
     agentsWorking: agentActivity(),
     firewall: firewallStatus(),
+    factoring: factoringStatus(),
     share: shareStatus(),
     escalation: escalationStatus(),
     notes: d.notes.slice(0, 60).map(({ body, ...rest }) => ({
@@ -479,6 +483,7 @@ function buildState() {
     visualTester: visualTesterStatus(),
     agents: d.agents,
     recoveryPacks: listRecoveryPacks(20),
+    recoveryTelemetry: recoveryTelemetrySummary(),
     presenter: activePresenter(),
     live: monitorState(),
     observer: observerState(),
@@ -1161,6 +1166,49 @@ route('POST', /^\/api\/firewall\/test$/, async (req, res) => {
   try {
     const body = await readBody(req);
     sendJson(res, 200, { ok: true, verdict: firewallTest(body.step || {}, body.run || null) });
+  } catch (err) {
+    fail(res, 400, err.message);
+  }
+});
+
+/* ---------------- Step factoring: intents, patterns, refactors ------------- */
+route('GET', /^\/api\/factoring$/, async (req, res) => {
+  sendJson(res, 200, { ok: true, factoring: factoringStatus() });
+});
+
+route('POST', /^\/api\/factoring\/pin$/, async (req, res) => {
+  try {
+    const body = await readBody(req);
+    const workflow = (db().workflows || []).find((entry) => entry.id === body.workflowId);
+    if (!workflow) throw new Error('Workflow not found');
+    sendJson(res, 200, { ok: true, pinned: pinStepIntents(workflow) });
+  } catch (err) {
+    fail(res, err.message === 'Workflow not found' ? 404 : 400, err.message);
+  }
+});
+
+route('POST', /^\/api\/factoring\/plan$/, async (req, res) => {
+  try {
+    const body = await readBody(req);
+    sendJson(res, 200, { ok: true, plan: planRefactoring({ minWorkflows: Number(body?.minWorkflows) || 2, minShared: Number(body?.minShared) || 2 }) });
+  } catch (err) {
+    fail(res, 400, err.message);
+  }
+});
+
+route('POST', /^\/api\/factoring\/apply$/, async (req, res) => {
+  try {
+    const body = await readBody(req);
+    sendJson(res, 200, { ok: true, applied: pushRefactorToBuilder(body.planId) });
+  } catch (err) {
+    fail(res, err.message === 'Refactor plan not found' ? 404 : 400, err.message);
+  }
+});
+
+route('POST', /^\/api\/factoring\/solutions$/, async (req, res) => {
+  try {
+    const body = await readBody(req);
+    sendJson(res, 200, { ok: true, solutions: similarSolutions({ step: body.step || {}, excludeWorkflowId: body.excludeWorkflowId || '' }) });
   } catch (err) {
     fail(res, 400, err.message);
   }
@@ -2549,6 +2597,7 @@ route('POST', /^\/api\/runs\/([^/]+)\/replan-retry$/, async (req, res, [id]) => 
     if (['queued', 'running'].includes(original.status)) {
       return fail(res, 409, 'This run is still running; replan it after it finishes.');
     }
+    reconcileStuckReplans({ live: replanning });
     if (replanning.has(original.id) || original.replan?.status === 'planning') {
       return fail(res, 409, 'Re-planning this run is already in progress.');
     }
@@ -2665,6 +2714,16 @@ route('GET', /^\/api\/recovery-packs$/, async (req, res, _params, url) => {
   const workflowId = url.searchParams.get('workflowId') || '';
   const packs = listRecoveryPacks(url.searchParams.get('limit') || 30).filter((pack) => !workflowId || pack.workflowId === workflowId);
   sendJson(res, 200, { ok: true, packs });
+});
+
+// Per-stage planning costs and revision-to-outcome results: the ledger behind
+// "does the AI candidate beat the fresh rebuild, and what does it cost?".
+route('GET', /^\/api\/recovery-telemetry$/, async (req, res, _params, url) => {
+  sendJson(res, 200, {
+    ok: true,
+    ...recoveryTelemetrySummary(),
+    recent: listRecoveryTelemetry(url.searchParams.get('limit') || 20),
+  });
 });
 
 route('GET', /^\/api\/presenter$/, async (req, res) => {
@@ -3659,6 +3718,9 @@ async function handleApi(req, res, url) {
     if (r.method !== req.method) continue;
     const match = url.pathname.match(r.pattern);
     if (!match) continue;
+    // Every error handler can name the exact request that failed, so the
+    // action log records the true source instead of a generic guess.
+    res.requestInfo = { method: req.method, url: url.pathname + (url.search || '') };
     try {
       await r.handler(req, res, match.slice(1), url);
     } catch (err) {
@@ -3822,6 +3884,12 @@ function queueRecoveryRetry(run, pack, snapshot, { source = 'auto-recovery', dry
   // whole snapshot replays rather than dropping the repair.
   const failedStep = (run.steps || []).find((step) => step.status === 'failed');
   const resumed = failedStep ? resumeRecoveryPlan(snapshot.steps, run.steps, failedStep.id) : null;
+  // A whole-plan replay must not repeat an effect that already happened (the
+  // same text typed twice, the same file written twice). Those steps are left
+  // out of the retry and recorded as facts — they are never marked passed.
+  const carried = !dryRun && !resumed
+    ? carryForwardPassedEffects(snapshot.steps, run.steps)
+    : { steps: snapshot.steps, carried: [] };
   // Only a plan that resumes at the failure point is a literal replay: the same
   // plan re-run from the step that just failed. A rebuilt or repaired plan that
   // merely starts with a step of the same shape is a different attempt and is
@@ -3836,7 +3904,21 @@ function queueRecoveryRetry(run, pack, snapshot, { source = 'auto-recovery', dry
     persist();
     return null;
   }
-  const retry = createRun(resumed ? { ...snapshot, steps: resumed.steps } : snapshot, {
+  if (!resumed && !carried.steps.length) {
+    pack.logs = Array.isArray(pack.logs) ? pack.logs : [];
+    pack.logs.unshift({
+      at: now(),
+      level: 'warn',
+      stage: 'verify',
+      message: 'Every remaining step already had its effect in the earlier run; there was nothing left to retry.',
+    });
+    if (pack.status !== 'passed') pack.status = 'needs_review';
+    pack.updatedAt = now();
+    persist();
+    return null;
+  }
+  const retrySteps = resumed ? resumed.steps : carried.steps;
+  const retry = createRun({ ...snapshot, steps: retrySteps }, {
     trigger: 'recovery',
     dryRun: Boolean(dryRun),
     agentRole: 'recovery-agent',
@@ -3853,6 +3935,22 @@ function queueRecoveryRetry(run, pack, snapshot, { source = 'auto-recovery', dry
   retry.recoveryPackId = pack.id;
   retry.recoveryDepth = (Number(run.recoveryDepth) || Number(pack.depth) || 0) + 1;
   retry.recovery = { packId: pack.id, status: 'running', depth: retry.recoveryDepth, startedAt: now() };
+  if (carried.carried.length) {
+    retry.carriedSteps = carried.carried;
+    retry.log = Array.isArray(retry.log) ? retry.log : [];
+    retry.log.push({
+      at: now(),
+      level: 'info',
+      message: `Not repeating ${carried.carried.length} step(s) whose effect already happened in ${run.id}: ${carried.carried.map((step) => step.name).join(', ')}.`,
+    });
+    pack.logs = Array.isArray(pack.logs) ? pack.logs : [];
+    pack.logs.unshift({
+      at: now(),
+      level: 'info',
+      stage: 'verify',
+      message: `The retry continues past ${carried.carried.length} step(s) that already had their effect (${carried.carried.map((step) => step.name).join(', ')}); they were not marked complete or run again.`,
+    });
+  }
   pack.retryRunId = retry.id;
   pack.status = 'retrying';
   pack.updatedAt = now();
@@ -3988,6 +4086,7 @@ server.listen(PORT, HOST, () => {
   ensureToolFiles();
   ensurePythonFiles();
   reconcileStuckRecoveryPacks();
+  reconcileStuckReplans({ live: replanning });
   try {
     backfillWorkflowMemory();
   } catch (err) {

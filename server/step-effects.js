@@ -146,3 +146,34 @@ export function resumeRecoveryPlan(snapshotSteps, ranSteps, failedStepId) {
   if (snapshot.length !== ran.length) return null;
   return resumePlan(snapshot, ran, failedStepId);
 }
+
+// Effects a second run would duplicate rather than re-establish: the same text
+// typed twice, the same file written twice, a download or a playback repeated.
+const REPEAT_SIDE_EFFECTS = new Set(['type', 'clipboard', 'writeTextFile', 'downloadMedia', 'playMedia', 'installApp', 'runTool']);
+
+function effectKey(step) {
+  return stableJson([step?.type ?? null, step?.params ?? null]);
+}
+
+/** True when running this step again would duplicate a side effect it already had. */
+export function repeatsSideEffect(step) {
+  return REPEAT_SIDE_EFFECTS.has(String(step?.type || ''));
+}
+
+/**
+ * Steps whose effect already happened must not run again just because a repair
+ * changed the plan before them. Matching is exact (type + params): a changed
+ * step is a new attempt and is kept. Returns facts, never completions — the
+ * carried steps are dropped from the retry and recorded, not marked passed.
+ */
+export function carryForwardPassedEffects(snapshotSteps, ranSteps) {
+  const passed = (Array.isArray(ranSteps) ? ranSteps : []).filter((step) => step?.status === 'passed');
+  const done = new Set(passed.filter(repeatsSideEffect).map(effectKey));
+  const carried = [];
+  const steps = (Array.isArray(snapshotSteps) ? snapshotSteps : []).filter((step) => {
+    if (!repeatsSideEffect(step) || !done.has(effectKey(step))) return true;
+    carried.push({ name: String(step.name || step.type).slice(0, 100), type: step.type });
+    return false;
+  });
+  return { steps, carried };
+}

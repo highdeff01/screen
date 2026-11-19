@@ -17,6 +17,13 @@ const PLAN_TIMEOUT_MS = 45000;
 // only have fed to a model that is not answering.
 const AI_OUTAGE_MS = 120000;
 let aiOutageUntil = 0;
+// Durable rows are small — timings, the winning candidate, the retry verdict —
+// so the whole comparison history stays inside the saved store.
+const MAX_TELEMETRY = 200;
+
+function elapsedMs(startedAt) {
+  return Math.max(0, Math.round(performance.now() - startedAt));
+}
 
 const AGENT_ADVICE = {
   supervisor: 'Rebuild from the operator intent, not from the failed step order.',
@@ -29,6 +36,24 @@ const AGENT_ADVICE = {
 function clip(value, max = 240) {
   const text = String(value ?? '').replace(/\s+/g, ' ').trim();
   return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+}
+
+/**
+ * Facts the run itself produced: evidence captions and step outputs. They are
+ * given to the revision as context only — an artifact proves something was on
+ * screen, never that a step already happened — so nothing is marked complete.
+ */
+function runEvidenceFacts(run) {
+  const rows = [];
+  for (const item of (run?.evidence || []).slice(-8)) {
+    const caption = clip(item?.caption || '', 160);
+    rows.push(`${item?.kind || 'evidence'}: ${caption || '(no caption)'}${item?.simulated ? ' [simulated]' : ''}`);
+  }
+  for (const step of run?.steps || []) {
+    const output = clip(step?.output || '', 140);
+    if (output) rows.push(`step “${clip(step.name || step.type || 'step', 70)}” output: ${output}`);
+  }
+  return rows.slice(-10);
 }
 
 function stepTarget(step) {
@@ -140,6 +165,7 @@ function targetedRepair(workflow, failedStep, target) {
 }
 
 function candidateTest(candidate) {
+  const startedAt = performance.now();
   const test = shadowTestPlan({
     steps: candidate.steps || [],
     preflight: candidate.plan?.preflight || [],
@@ -148,7 +174,8 @@ function candidateTest(candidate) {
     backups: candidate.plan?.backups || [],
     lint: candidate.plan?.lint || null,
   });
-  return { ...candidate, test, score: test.score, stepCount: (candidate.steps || []).length };
+  const testMs = elapsedMs(startedAt);
+  return { ...candidate, test, testMs, score: test.score, stepCount: (candidate.steps || []).length };
 }
 
 function stepSummary(steps) {
@@ -189,6 +216,200 @@ function log(pack, level, stage, message) {
   if (pack.logs.length > 160) pack.logs = pack.logs.slice(-160);
 }
 
+function average(values) {
+  const numbers = (values || []).filter((value) => Number.isFinite(value));
+  if (!numbers.length) return null;
+  return Math.round(numbers.reduce((total, value) => total + value, 0) / numbers.length);
+}
+
+/**
+ * One durable row per recovery pack: what planning cost at each stage, which
+ * candidate won, and how the retry it queued finished. The row is written when
+ * a candidate is selected and updated when the retry ends, so an AI revision can
+ * be compared with the fresh rebuild by outcome instead of by recollection.
+ */
+export function recordRecoveryTelemetry(pack, { outcome = null } = {}) {
+  if (!pack) return null;
+  const d = db();
+  d.recoveryTelemetry = Array.isArray(d.recoveryTelemetry) ? d.recoveryTelemetry : [];
+  const existing = d.recoveryTelemetry.find((row) => row.packId === pack.id) || null;
+  const selected = (pack.candidates || []).find((candidate) => candidate.id === pack.selectedCandidateId) || null;
+  const aiCandidate = (pack.candidates || []).find((candidate) => candidate.id === 'candidate_ai') || null;
+  const aiRevision = pack.aiRevision || null;
+  const row = {
+    packId: pack.id,
+    workflowId: pack.workflowId,
+    originalRunId: pack.originalRunId,
+    retryRunId: pack.retryRunId || existing?.retryRunId || null,
+    depth: pack.depth || 0,
+    createdAt: existing?.createdAt || now(),
+    updatedAt: now(),
+    aiStatus: pack.aiStatus || 'off',
+    aiError: clip(pack.aiError || '', 300) || null,
+    ai: aiRevision
+      ? {
+          decision: aiRevision.decision || null,
+          prepCount: aiRevision.prepCount ?? 0,
+          replaysFailure: Boolean(aiRevision.replaysFailure),
+          transient: Boolean(aiRevision.transient),
+          blocked: Boolean(aiRevision.blocked),
+          droppedPlayback: aiRevision.droppedPlayback || 0,
+          evidenceCount: aiRevision.evidenceCount ?? 0,
+          offered: Boolean(aiCandidate),
+          score: aiCandidate?.score ?? null,
+        }
+      : { decision: null, prepCount: 0, replaysFailure: false, transient: false, blocked: false, droppedPlayback: 0, offered: false, score: null },
+    timings: { ...(pack.timings || {}) },
+    candidates: (pack.candidates || []).map((candidate) => ({
+      id: candidate.id,
+      source: candidate.source || candidate.id,
+      ok: Boolean(candidate.test?.ok),
+      score: candidate.score ?? null,
+      testMs: candidate.testMs ?? null,
+    })),
+    selected: selected
+      ? { id: selected.id, source: selected.source || selected.id, score: selected.score ?? null }
+      : null,
+    outcome: outcome || existing?.outcome || null,
+  };
+  row.blockedReason = blockedReasonOf(row);
+  d.recoveryTelemetry = [row, ...d.recoveryTelemetry.filter((entry) => entry.packId !== pack.id)].slice(0, MAX_TELEMETRY);
+  return row;
+}
+
+export function listRecoveryTelemetry(limit = 30) {
+  const rows = Array.isArray(db().recoveryTelemetry) ? db().recoveryTelemetry : [];
+  return rows.slice(0, Math.max(1, Math.min(MAX_TELEMETRY, Number(limit) || 30)));
+}
+
+/**
+ * Why the AI revision did not supply the retry plan. A refused replay is a
+ * different miss from a model that never answered, so outcomes are grouped by
+ * the reason itself instead of one "blocked" bucket.
+ */
+function blockedReasonOf(row) {
+  if (row?.blockedReason !== undefined && row?.blockedReason !== null) return row.blockedReason;
+  if (row?.ai?.blocked) return 'replayed-failed-step';
+  if (row?.aiStatus === 'unavailable') {
+    return /tim(?:ed|e)[ -]?out|timeout/i.test(String(row.aiError || '')) ? 'model-timeout' : 'model-unavailable';
+  }
+  if (row?.aiStatus === 'off') return 'revision-off';
+  if (row?.aiStatus === 'skipped') return 'revision-skipped';
+  if (row?.aiStatus === 'pending') return 'revision-incomplete';
+  if (row?.ai?.offered) return null;
+  return 'unknown';
+}
+
+/** Pass rate and planning cost for one slice of the ledger. */
+function groupStats(rows) {
+  const finished = rows.filter((row) => row.outcome);
+  const passed = finished.filter((row) => row.outcome.passed).length;
+  // A retry carried by the fresh rebuild does not test the AI decision, so its
+  // pass rate is kept apart from the whole group's.
+  const aiFinished = finished.filter((row) => row.selected?.source === 'ai-replan');
+  const aiPassed = aiFinished.filter((row) => row.outcome.passed).length;
+  return {
+    planned: rows.length,
+    blocked: rows.filter((row) => blockedReasonOf(row)).length,
+    aiSelected: rows.filter((row) => row.selected?.source === 'ai-replan').length,
+    retries: finished.length,
+    passed,
+    passRate: finished.length ? Math.round((passed / finished.length) * 100) : null,
+    aiRetries: aiFinished.length,
+    aiPassed,
+    aiPassRate: aiFinished.length ? Math.round((aiPassed / aiFinished.length) * 100) : null,
+    avgScore: average(rows.map((row) => row.selected?.score)),
+    avgPlanningMs: average(rows.map((row) => row.timings?.totalMs)),
+    avgRevisionMs: average(rows.map((row) => row.timings?.revisionMs)),
+  };
+}
+
+const DECISION_ORDER = ['continue', 'rearrange', 'rebuild'];
+
+/** Aggregate the ledger into the comparisons the recovery agent exists for. */
+export function recoveryTelemetrySummary() {
+  const rows = Array.isArray(db().recoveryTelemetry) ? db().recoveryTelemetry : [];
+  const sources = new Map();
+  for (const row of rows) {
+    const source = row.selected?.source || 'none';
+    if (!sources.has(source)) {
+      sources.set(source, { source, selected: 0, completed: 0, passed: 0, failed: 0, scores: [], planning: [] });
+    }
+    const bucket = sources.get(source);
+    bucket.selected += 1;
+    if (row.selected?.score != null) bucket.scores.push(row.selected.score);
+    if (Number.isFinite(row.timings?.totalMs)) bucket.planning.push(row.timings.totalMs);
+    if (row.outcome) {
+      bucket.completed += 1;
+      if (row.outcome.passed) bucket.passed += 1;
+      else bucket.failed += 1;
+    }
+  }
+  const bySource = [...sources.values()].map((bucket) => ({
+    source: bucket.source,
+    selected: bucket.selected,
+    completed: bucket.completed,
+    passed: bucket.passed,
+    failed: bucket.failed,
+    passRate: bucket.completed ? Math.round((bucket.passed / bucket.completed) * 100) : null,
+    avgScore: average(bucket.scores),
+    avgPlanningMs: average(bucket.planning),
+  }));
+  const ai = bySource.find((bucket) => bucket.source === 'ai-replan') || null;
+  const fresh = bySource.find((bucket) => bucket.source === 'planner') || null;
+  // Every decision is listed even before it has been tried, so a strategy that
+  // never wins is visible instead of silently absent.
+  const decisions = [...new Set([...DECISION_ORDER, ...rows.map((row) => row.ai?.decision).filter(Boolean)])];
+  const byDecision = decisions.map((decision) => ({
+    decision,
+    ...groupStats(rows.filter((row) => row.ai?.decision === decision)),
+  }));
+  const withoutDecision = groupStats(rows.filter((row) => !row.ai?.decision));
+  const reasons = new Map();
+  for (const row of rows) {
+    const reason = blockedReasonOf(row);
+    if (!reason) continue;
+    if (!reasons.has(reason)) reasons.set(reason, []);
+    reasons.get(reason).push(row);
+  }
+  const byBlockedReason = [...reasons.entries()]
+    .map(([reason, reasonRows]) => ({ reason, ...groupStats(reasonRows) }))
+    .sort((a, b) => b.planned - a.planned || a.reason.localeCompare(b.reason));
+  return {
+    total: rows.length,
+    withOutcome: rows.filter((row) => row.outcome).length,
+    aiOffered: rows.filter((row) => row.ai?.offered).length,
+    aiSelected: rows.filter((row) => row.selected?.source === 'ai-replan').length,
+    aiBlocked: rows.filter((row) => row.ai?.blocked).length,
+    bySource,
+    byDecision,
+    withoutDecision,
+    byBlockedReason,
+    stageAveragesMs: {
+      desktopRead: average(rows.map((row) => row.timings?.desktopReadMs)),
+      planner: average(rows.map((row) => row.timings?.plannerMs)),
+      revision: average(rows.map((row) => row.timings?.revisionMs)),
+      shadowTest: average(rows.map((row) => row.timings?.shadowTestMs)),
+      agentConsult: average(rows.map((row) => row.timings?.agentConsultMs)),
+      total: average(rows.map((row) => row.timings?.totalMs)),
+    },
+    aiVsFresh: {
+      aiPassRate: ai?.passRate ?? null,
+      freshPassRate: fresh?.passRate ?? null,
+      aiAvgPlanningMs: ai?.avgPlanningMs ?? null,
+      freshAvgPlanningMs: fresh?.avgPlanningMs ?? null,
+      verdict:
+        ai?.passRate != null && fresh?.passRate != null
+          ? ai.passRate > fresh.passRate
+            ? 'ai-better'
+            : ai.passRate < fresh.passRate
+              ? 'fresh-better'
+              : 'tied'
+          : 'insufficient-data',
+    },
+  };
+}
+
 function withTimeout(promise, ms, label) {
   const guarded = Promise.resolve(promise);
   guarded.catch(() => {});
@@ -226,6 +447,45 @@ export function reconcileStuckRecoveryPacks({ staleMs = 180000 } = {}) {
     if (run?.recovery) {
       run.recovery.status = 'needs_review';
       run.recovery.packId = pack.id;
+    }
+    changed = true;
+  }
+  if (changed) persist();
+  return changed;
+}
+
+/**
+ * A background replan lives in memory (the caller's `replanning` set). After a
+ * restart nothing is planning, so a run still marked `planning` would refuse
+ * every new replan forever. Downgrade it with an honest reason; queue nothing.
+ */
+export function reconcileStuckReplans({ live = null, staleMs = 180000 } = {}) {
+  const isLive = (id) => (typeof live?.has === 'function' ? live.has(id) : Array.isArray(live) && live.includes(id));
+  const d = db();
+  let changed = false;
+  for (const run of d.runs || []) {
+    if (run?.replan?.status !== 'planning') continue;
+    if (isLive(run.id)) continue;
+    const startedAt = Date.parse(run.replan.startedAt || run.replan.at || 0) || 0;
+    if (!startedAt || Date.now() - startedAt < staleMs) continue;
+    run.replan = {
+      ...run.replan,
+      status: 'failed',
+      reason: 'Re-planning stopped before a tested plan was ready (the console restarted or the planner hung). Nothing was retried; start the replan again.',
+      at: now(),
+    };
+    const pack = run.recoveryPackId ? findRecoveryPack(run.recoveryPackId) : null;
+    if (pack && pack.status === 'planning') {
+      pack.status = 'needs_review';
+      pack.updatedAt = now();
+      pack.logs = Array.isArray(pack.logs) ? pack.logs : [];
+      pack.logs.unshift({
+        at: now(),
+        level: 'warn',
+        stage: 'plan',
+        message: 'Planning was interrupted before a tested candidate was ready. No retry was approved.',
+      });
+      run.recovery = { ...(run.recovery || {}), status: 'needs_review', packId: pack.id };
     }
     changed = true;
   }
@@ -336,6 +596,18 @@ export async function prepareRecovery(
     guidance: clip(guidance, 700),
     target: targetLabel,
     status: 'planning',
+    // Per-stage wall-clock costs. "Did the AI revision earn its extra latency?"
+    // is answered by these numbers, not by how the run felt.
+    timings: {
+      startedAt: now(),
+      desktopReadMs: null,
+      plannerMs: null,
+      revisionMs: null,
+      shadowTestMs: 0,
+      agentConsultMs: null,
+      totalMs: null,
+    },
+    aiStatus: 'pending',
     selectedCandidateId: null,
     candidates: [],
     stages: [],
@@ -375,13 +647,16 @@ export async function prepareRecovery(
     ]
   );
 
+  const packStartedAt = performance.now();
   const candidates = [];
   let plannerPlan = null;
+  const plannerStartedAt = performance.now();
   try {
     plannerPlan = await withTimeout(plan(goal, { ...workflow, steps: [] }), PLAN_TIMEOUT_MS, 'Recovery planner');
   } catch (err) {
     log(pack, 'warn', 'plan', `Planner unavailable: ${err.message}`);
   }
+  pack.timings.plannerMs = elapsedMs(plannerStartedAt);
   if (plannerPlan?.steps?.length) {
     const steps = ensureOpenPrerequisites(plannerPlan.steps);
     candidates.push(
@@ -428,6 +703,7 @@ export async function prepareRecovery(
   // when replanAi is off, not while a recent revision failure says the model is
   // unreachable, and not when the operator or a dry run turned capture off.
   const aiRevisionEnabled = typeof ask === 'function' || d.settings.replanAi !== false;
+  pack.aiStatus = aiRevisionEnabled ? 'pending' : 'off';
   const readDesktop = typeof screen === 'function' ? screen : readScreenContext;
   let desktop = desktopInput === undefined ? {} : desktopInput || {};
   if (desktopInput === undefined) {
@@ -436,13 +712,18 @@ export async function prepareRecovery(
     } else if (Date.now() < aiOutageUntil) {
       log(pack, 'info', 'plan', 'The AI revision failed moments ago; skipping the desktop read until the model answers again.');
     } else if (!run.dryRun && d.settings.replanDesktop !== false) {
+      const desktopStartedAt = performance.now();
       try {
         desktop = await withTimeout(readDesktop(), 8000, 'Desktop read');
       } catch (err) {
         log(pack, 'warn', 'plan', `Reading the desktop for the revision failed: ${err.message}`);
+      } finally {
+        pack.timings.desktopReadMs = elapsedMs(desktopStartedAt);
       }
     }
   }
+  const evidenceFacts = runEvidenceFacts(run);
+  const revisionStartedAt = performance.now();
   const revision = aiRevisionEnabled ? await withTimeout(
     revisePlan({
       ...(typeof ask === 'function' ? { ask } : {}),
@@ -456,6 +737,7 @@ export async function prepareRecovery(
         error: failedRuntime?.error || '',
       },
       desktop,
+      evidence: evidenceFacts,
       // Off means the revision may not plan video or playback work at all.
       allowMedia: d.settings.replanMedia !== false,
       suggestions: (d.suggestions || []).filter((entry) => !entry.dismissed).slice(0, 6),
@@ -467,10 +749,14 @@ export async function prepareRecovery(
     60000,
     'AI plan revision'
   ).catch((err) => ({ error: err.message })) : null;
+  if (aiRevisionEnabled) pack.timings.revisionMs = elapsedMs(revisionStartedAt);
   if (revision?.error) {
+    pack.aiStatus = 'unavailable';
+    pack.aiError = clip(revision.error, 300);
     aiOutageUntil = Date.now() + AI_OUTAGE_MS;
     log(pack, 'warn', 'plan', `AI plan revision unavailable: ${revision.error}`);
   } else if (revision?.skipped) {
+    pack.aiStatus = 'skipped';
     log(pack, 'info', 'plan', 'AI plan revision is turned off in settings.');
   } else if (revision?.steps?.length) {
     aiOutageUntil = 0;
@@ -479,6 +765,7 @@ export async function prepareRecovery(
     // "continue" with nothing new hands the retry the exact step that failed, so
     // it only counts as a candidate when the failure may clear by itself.
     const blocked = replays && !transient;
+    pack.aiStatus = blocked ? 'replayed' : 'candidate';
     pack.aiRevision = {
       decision: revision.decision,
       note: revision.note,
@@ -488,6 +775,7 @@ export async function prepareRecovery(
       transient,
       blocked,
       droppedPlayback: revision.droppedPlayback || 0,
+      evidenceCount: evidenceFacts.length,
       at: now(),
     };
     if (revision.droppedPlayback) {
@@ -496,6 +784,14 @@ export async function prepareRecovery(
         'info',
         'plan',
         `AI revision dropped ${revision.droppedPlayback} playback step(s) that no step or user input requires.`
+      );
+    }
+    if (revision.rewrittenGuards) {
+      log(
+        pack,
+        'info',
+        'plan',
+        `The revision replaced ${revision.rewrittenGuards} window guard(s) the desktop had already refused instead of reusing them.`
       );
     }
     if (blocked) {
@@ -536,7 +832,9 @@ export async function prepareRecovery(
     candidates.length ? 'info' : 'warn'
   );
 
+  const adviseStartedAt = performance.now();
   const advice = consultControlPanel(workflow, goal, targetLabel);
+  pack.timings.agentConsultMs = elapsedMs(adviseStartedAt);
   pack.agents = advice.agents;
   pack.research = advice.research;
   addStage(
@@ -561,6 +859,7 @@ export async function prepareRecovery(
   );
 
   pack.candidates = candidates;
+  pack.timings.shadowTestMs = candidates.reduce((total, candidate) => total + (Number(candidate.testMs) || 0), 0);
   const environmentFailure = looksLikeEnvironmentFailure(run, target);
   const targeted = candidates.find((candidate) => candidate.id === 'candidate_targeted' && candidate.test.ok);
   const fresh = candidates.find((candidate) => candidate.id === 'candidate_fresh' && candidate.test.ok);
@@ -621,9 +920,11 @@ export async function prepareRecovery(
   );
 
   pack.status = selected ? 'ready' : 'needs_review';
+  pack.timings.totalMs = elapsedMs(packStartedAt);
   pack.updatedAt = now();
   run.recovery.status = pack.status;
   run.recovery.selectedCandidateId = pack.selectedCandidateId;
+  recordRecoveryTelemetry(pack);
   persist();
 
   const retryWorkflow = selected
@@ -696,6 +997,16 @@ export function finalizeRecoveryPack(run) {
   };
   pack.updatedAt = now();
   pack.status = passed ? 'passed' : 'failed';
+  recordRecoveryTelemetry(pack, {
+    outcome: {
+      status: run.status,
+      passed,
+      retryRunId: run.id,
+      failedStep: clip((run.steps || []).find((step) => step.status === 'failed')?.name || '', 120) || null,
+      durationMs: Number.isFinite(run.durationMs) ? run.durationMs : null,
+      at: now(),
+    },
+  });
   log(pack, passed ? 'info' : 'warn', 'verify', `Retry ${run.id} finished ${run.status}.`);
 
   const original = (db().runs || []).find((entry) => entry.id === pack.originalRunId);

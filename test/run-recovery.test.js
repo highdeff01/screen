@@ -413,3 +413,218 @@ test('a revision cannot add video steps when the operator turned them off', asyn
   d.settings.replanMedia = true;
   store.flush();
 });
+
+test('planning stages and the retry verdict are recorded per candidate source', async () => {
+  const d = store.db();
+  d.settings.replanAi = true;
+  d.settings.replanDesktop = true;
+  d.recoveryTelemetry = [];
+  d.recoveryPacks = [];
+  const revise = async () =>
+    JSON.stringify({
+      decision: 'rearrange',
+      note: 'focus the note window before typing',
+      prep: [{ type: 'focusWindow', name: 'Focus Notepad', params: { title: 'Notepad' } }],
+      steps: [
+        { type: 'focusWindow', name: 'Focus the note', params: { title: 'Untitled - Notepad' } },
+        { type: 'type', name: 'Type the note', params: { text: 'hello', foreground: 'Untitled - Notepad' } },
+        { type: 'expect', name: 'Window is present', params: { kind: 'window', value: 'Notepad' } },
+      ],
+    });
+
+  // A successful revision clears the artificial-outage memo left by an earlier
+  // test, so this pack performs (and times) a real desktop read.
+  const warm = notepadFixture('run_telemetry_warm', 'Refusing to type: another document');
+  warm.workflow.id = 'wf_telemetry_warm';
+  warm.run.workflowId = 'wf_telemetry_warm';
+  d.workflows = [warm.workflow];
+  d.runs = [warm.run];
+  await recovery.prepareRecovery(warm.run, { plan: async () => null, desktop: {}, ask: revise });
+  d.recoveryTelemetry = [];
+
+  const { workflow, run } = notepadFixture('run_telemetry', 'Refusing to type: foreground window is another document');
+  workflow.id = 'wf_telemetry';
+  run.workflowId = workflow.id;
+  d.workflows = [workflow];
+  d.runs = [run];
+  let reads = 0;
+  const outcome = await recovery.prepareRecovery(run, {
+    plan: async () => ({
+      steps: [
+        { type: 'launchApp', name: 'Open Notepad', params: { target: 'notepad.exe' } },
+        { type: 'type', name: 'Type the note', params: { text: 'hello', foreground: 'Untitled - Notepad' } },
+        { type: 'expect', name: 'Window is present', params: { kind: 'window', value: 'Notepad' } },
+      ],
+      confidence: 0.9,
+    }),
+    screen: async () => {
+      reads += 1;
+      return { foreground: { title: 'Untitled - Notepad', process: 'notepad' }, windows: [] };
+    },
+    ask: revise,
+  });
+
+  assert.ok(outcome?.pack);
+  assert.equal(reads, 1);
+  const pack = outcome.pack;
+  for (const key of ['desktopReadMs', 'plannerMs', 'revisionMs', 'shadowTestMs', 'agentConsultMs', 'totalMs']) {
+    assert.equal(Number.isFinite(pack.timings[key]), true, `${key} is recorded`);
+  }
+  assert.ok(pack.candidates.every((candidate) => Number.isFinite(candidate.testMs)));
+  assert.equal(
+    pack.timings.shadowTestMs,
+    pack.candidates.reduce((total, candidate) => total + candidate.testMs, 0),
+    'the shadow stage is the sum of every candidate test'
+  );
+
+  const row = d.recoveryTelemetry.find((entry) => entry.packId === pack.id);
+  assert.ok(row, 'a telemetry row is written when a candidate is selected');
+  assert.equal(row.outcome, null, 'no retry verdict yet');
+  assert.equal(row.aiStatus, 'candidate');
+  assert.equal(row.ai.offered, true);
+  assert.equal(row.selected.source, 'ai-replan');
+  assert.equal(row.timings.revisionMs, pack.timings.revisionMs);
+
+  const retry = {
+    id: 'run_telemetry_retry',
+    workflowId: workflow.id,
+    workflowName: workflow.name,
+    status: 'passed',
+    recoveryPackId: pack.id,
+    durationMs: 4200,
+    steps: outcome.selected.steps.map((step) => ({ ...step, status: 'passed' })),
+    evidence: [],
+  };
+  d.runs.push(retry);
+  recovery.finalizeRecoveryPack(retry);
+
+  const done = d.recoveryTelemetry.find((entry) => entry.packId === pack.id);
+  assert.equal(done.outcome.passed, true);
+  assert.equal(done.outcome.retryRunId, retry.id);
+  assert.equal(done.outcome.durationMs, 4200);
+  assert.equal(d.recoveryTelemetry.filter((entry) => entry.packId === pack.id).length, 1, 'the row is updated, not duplicated');
+
+  const summary = recovery.recoveryTelemetrySummary();
+  assert.equal(summary.withOutcome, 1);
+  assert.equal(summary.aiOffered, 1);
+  assert.equal(summary.aiSelected, 1);
+  assert.equal(summary.aiVsFresh.verdict, 'insufficient-data', 'no fresh-rebuild retry has finished yet');
+  const aiBucket = summary.bySource.find((bucket) => bucket.source === 'ai-replan');
+  assert.equal(aiBucket.passed, 1);
+  assert.equal(aiBucket.passRate, 100);
+  assert.equal(summary.stageAveragesMs.revision, pack.timings.revisionMs);
+  assert.equal(recovery.listRecoveryTelemetry(5)[0].packId, pack.id);
+
+  const rearrange = summary.byDecision.find((entry) => entry.decision === 'rearrange');
+  assert.equal(rearrange.planned, 1);
+  assert.equal(rearrange.aiRetries, 1);
+  assert.equal(rearrange.passRate, 100);
+  assert.equal(rearrange.aiPassRate, 100);
+  assert.equal(rearrange.blocked, 0);
+  assert.equal(rearrange.avgRevisionMs, pack.timings.revisionMs);
+  assert.deepEqual(
+    summary.byDecision.map((entry) => entry.decision),
+    ['continue', 'rearrange', 'rebuild'],
+    'every decision is listed even before it has been tried'
+  );
+  assert.equal(summary.byDecision.find((entry) => entry.decision === 'continue').planned, 0);
+  assert.equal(summary.byBlockedReason.length, 0);
+
+  // A revision that would replay the failed step is grouped by that reason, and
+  // its outcome is not counted as a win for the decision it wanted to take.
+  const replay = notepadFixture('run_telemetry_blocked', 'Refusing to type: foreground window is another document');
+  replay.workflow.id = 'wf_telemetry_blocked';
+  replay.run.workflowId = replay.workflow.id;
+  d.workflows = [replay.workflow];
+  d.runs = [replay.run];
+  const refused = await recovery.prepareRecovery(replay.run, {
+    plan: async () => null,
+    desktop: {},
+    ask: async () => JSON.stringify({ decision: 'continue', note: 'the plan is right', steps: [] }),
+  });
+  assert.equal(refused.pack.aiStatus, 'replayed');
+  const refusedRow = d.recoveryTelemetry.find((entry) => entry.packId === refused.pack.id);
+  assert.equal(refusedRow.blockedReason, 'replayed-failed-step');
+
+  const after = recovery.recoveryTelemetrySummary();
+  const replayReason = after.byBlockedReason.find((entry) => entry.reason === 'replayed-failed-step');
+  assert.equal(replayReason.planned, 1);
+  assert.equal(replayReason.passRate, null, 'nothing was retried for a blocked replay');
+  assert.equal(replayReason.blocked, 1);
+  const continueGroup = after.byDecision.find((entry) => entry.decision === 'continue');
+  assert.equal(continueGroup.planned, 1);
+  assert.equal(continueGroup.blocked, 1);
+  assert.equal(continueGroup.aiRetries, 0, 'the blocked decision never carried a retry');
+  assert.equal(continueGroup.passRate, null);
+  store.flush();
+});
+
+test('the revision sees the run evidence and the refused window as facts', async () => {
+  const d = store.db();
+  d.settings.replanAi = true;
+  d.settings.replanDesktop = false;
+  const { workflow, run } = notepadFixture(
+    'run_evidence_facts',
+    'Refusing to type: foreground window is "Notepad :: *Sightline screen agent - Notepad", expected process or window "Untitled - Notepad".'
+  );
+  run.evidence = [{ kind: 'screenshot', caption: 'Notepad shows an empty page' }];
+  run.steps[1].output = 'Typed into the wrong document';
+  d.workflows = [workflow];
+  d.runs = [run];
+  d.recoveryPacks = [];
+  let asked = '';
+  const outcome = await recovery.prepareRecovery(run, {
+    plan: async () => null,
+    desktop: {},
+    ask: async ({ prompt }) => {
+      asked = prompt;
+      return JSON.stringify({
+        decision: 'rearrange',
+        note: 'the note window changed its title',
+        steps: [
+          { type: 'focusWindow', name: 'Focus the note', params: { title: 'Notepad' } },
+          { type: 'type', name: 'Type the note again', params: { text: 'hello' } },
+          { type: 'expect', name: 'Window is present', params: { kind: 'window', value: 'Notepad' } },
+        ],
+      });
+    },
+  });
+  assert.ok(outcome?.pack);
+  assert.match(asked, /Notepad shows an empty page/);
+  assert.match(asked, /Typed into the wrong document/);
+  assert.match(asked, /Refused window guard/);
+  assert.match(asked, /do not reuse it/);
+  assert.match(asked, /evidence is context, not completion/i);
+  assert.equal(outcome.pack.aiRevision.evidenceCount, 2);
+  const ai = (outcome.pack.candidates || []).find((candidate) => candidate.id === 'candidate_ai');
+  assert.ok(ai);
+  const typing = ai.steps.find((step) => step.name === 'Type the note again');
+  assert.ok(typing);
+  assert.notEqual(typing.params.foreground, 'Untitled - Notepad', 'the refused guard is not reused');
+  store.flush();
+});
+
+test('a run stuck in replanning is unstuck without queueing a retry', () => {
+  const d = store.db();
+  const old = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+  d.runs = [
+    {
+      id: 'run_stuck_replan',
+      status: 'failed',
+      recoveryPackId: 'rcp_stuck_replan',
+      replan: { status: 'planning', startedAt: old },
+    },
+  ];
+  d.recoveryPacks = [{ id: 'rcp_stuck_replan', status: 'planning', logs: [], candidates: [], createdAt: old, updatedAt: old }];
+  assert.equal(recovery.reconcileStuckReplans({ staleMs: 1000 }), true);
+  assert.equal(d.runs[0].replan.status, 'failed');
+  assert.match(d.runs[0].replan.reason, /Nothing was retried/);
+  assert.equal(d.recoveryPacks[0].status, 'needs_review');
+  assert.equal(d.runs[0].recovery.status, 'needs_review');
+  assert.match(d.recoveryPacks[0].logs[0].message, /No retry was approved/);
+
+  d.runs = [{ id: 'run_live_replan', status: 'failed', replan: { status: 'planning', startedAt: old } }];
+  assert.equal(recovery.reconcileStuckReplans({ live: new Set(['run_live_replan']), staleMs: 1000 }), false);
+  assert.equal(d.runs[0].replan.status, 'planning', 'a planning that is still running is untouched');
+  store.flush();
+});

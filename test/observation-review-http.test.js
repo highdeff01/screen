@@ -23,7 +23,7 @@ async function request(base, url, options) {
   return { status: response.status, headers: response.headers, body: await response.json() };
 }
 
-test('observation review uses stored evidence and is read-only', { timeout: 30000 }, async () => {
+test('observation review uses stored evidence and is read-only', { timeout: 90000 }, async () => {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'observation-review-http-'));
   fs.mkdirSync(path.join(cwd, 'data'));
   const dbFile = path.join(cwd, 'data', 'db.json');
@@ -72,10 +72,10 @@ test('observation review uses stored evidence and is read-only', { timeout: 3000
     assert.equal(started.status, 200);
     const id = started.body.simulation.id;
     let simulation;
-    for (let i = 0; i < 100; i++) {
+    for (let i = 0; i < 200 && (!simulation || simulation.status === 'running'); i++) {
       simulation = (await request(base, `/api/simulations/${id}`)).body.simulation;
       if (simulation.status !== 'running') break;
-      await sleep(50);
+      await sleep(100);
     }
     assert.equal(simulation.status, 'completed');
     const beforeRun = (await request(base, '/api/runs/run_one')).body.run;

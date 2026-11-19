@@ -103,6 +103,7 @@ function seed() {
     presentations: [],
     proposals: [],
     recoveryPacks: [],
+    recoveryTelemetry: [],
     positionMemory: [],
     workflowMemory: [],
     memory: { conversation: { summaries: [], covered: 0 }, docs: [] },
@@ -613,6 +614,7 @@ function readDb() {
         presentations: Array.isArray(parsed.presentations) ? parsed.presentations : [],
         proposals: Array.isArray(parsed.proposals) ? parsed.proposals : [],
         recoveryPacks: Array.isArray(parsed.recoveryPacks) ? parsed.recoveryPacks : [],
+        recoveryTelemetry: Array.isArray(parsed.recoveryTelemetry) ? parsed.recoveryTelemetry : [],
         positionMemory: Array.isArray(parsed.positionMemory) ? parsed.positionMemory : [],
         workflowMemory: Array.isArray(parsed.workflowMemory) ? parsed.workflowMemory : [],
         memory: {

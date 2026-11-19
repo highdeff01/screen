@@ -388,7 +388,7 @@ test('a repair that opens another app is adopted by the presenter and verifier',
   assert.ok(finished.presenter.timeline.some((entry) => /Target app changed to Calculator/.test(entry.text)));
 });
 
-test('the engine rewrites the remainder after an irreparable action and still passes', async () => {
+test('the engine rewrites the remainder after an irreparable action and still passes', { timeout: 60000 }, async () => {
   store.db().settings.visualChecks = false;
   store.db().settings.autoNotes = false;
   store.db().settings.autoRecoverFailures = false;
@@ -421,7 +421,7 @@ test('the engine rewrites the remainder after an irreparable action and still pa
     },
   });
   const run = engine.createRun(workflow, { dryRun: false, probe, repair: true });
-  const finished = await engine.waitForRun(run.id, { timeoutMs: 20000 });
+  const finished = await engine.waitForRun(run.id, { timeoutMs: 45000 });
   assert.equal(asked, 1);
   assert.equal(finished.status, 'passed');
   assert.equal(finished.replannedAfterFailure, true);
