@@ -1770,6 +1770,7 @@ function renderRuns() {
           ${r.replannedAfterFailure ? '<span class="badge ai">replanned</span>' : ''}
           ${r.recovered ? '<span class="badge okbadge">recovered</span>' : ''}
           ${r.recoveryPackId ? `<span class="badge ${r.recoveryStatus === 'retrying' ? 'ai' : ''}">recovery · ${esc(r.recoveryStatus || 'pack')}</span>` : ''}
+          ${r.nudges ? `<span class="badge" title="Operator input noticed while the console waited — read as a continue signal">✋ ${r.nudges} nudge${r.nudges === 1 ? '' : 's'}</span>` : ''}
           ${r.evidenceCount ? `<span>· ${r.evidenceCount} evidence</span>` : ''}
           ${r.trigger === 'agent' ? '<span class="badge ai">agent</span>' : ''}
           ${r.trigger === 'retry' ? '<span class="badge">retry</span>' : ''}

@@ -23,6 +23,7 @@
 import { db, logActivity, now, persist, uid } from './store.js';
 import { sendContinuation } from './agent-awareness.js';
 import { addNote } from './handoff.js';
+import { liveControl } from './platform.js';
 
 const MAX_ROUNDS = 12;
 
@@ -270,7 +271,8 @@ async function rethink(run, focus, deps = {}) {
       },
       {
         role: 'user',
-        content: `Goal: ${promptValue(goal, 2000)}\nRun error: ${promptValue(run.errorSummary, 1000)}\nPrior steps (most recent 10):\n${history || 'none'}\nRemaining steps (including failed):\n${remaining || 'none'}${omitted ? `\n[${omitted} remaining steps omitted]` : ''}\nObservations:\n${observations || 'none'}`,
+        content: `Platform facts (the truth about this machine — never contradict them): running on ${process.platform}${process.platform === 'win32' ? ' (Windows) with live desktop control available' : ''}; live backend ${(() => { let c = { available: false, label: 'none' }; try { c = liveControl(); } catch { /* report unavailable */ } return `${c.label}, ${c.available ? 'available' : 'unavailable (runs continue simulated)'}`; })()}. Do not diagnose other operating systems; errors naming Linux/X11/xdotool on a Windows host are stale or from a different host — ignore them.
+Goal: ${promptValue(goal, 2000)}\nRun error: ${promptValue(run.errorSummary, 1000)}\nPrior steps (most recent 10):\n${history || 'none'}\nRemaining steps (including failed):\n${remaining || 'none'}${omitted ? `\n[${omitted} remaining steps omitted]` : ''}\nObservations:\n${observations || 'none'}`,
       },
     ]);
     if (!reply?.ok) {

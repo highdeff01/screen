@@ -57,6 +57,7 @@ import { createSnapshot, diffSnapshots, restoreSnapshot, snapshotStatus, transfe
 import { addSecondOpinion, lensList } from './second-opinion.js';
 import { actionLogStatus, applyFix, dismissItem, implementSuggestion, listActionLog, recordAction, triageItem } from './action-log.js';
 import { agentActivity, heartbeat, heartbeatDone, sendContinuation, startAgentWatch } from './agent-awareness.js';
+import { nudgeStatus, startNudgeWatch } from './nudge.js';
 import { applyReshaped, configureDeepFocus, deepFocusStatus, startDeepFocus, stopDeepFocus } from './deep-focus.js';
 import { addAnnotation, annotationsForRun, listAnnotations, pinFindings, removeAnnotation } from './annotations.js';
 import { presentationFromDeepFocus, deepFocusMarkdown } from './presentations-deep.js';
@@ -471,6 +472,7 @@ function buildState() {
     agentsWorking: agentActivity(),
     firewall: firewallStatus(),
     factoring: factoringStatus(),
+    nudges: nudgeStatus(),
     share: shareStatus(),
     escalation: escalationStatus(),
     notes: d.notes.slice(0, 60).map(({ body, ...rest }) => ({
@@ -4133,6 +4135,7 @@ server.listen(PORT, HOST, () => {
   startPipeline();
   // Know when AIs are working on the app; drives safeguards and continuations.
   startAgentWatch();
+  startNudgeWatch();
   // Deep focus readers: live desktop state for the rethink rounds.
   configureDeepFocus({
     readForeground: readForegroundWindow,

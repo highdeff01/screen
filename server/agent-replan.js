@@ -17,6 +17,7 @@ import { appFromGoal } from './repair.js';
 import { catalogEntry } from './app-install.js';
 import { strategyBrief } from './strategy.js';
 import { matchAppHint } from './app-launch-hints.js';
+import { liveControl } from './platform.js';
 
 const MAX_REPAIR_STEPS = 6;
 const MAX_REMAINING_STEPS = 12;
@@ -359,6 +360,7 @@ export async function agentReplan({
     .map((entry) => `- ${entry.name || entry.kind}: ${entry.advice}`)
     .join('\n');
   const prompt = `GOAL: ${goal || '(not recorded)'}
+PLATFORM FACTS (the truth about this machine — never contradict these; do not diagnose other operating systems): running on ${process.platform}${process.platform === 'win32' ? ' (Windows) with live desktop control available' : ''}; live backend: ${(() => { let c = { available: false, label: 'none' }; try { c = liveControl(); } catch { /* report the fallback below */ } return `${c.label}, ${c.available ? 'available' : 'unavailable (runs continue simulated)'}`; })()}; any error text mentioning other platforms (Linux/X11/xdotool) that the run did not fail on is stale or from a different host — ignore it.
 WORKFLOW: ${run.workflowName || workflow?.name || ''}
 FAILED STEP: ${failedIndex + 1}/${run.steps.length} “${step.name}” (${step.type})
 PARAMS: ${clip(JSON.stringify(step.params || {}), 900)}
