@@ -3571,8 +3571,9 @@ route('PATCH', /^\/api\/settings$/, async (req, res) => {
   if (body.gatewayKeyEnv !== undefined) s.gatewayKeyEnv = String(body.gatewayKeyEnv || '').trim();
   if (body.dryRun !== undefined) s.dryRun = Boolean(body.dryRun);
   if (body.autoSync !== undefined) s.autoSync = Boolean(body.autoSync);
+  if (body.autoPull !== undefined) s.autoPull = Boolean(body.autoPull);
   if (body.autoSyncIntervalMs !== undefined) {
-    s.autoSyncIntervalMs = Math.max(5000, Math.min(600000, Number(body.autoSyncIntervalMs) || 20000));
+    s.autoSyncIntervalMs = Math.max(5000, Math.min(600000, Number(body.autoSyncIntervalMs) || 10000));
     if (gitSyncStatus().running) startAutoSync({ intervalMs: s.autoSyncIntervalMs });
   }
   if (body.autoNotes !== undefined) s.autoNotes = Boolean(body.autoNotes);

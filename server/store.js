@@ -49,7 +49,8 @@ function seed() {
       agentTickMs: 5000,
       // Explicit opt-in: sync tracked working-tree changes outside data/.
       autoSync: false,
-      autoSyncIntervalMs: 20000,
+      autoPull: true,
+      autoSyncIntervalMs: 10000,
       visionEnabled: true,
       // Screen checks are read by two judges: the vision model on a crop of the
       // run's own window, and a free deterministic check of that window's

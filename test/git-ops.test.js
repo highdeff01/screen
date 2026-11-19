@@ -50,12 +50,25 @@ test('pull fast-forwards commits another app pushed', async () => {
     BRANCH,
     FETCH_OK,
     ['rev-list', { stdout: '0\t3' }],
+    ['rev-parse origin/main', { stdout: 'abc123' }],
     ['merge --ff-only origin/main', { stdout: 'Updating a1..b2\n file.js | 4 ++\n' }],
   ]);
-  const result = await git.pullNow({ run });
+  const result = await git.pullNow({ run, verify: async (sha) => ({ ok: sha === 'abc123' }), backup: async () => ({ ok: true }) });
   assert.equal(result.status, 'pulled');
   assert.match(result.message, /Pulled 3 commit\(s\) from origin\/main/);
   assert.ok(calls.includes('merge --ff-only origin/main'));
+});
+
+test('pull holds a failing remote commit before taking a snapshot or merging', async () => {
+  const { run, calls } = scripted([
+    BRANCH,
+    FETCH_OK,
+    ['rev-list', { stdout: '0\t1' }],
+    ['rev-parse origin/main', { stdout: 'bad123' }],
+  ]);
+  const result = await git.pullNow({ run, verify: async () => ({ ok: false }), backup: async () => ({ ok: true }) });
+  assert.equal(result.status, 'held');
+  assert.ok(!calls.some((line) => line.startsWith('merge')));
 });
 
 test('pull refuses to rewrite a diverged branch', async () => {
@@ -71,10 +84,11 @@ test('pull reports the files a merge could not settle', async () => {
     BRANCH,
     FETCH_OK,
     ['rev-list', { stdout: '0\t1' }],
+    ['rev-parse origin/main', { stdout: 'def456' }],
     ['merge --ff-only', { ok: false, stderr: 'CONFLICT (content): Merge conflict in server/index.js' }],
     ['diff --name-only --diff-filter=U', { stdout: 'server/index.js\nREADME.md\n' }],
   ]);
-  const result = await git.pullNow({ run });
+  const result = await git.pullNow({ run, verify: async () => ({ ok: true }), backup: async () => ({ ok: true }) });
   assert.equal(result.status, 'conflict');
   assert.deepEqual(result.conflicts, ['server/index.js', 'README.md']);
   assert.match(result.message, /2 conflicted file/);

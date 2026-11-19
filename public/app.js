@@ -4884,8 +4884,8 @@ function renderPython() {
 
 /* ------------------------------------------------------------------ settings fields */
 /**
- * GitHub auto-sync and the shareable test link, shown at the end of Settings.
- * Both are runtime state, so they action immediately instead of waiting for Save.
+ * GitHub sync and the shareable test link, shown at the end of Settings.
+ * Sync interval and pull policy are saved with the settings form.
  */
 function sharingPanel() {
   const sync = ui.data?.gitSync || {};
@@ -4900,21 +4900,32 @@ function sharingPanel() {
     behind: 'remote moved — merge needed',
     conflict: 'conflict — merge needed',
     'push-failed': 'push failed',
+    'backup-failed': 'recovery snapshot failed; remote update held',
+    held: 'remote update held after testing',
+    verifying: 'testing remote update',
     error: 'failed',
     'not-a-repo': 'this folder is not a git repository',
     disabled: 'paused',
   };
   const statusText = enabled ? labels[sync.status] || sync.status || 'idle' : 'paused';
+  const intervalMs = Number(ui.settingsDraft?.autoSyncIntervalMs || ui.data?.settings?.autoSyncIntervalMs || 10000);
+  const autoPull = ui.settingsDraft?.autoPull ?? ui.data?.settings?.autoPull !== false;
   return `
   <hr style="border:none;border-top:1px solid var(--line);margin:16px 0 12px" />
   <h3 style="margin:0 0 6px;font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--dim)">GitHub sync</h3>
-  <p class="small muted" style="margin:0 0 8px">Commits and pushes this console's source whenever it changes. Data, captures and tokens stay untracked.</p>
+  <p class="small muted" style="margin:0 0 8px">Syncs tracked changes on this console's current branch after isolated tests pass. Incoming fast-forwards are tested and backed up first. Data, captures, and tokens stay excluded; other branches need separate review.</p>
   <div class="row wrap" style="gap:8px;align-items:center">
     <span class="pill ${enabled ? 'passed' : ''}">${enabled ? 'auto-sync on' : 'auto-sync off'}</span>
     <span class="small dim">${esc(String(statusText))}${Number(sync.pending) ? ` · ${Number(sync.pending)} file(s) pending` : ''}${sync.lastSyncAt ? ` · last ${esc(fmtTime(sync.lastSyncAt))}` : ''}</span>
     <span class="spacer"></span>
     <button class="btn btn-sm btn-ghost" data-act="toggle-autosync">${enabled ? 'Pause' : 'Turn on'}</button>
     <button class="btn btn-sm" data-act="git-sync-now">Sync now</button>
+  </div>
+  <div class="field-row" style="margin-top:8px">
+    <label class="field"><span>Check interval</span><select data-scope="settings" data-key="autoSyncIntervalMs">
+      ${[[10000, '10 seconds'], [20000, '20 seconds'], [60000, '60 seconds']].map(([value, label]) => `<option value="${value}" ${intervalMs === value ? 'selected' : ''}>${label}</option>`).join('')}
+    </select><span class="help">Polling is bounded to at least 5 seconds.</span></label>
+    <label class="check"><input type="checkbox" data-scope="settings" data-key="autoPull" ${autoPull ? 'checked' : ''} /> Pull remote updates after isolated tests pass</label>
   </div>
   ${sync.lastError ? `<p class="small" style="color:var(--bad);margin:6px 0 0">${esc(sync.lastError)}</p>` : ''}
   <h3 style="margin:18px 0 6px;font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--dim)">Share link for testing</h3>
@@ -5859,7 +5870,7 @@ function renderSyncPill() {
   else if (g.status === 'diverged') parts.push('diverged');
   if (Number(g.behind) > 0) parts.push(`${g.behind} behind`);
   if (Number(g.ahead) > 0) parts.push(`${g.ahead} to push`);
-  if (['push-failed', 'fetch-failed', 'error'].includes(g.status)) parts.push('sync failed');
+  if (['push-failed', 'fetch-failed', 'backup-failed', 'error'].includes(g.status)) parts.push('sync failed');
   const notes = (ui.data?.handoff?.notes || []).length;
   pill.hidden = !parts.length && !notes;
   pill.textContent = parts.length ? `⇅ ${parts.join(' · ')}` : `⇅ ${notes} note${notes === 1 ? '' : 's'}`;
@@ -6190,7 +6201,7 @@ function renderSync() {
   <div class="page-head">
     <div>
       <h1>Sync &amp; pull requests</h1>
-      <p>Take updates other apps pushed to this repository, send yours, and handle merges here. Auto-sync commits this console's own changes and fast-forwards when the remote moved; nothing is ever force-pushed or discarded.</p>
+      <p>Review this console's current branch against its GitHub remote. Automatic pushes and fast-forward pulls run tests first; pulls also create a recovery snapshot. Other branches, devices, and repositories are not synchronized by this loop.</p>
     </div>
     <div class="page-head-actions">
       <button class="btn btn-sm btn-ghost" data-act="sync-load">Refresh</button>
@@ -6206,7 +6217,7 @@ function renderSync() {
       <div class="card-body detail-cols">
         <div>
           <p class="small">Local is <b>${Number(info.ahead ?? g.ahead) || 0}</b> commit(s) ahead and <b>${Number(info.behind ?? g.behind) || 0}</b> behind.</p>
-          <p class="small dim">Last sync: ${g.lastSyncAt ? fmtTime(g.lastSyncAt) : 'never'} · auto-sync ${g.enabled ? 'on' : 'off'} every ${Math.round(Number(g.intervalMs || 0) / 1000)}s · auto-pull ${ui.data?.settings?.autoPull === false ? 'off' : 'on'}</p>
+          <p class="small dim">Last sync: ${g.lastSyncAt ? fmtTime(g.lastSyncAt) : 'never'} · auto-sync ${g.enabled ? 'on' : 'off'} every ${Math.round(Number(g.intervalMs || 10000) / 1000)}s · tested auto-pull ${ui.data?.settings?.autoPull === false ? 'off' : 'on'}</p>
           ${g.autoBranch ? `<p class="small dim">Conveyor: <span class="mono">${esc(g.autoBranch)}</span> — every automatic commit lands there first; ${g.branch || 'main'} can only fast-forward to it after the suite passes on that exact commit.${g.held && g.held.ok === false ? ` <span style="color:var(--bad)">Held back by ${g.held.fail ?? 'failing'} test(s).</span>` : ''}</p>` : ''}
         </div>
         <div>
@@ -9213,6 +9224,8 @@ async function runAction(name, ds, el) {
         autoNotes: settings.autoNotes !== false,
         aiSuggestions: settings.aiSuggestions !== false,
         requireToolApproval: settings.requireToolApproval !== false,
+        autoPull: settings.autoPull !== false,
+        autoSyncIntervalMs: Number(settings.autoSyncIntervalMs || 10000),
       };
       const res = await api('/api/settings', { method: 'PATCH', body });
       if (!res.ok) return toast(res.error, 'error');
