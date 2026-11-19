@@ -6181,6 +6181,7 @@ function renderSync() {
     return '<div class="empty"><strong>Reading the repository…</strong>Fetching the remote, pull requests and conflicts.</div>';
   }
   const g = info.git || ui.data?.gitSync || {};
+  const backup = ui.data?.backup || {};
   const conflicts = info.conflicts || [];
   const prs = ui.gitPrs?.prs || [];
   const notes = ui.data?.handoff?.notes || [];
@@ -6214,6 +6215,30 @@ function renderSync() {
           ${g.lastError ? `<div class="hint-box small" style="color:var(--bad)">${esc(g.lastError)}</div>` : '<p class="small dim">No errors. Nothing to do means the folder matches the remote.</p>'}
           ${info.note ? `<p class="small dim">${esc(info.note)}</p>` : ''}
         </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="card-head"><h3>Local backup copy</h3><span class="badge ${Number(backup.consecutiveFailures) >= 3 ? 'warnbadge' : backup.inSync ? 'okbadge' : ''}">${esc(backup.status || 'off')}</span></div>
+      <div class="card-body detail-cols">
+        <div>
+          <p class="small">${backup.enabled ? `A second copy of this repository is kept at <span class="mono">${esc(backup.mirrorPath || 'not set')}</span> and stays level with GitHub in both directions.` : 'Off. Choose a folder to keep a second, independent copy of this repository on this machine. It is updated in both directions and never force-pushed.'}</p>
+          <p class="small dim">Link tested every ${Math.round(Number(backup.intervalMs || 10000) / 1000)}s · ${backup.lastOkAt ? `last good ${fmtTime(backup.lastOkAt)}` : 'no successful check yet'}${backup.latencyMs !== null && backup.latencyMs !== undefined ? ` · ${backup.latencyMs}ms` : ''} · ${Number(backup.consecutiveFailures) || 0} failure(s) in a row</p>
+          ${backup.held ? `<p class="small" style="color:var(--bad)">${esc(backup.held.message)}</p>` : ''}
+          ${backup.lastError ? `<p class="small" style="color:var(--bad)">${esc(backup.lastError)}</p>` : ''}
+        </div>
+        <div>
+          <p class="small dim">This folder <span class="mono">${esc((backup.localSha || '').slice(0, 7) || '—')}</span> · backup <span class="mono">${esc((backup.mirrorSha || '').slice(0, 7) || '—')}</span> · GitHub <span class="mono">${esc((backup.remoteSha || '').slice(0, 7) || '—')}</span></p>
+          <div class="row wrap" style="gap:7px;margin-top:8px">
+            <button class="btn btn-sm" data-act="backup-check">Check now</button>
+            <button class="btn btn-sm btn-ghost" data-act="backup-toggle">${backup.enabled ? 'Turn off' : 'Turn on'}</button>
+          </div>
+          <p class="small dim" style="margin-top:8px">A pass that would delete ${Number(backup.maxDeletes) || 25} or more tracked files is refused and reported instead of committed. The folder is cloned once, then only fast-forwarded — nothing is reset or force-pushed.</p>
+        </div>
+      </div>
+      <div class="card-body row wrap" style="gap:8px;padding-top:0">
+        <input id="backup-path" class="input mono" placeholder="C:\\Users\\you\\Sightline-backup" value="${esc(backup.mirrorPath || '')}" style="flex:1;min-width:260px" />
+        <button class="btn btn-sm btn-primary" data-act="backup-path">Save folder</button>
       </div>
     </section>
 
@@ -6729,6 +6754,31 @@ async function runAction(name, ds, el) {
       await refresh();
       renderModal();
       toast(next ? 'Auto-sync on' : 'Auto-sync paused', 'ok');
+      break;
+    }
+    case 'backup-check': {
+      const res = await api('/api/backup/check', { method: 'POST', body: {} });
+      toast(res.message || (res.ok ? 'Local copy checked' : 'The check needs attention'), res.ok ? 'ok' : 'error');
+      await refresh();
+      break;
+    }
+    case 'backup-toggle': {
+      const next = !(ui.data?.backup?.enabled);
+      const body = { localBackupEnabled: next };
+      if (next && !ui.data?.backup?.mirrorPath) return toast('Choose a folder first, then turn it on.', 'error');
+      const res = await api('/api/settings', { method: 'PATCH', body });
+      if (!res.ok) return toast(res.error, 'error');
+      await refresh();
+      toast(next ? 'Local backup on' : 'Local backup off', 'ok');
+      break;
+    }
+    case 'backup-path': {
+      const value = String(document.getElementById('backup-path')?.value || '').trim();
+      if (!value) return toast('A folder path is required.', 'error');
+      const res = await api('/api/settings', { method: 'PATCH', body: { localBackupPath: value, localBackupEnabled: true } });
+      if (!res.ok) return toast(res.error, 'error');
+      await refresh();
+      toast('Backup folder saved; the first pass is cloning it.', 'ok');
       break;
     }
     case 'share-start': {
