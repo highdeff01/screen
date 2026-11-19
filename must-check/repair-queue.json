@@ -1,18 +1,16 @@
 {
   "version": 1,
   "by": "sentinel",
-  "updatedAt": "2026-11-19T22:22:19.924Z",
-  "head": "9bb7e0fe99e3",
+  "updatedAt": "2026-11-19T22:35:00.073Z",
+  "head": "309211de3bce",
   "lastRun": {
-    "at": "2026-11-19T22:22:19.881Z",
-    "ok": false,
+    "at": "2026-11-19T22:35:00.073Z",
+    "ok": true,
     "tests": 600,
-    "pass": 594,
-    "fail": 1,
+    "pass": 595,
+    "fail": 0,
     "isolated": true,
-    "failingTests": [
-      "the mirror is cloned once, then follows GitHub in both directions (7512.5273ms)"
-    ]
+    "failingTests": []
   },
   "open": 2,
   "items": [
