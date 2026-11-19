@@ -1597,7 +1597,8 @@ function renderPreviewOutput() {
   const image = state.active && preview?.running && preview.available !== false && !preview.error && preview.imagePath;
   const status = state.message || (state.active ? (image ? 'Preview is running.' : 'Waiting for a screenshot…') : 'Preview is off.');
   return `<p class="small ${state.message ? 'preview-error' : 'dim'}" role="status">${esc(status)}</p>
-    <div class="preview-image">${image ? `<figure class="preview-frame"><img src="/api/files/raw?path=${encodeURIComponent(preview.imagePath)}&t=${encodeURIComponent(preview.cacheKey)}" alt="Latest read-only screenshot of the desktop" data-preview-image /><figcaption class="dim small">Captured ${esc(fmtTime(preview.capturedAt))} · refresh interval ${esc(preview.intervalMs || 2000)} ms</figcaption></figure>` : ''}</div>`;
+    <div class="preview-image">${image ? `<figure class="preview-frame"><img src="/api/files/raw?path=${encodeURIComponent(preview.imagePath)}&t=${encodeURIComponent(preview.cacheKey)}" alt="Latest read-only screenshot of the desktop" data-preview-image /><figcaption class="dim small">Captured ${esc(fmtTime(preview.capturedAt))} · refresh interval ${esc(preview.intervalMs || 2000)} ms</figcaption></figure>` : ''}</div>
+    ${image ? `<button class="btn btn-sm btn-ghost" data-act="annotate-live-frame" data-path="${esc(preview.imagePath)}" title="Open the current live frame full-size and draw on it">✎ Annotate this frame</button>` : ''}`;
 }
 
 function renderLivePreview() {
