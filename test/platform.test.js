@@ -244,5 +244,5 @@ test('the real probe only claims a Windows mechanism it could select', async (t)
   assert.equal(proof.ok, true, proof.detail);
   assert.equal(proof.mechanism, 'powershell+sendinput');
   assert.ok(proof.os.build >= 10240, `reported build ${proof.os.build}`);
-  assert.match(proof.detail, /Windows .*build d+/);
+  assert.match(proof.detail, /Windows .*build \d+/);
 });

@@ -413,7 +413,7 @@ export function detectBackend({ env = process.env, platform = HOST } = {}) {
  */
 export function windowsProbeCommand() {
   return [
-    "$k='HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion'",
+    "$k='HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion'",
     '$p=Get-ItemProperty $k -ErrorAction SilentlyContinue',
     '$b=if($p.CurrentBuild){[int]$p.CurrentBuild}else{[Environment]::OSVersion.Version.Build}',
     "$v=if($p.DisplayVersion){$p.DisplayVersion}else{'unknown'}",
@@ -455,7 +455,7 @@ export function selectWindowsMechanism({ build = 0, version = '', interactive = 
     ok: true,
     mechanism: 'powershell+sendinput',
     reason: '',
-    label: `Windows ${version || 'desktop'} (build ${build}), PowerShell + Win32 SendInput`,
+    label: `Windows ${version && version !== 'unknown' ? version : 'desktop'} (build ${build}), PowerShell + Win32 SendInput`,
   };
 }
 
