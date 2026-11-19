@@ -18,6 +18,7 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { DATA, db, now, ROOT } from './store.js';
+import { deletionGuard } from './backup.js';
 
 const COMMIT_FOOTER =
   '🤖 Generated with Codebuff\nCo-Authored-By: Codebuff <noreply@codebuff.com>';
@@ -290,6 +291,29 @@ export async function checkAndSync(deps = {}) {
     if (!deps.force && state.lastStatusHash !== hash) {
       state.lastStatusHash = hash;
       state.status = 'waiting';
+      return gitSyncStatus();
+    }
+
+    // A pass that would delete a pile of tracked files at once is held, not
+    // committed and pushed: losing the project to one bad observation is the
+    // failure this guard exists for.
+    const guard = deletionGuard(parsed.lines, {
+      maxDeletes: Math.max(1, Number(settings.autoSyncMaxDeletes) || 25),
+    });
+    if (!guard.allowed) {
+      state.lastStatusHash = '';
+      state.status = 'deletions-held';
+      state.held = {
+        sha: '',
+        at: now(),
+        ok: false,
+        fail: null,
+        tests: [],
+        reason: 'deletions',
+        files: guard.deletions.slice(0, 12),
+      };
+      state.lastError = guard.why;
+      state.pausedUntil = Date.now() + 300000;
       return gitSyncStatus();
     }
 
