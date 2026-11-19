@@ -40,6 +40,20 @@ import {
   syncOverview,
 } from './git-sync.js';
 import { backupStatus, checkBackupNow, startBackup, backupTick } from './backup.js';
+import { startSupervisor, supervisorStatus } from './supervisor.js';
+import { auditLog, egressStatus, fetchFiltered, setPolicy as setEgressPolicy } from './egress.js';
+import {
+  addSource,
+  dismissProposal,
+  liveStatus,
+  pollSource,
+  removeSource,
+  startLiveSources,
+  subscribe as subscribeLive,
+} from './live-sources.js';
+import { bridgeStatus, closeBridge, openBridge, streamBridge } from './bridge.js';
+import { createEnv, envLogin, envStatus, removeEnv, setEnvPolicy, verifyEnvToken } from './envs.js';
+import { exportBundle, importBundle } from './memory-sync.js';
 import { addNote, deleteCommand, listCommands, listNotes, runCommand, saveCommand } from './handoff.js';
 import {
   addLink,
@@ -470,6 +484,11 @@ function buildState() {
     verificationLoop: loopStatus(),
     gitSync: gitSyncStatus(),
     backup: backupStatus(),
+    supervisor: supervisorStatus(),
+    egress: egressStatus(),
+    live: liveStatus(),
+    bridge: bridgeStatus(),
+    envs: envStatus(),
     sentinel: sentinelStatus(),
     relay: relayStatus(),
     inbox: { open: listInbox({ status: 'open', limit: 12 }), lenses: lensList() },
@@ -645,6 +664,174 @@ route('POST', /^\/api\/backup\/sync$/, async (req, res) => {
     backup,
     message: backup.lastError || (backup.inSync ? 'Local copy matches GitHub.' : 'Sync pass finished.'),
   });
+});
+
+/* ---------------- Watching the console itself ---------------- */
+route('GET', /^\/api\/supervisor$/, async (req, res) => {
+  sendJson(res, 200, { ok: true, supervisor: supervisorStatus() });
+});
+
+/* ---------------- Filtered egress ---------------- */
+route('GET', /^\/api\/egress$/, async (req, res) => {
+  sendJson(res, 200, { ok: true, egress: egressStatus(), audit: auditLog(30) });
+});
+
+route('PATCH', /^\/api\/egress$/, async (req, res) => {
+  const body = await readBody(req);
+  sendJson(res, 200, { ok: true, egress: setEgressPolicy(body || {}) });
+});
+
+// One fetch through the rules, for an agent asking for a specific thing.
+route('POST', /^\/api\/egress\/fetch$/, async (req, res) => {
+  const body = await readBody(req);
+  if (!body?.url) return sendJson(res, 400, { ok: false, error: 'A url is required.' });
+  const out = await fetchFiltered(body.url, {
+    headers: body.headers && typeof body.headers === 'object' ? body.headers : {},
+    maxBytes: body.maxBytes,
+  });
+  sendJson(res, 200, {
+    ok: out.ok,
+    why: out.why || '',
+    result: out.ok
+      ? { status: out.status, contentType: out.contentType, bytes: out.bytes, url: out.url, text: String(out.text || '').slice(0, 20000) }
+      : { status: out.status || 0 },
+  });
+});
+
+/* ---------------- Live sources ---------------- */
+route('GET', /^\/api\/live$/, async (req, res) => {
+  sendJson(res, 200, { ok: true, live: liveStatus() });
+});
+
+route('POST', /^\/api\/live\/sources$/, async (req, res) => {
+  const body = await readBody(req);
+  const made = addSource(body || {});
+  sendJson(res, made.ok ? 200 : 400, made.ok ? { ok: true, source: made.source, live: liveStatus() } : { ok: false, error: made.why });
+});
+
+route('DELETE', /^\/api\/live\/sources\/([^/]+)$/, async (req, res, [id]) => {
+  const out = removeSource(id);
+  sendJson(res, 200, { ok: out.ok, live: liveStatus() });
+});
+
+route('POST', /^\/api\/live\/poll$/, async (req, res) => {
+  const body = await readBody(req);
+  if (!body?.id) return sendJson(res, 400, { ok: false, error: 'A source id is required.' });
+  const out = await pollSource(body.id);
+  sendJson(res, 200, { ok: out.ok, ...out, live: liveStatus() });
+});
+
+route('POST', /^\/api\/live\/proposals\/([^/]+)\/dismiss$/, async (req, res, [id]) => {
+  const out = dismissProposal(id);
+  sendJson(res, out.ok ? 200 : 404, { ok: out.ok, ...out, live: liveStatus() });
+});
+
+// Change notifications as they happen. No buffering, no replay: a reader takes
+// the feed from the moment it connects and re-reads /api/live for the rest.
+route('GET', /^\/api\/live\/stream$/, async (req, res) => {
+  res.writeHead(200, {
+    'content-type': 'text/event-stream; charset=utf-8',
+    'cache-control': 'no-store',
+    connection: 'keep-alive',
+  });
+  res.write(': connected\n\n');
+  const off = subscribeLive((event) => {
+    try {
+      res.write(`data: ${JSON.stringify(event)}\n\n`);
+    } catch {
+      off();
+    }
+  });
+  const ping = setInterval(() => {
+    try {
+      res.write(': ping\n\n');
+    } catch {
+      clearInterval(ping);
+    }
+  }, 25000);
+  ping.unref?.();
+  req.on('close', () => {
+    clearInterval(ping);
+    off();
+  });
+});
+
+/* ---------------- Stream bridge ---------------- */
+route('GET', /^\/api\/bridge$/, async (req, res) => {
+  sendJson(res, 200, { ok: true, bridge: bridgeStatus() });
+});
+
+route('POST', /^\/api\/bridge$/, async (req, res) => {
+  const body = await readBody(req);
+  if (!body?.path) return sendJson(res, 400, { ok: false, error: 'A path inside the project is required.' });
+  const target = path.resolve(ROOT, String(body.path));
+  if (target !== ROOT && !target.startsWith(`${ROOT}${path.sep}`)) {
+    return sendJson(res, 400, { ok: false, error: 'Bridges serve files inside this project folder.' });
+  }
+  const out = openBridge({
+    filePath: target,
+    name: body.name,
+    contentType: body.contentType,
+    ttlMs: body.ttlMs,
+    capBytesPerSec: body.capBytesPerSec,
+  });
+  sendJson(res, out.ok ? 200 : 400, out.ok ? { ok: true, ...out } : { ok: false, error: out.why });
+});
+
+route('POST', /^\/api\/bridge\/([^/]+)\/close$/, async (req, res, [id]) => {
+  const out = closeBridge(id);
+  sendJson(res, out.ok ? 200 : 404, { ok: out.ok, ...out, bridge: bridgeStatus() });
+});
+
+route('GET', /^\/api\/bridge\/pull\/([^/]+)$/, async (req, res, [id]) => {
+  const token = new URL(req.url, 'http://127.0.0.1').searchParams.get('token') || '';
+  streamBridge(id, token, req, res);
+});
+
+/* ---------------- Environments per destination ---------------- */
+route('GET', /^\/api\/envs$/, async (req, res) => {
+  sendJson(res, 200, { ok: true, envs: envStatus() });
+});
+
+route('POST', /^\/api\/envs$/, async (req, res) => {
+  const body = await readBody(req);
+  const out = createEnv(body || {});
+  sendJson(res, out.ok ? 200 : 400, out.ok ? { ok: true, env: out.env, envs: envStatus() } : { ok: false, error: out.why });
+});
+
+route('PATCH', /^\/api\/envs\/([^/]+)$/, async (req, res, [id]) => {
+  const body = await readBody(req);
+  const out = setEnvPolicy(id, body || {});
+  sendJson(res, out.ok ? 200 : 404, out.ok ? { ok: true, env: out.env } : { ok: false, error: out.why });
+});
+
+route('POST', /^\/api\/envs\/([^/]+)\/login$/, async (req, res, [id]) => {
+  const body = await readBody(req);
+  const out = envLogin(id, body || {});
+  // The token is shown once, here, to the operator who asked for it.
+  sendJson(res, out.ok ? 200 : 404, out.ok ? { ok: true, token: out.token, env: out.env } : { ok: false, error: out.why });
+});
+
+route('POST', /^\/api\/envs\/([^/]+)\/verify$/, async (req, res, [id]) => {
+  const body = await readBody(req);
+  const out = verifyEnvToken(id, body?.token);
+  sendJson(res, out.ok ? 200 : 403, { ok: out.ok, env: out.env, error: out.why });
+});
+
+route('DELETE', /^\/api\/envs\/([^/]+)$/, async (req, res, [id]) => {
+  const out = removeEnv(id);
+  sendJson(res, out.ok ? 200 : 404, { ok: out.ok, ...out, envs: envStatus() });
+});
+
+/* ---------------- Goals and missions between instances ---------------- */
+route('GET', /^\/api\/memory\/bundle$/, async (req, res) => {
+  sendJson(res, 200, { ok: true, bundle: exportBundle() });
+});
+
+route('POST', /^\/api\/memory\/merge$/, async (req, res) => {
+  const body = await readBody(req);
+  const out = importBundle(body?.bundle || body);
+  sendJson(res, out.ok ? 200 : 400, out);
 });
 
 /* ---------------- Sync page: pull, push, merge, PRs, conflicts ---------------- */
@@ -4273,6 +4460,10 @@ server.listen(PORT, HOST, () => {
   startAutoSync({ intervalMs: Number(db().settings.autoSyncIntervalMs) || undefined });
   // Keep a second on-disk copy level with GitHub, and prove the link every 10s.
   startBackup({ intervalMs: Number(db().settings.localBackupIntervalMs) || undefined });
+  // Watch the process and the tracked files, and report instead of vanishing.
+  startSupervisor();
+  // Poll any live sources that were added, on their own schedules.
+  startLiveSources({ intervalMs: Number(db().settings.liveSourceIntervalMs) || 60000 });
   // Watch the project's own files and auto-test them in a separate process.
   startSentinel();
   // The pipeline handlers: what the parallel workers actually do.
