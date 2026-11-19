@@ -716,7 +716,8 @@ export function deriveTypingGuard(step, run) {
   const typing = ['type', 'key', 'clipboard'].includes(step.type);
   const clicking = step.type === 'clickElement' && !String(step.params?.window || '').trim();
   if (!typing && !clicking) return;
-  if (typing && String(step.params?.foreground || '').trim()) return;
+  // `foreground: true` is “the window this run opened”, not a real title.
+  if (typing && step.params?.foreground !== true && String(step.params?.foreground || '').trim()) return;
   const window = run.lastWindow;
   if (!window?.title) return;
   step.params = {
@@ -1103,14 +1104,23 @@ async function detectHindrance(probe = null) {
 
 /** Reinstate focus and record what was seen before an app-dependent step. */
 async function perceiveStep(step, run, workflow, getTool, probe = null) {
-  const guard = String(step.params?.foreground || (step.type === 'focusWindow' ? step.params?.title : '') || '').trim();
-  if (!guard) return;
+  // `foreground: true` means "the window this run opened", the same convention
+  // the typing guard uses. Reading it as the string "true" made a real window
+  // check impossible.
+  const declared = step.params?.foreground;
+  const guard = String(
+    (declared === true
+      ? step.params?.window || step.params?.title || step.params?.expectedWindow || run.lastWindow?.title
+      : declared || (step.type === 'focusWindow' ? step.params?.title : '')) || ''
+  ).trim();
+  const guardHandle = Math.max(0, Number(step.params?.foregroundHandle) || 0);
+  if (!guard && !guardHandle) return;
   // A probe without a foreground reader is a desktop-free run: there is no real
   // desktop to perceive, and reading it would touch the machine running tests.
   if (probe && typeof probe.readForegroundWindow !== 'function') return;
   try {
     const state = await inspectWindowState({ title: guard });
-    step.perception = { guard, state: state.state, foreground: state.foreground?.title || null, at: now() };
+    step.perception = { guard: guard || `hwnd ${guardHandle}`, state: state.state, foreground: state.foreground?.title || null, at: now() };
     if (state.state === 'background' || state.state === 'minimized') {
       await executeStep(
         { id: uid('chk'), type: 'focusWindow', name: `Reinstate ${guard}`, params: { title: guard }, timeoutMs: 8000 },
@@ -1124,11 +1134,23 @@ async function perceiveStep(step, run, workflow, getTool, probe = null) {
     // Only a real run reads (and moves) the desktop; a test's probe owns that.
     if (!probe && ['type', 'key', 'clipboard'].includes(step.type)) {
       const norm = (value) => String(value || '').toLowerCase().replace(/\s+/g, ' ').trim();
-      const inFront = (title) => norm(title).includes(norm(guard));
+      // An inherited handle names one exact window; a title can be shared by
+      // several documents of the same app.
+      const inFrontWindow = (window) =>
+        guardHandle && Number(window?.hwnd)
+          ? Number(window.hwnd) === guardHandle
+          : norm(window?.title).includes(norm(guard));
+      const inFront = (title) => inFrontWindow({ title });
       if (!inFront(state.foreground?.title)) {
         try {
           await executeStep(
-            { id: uid('chk'), type: 'focusWindow', name: `Focus ${guard} before typing`, params: { title: guard }, timeoutMs: 8000 },
+            {
+              id: uid('chk'),
+              type: 'focusWindow',
+              name: `Focus ${guard || 'the run window'} before typing`,
+              params: { ...(guard ? { title: guard } : {}), ...(guardHandle ? { handle: guardHandle } : {}) },
+              timeoutMs: 8000,
+            },
             { live: true, runId: run.id, run, workflow, getTool }
           );
         } catch (err) {
@@ -1136,7 +1158,7 @@ async function perceiveStep(step, run, workflow, getTool, probe = null) {
         }
         const after = await readForegroundWindow().catch(() => null);
         step.perception.foregroundAfterFocus = after?.title || null;
-        if (!inFront(after?.title)) {
+        if (!inFrontWindow(after)) {
           step.perception.guardFailed = true;
           pushLog(
             run,
