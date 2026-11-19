@@ -7338,6 +7338,14 @@ async function runAction(name, ds, el) {
     case 'live-preview':
       await changeLivePreview(ds.mode === 'stop' ? 'stop' : 'start');
       break;
+    case 'annotate-live-frame': {
+      // The live frame is served by path, not a capture row; annotations key
+      // on the frame path so every re-open of the same frame finds its pins.
+      openModal('lightbox', { capture: { id: `live-frame:${ds.path}`, path: ds.path, runId: null, caption: 'Live preview frame' } });
+      ui.annotateMode = true;
+      renderModal();
+      break;
+    }
     case 'live-watch': {
       const mode = ds.mode === 'stop' ? 'stop' : 'start';
       const res = await api('/api/live/monitor', { method: 'POST', body: { action: mode } });
