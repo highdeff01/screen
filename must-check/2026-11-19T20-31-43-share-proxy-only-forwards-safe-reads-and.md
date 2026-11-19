@@ -66,3 +66,17 @@ test at test\share.test.js:71:1
 ```
 
 Leave findings, fixes and follow-up questions below; auto-sync carries this folder to GitHub so every connected app and agent sees it.
+
+## Resolved
+
+Root cause: `startShare` only accepted an explicit port, so the test reserved one
+by listening and closing, then had the proxy bind it again. On Windows that
+reuse can land in an excluded port range, which is the `EACCES 127.0.0.1:58560`
+on connect — not a proxy logic bug.
+
+Fix: `startShare({ port: 0 })` now lets the OS pick a port and reads the bound
+port from `server.address()`. The test passes `port: 0` and asserts against the
+reported port; every forwarding, 401/403 and downgrade assertion is unchanged.
+
+Proved by: `node --test test/share.test.js` and the full suite (600 tests,
+0 failing) after the fix.
