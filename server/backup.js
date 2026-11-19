@@ -351,7 +351,8 @@ export async function backupTick({ run, root = ROOT, settings = db().settings ||
       state.lastError = 'No backup folder is configured. Set one on the Sync page to keep a local copy.';
       return backupStatus();
     }
-    const dir = path.resolve(state.mirrorPath);
+    // A relative path is taken from the project folder, so "..\\backup" works.
+    const dir = path.resolve(root, state.mirrorPath);
     if (dir === path.resolve(root)) {
       state.status = 'error';
       state.lastError = 'The backup folder cannot be the project folder itself.';
