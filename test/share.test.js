@@ -82,12 +82,13 @@ test('share proxy only forwards safe reads and dry executions', async (t) => {
   const targetPort = await listen(upstream);
   t.after(() => close(upstream));
 
-  // Reserve an OS-assigned port for startShare, which does not accept port 0.
-  const reservation = http.createServer();
-  const port = await listen(reservation);
-  await close(reservation);
-  const share = await startShare({ port, targetPort, tunnel: false });
+  // Port 0: the proxy binds a free port itself and reports which one it got.
+  // Reserving a port first and reusing it races other listeners and can land in
+  // a Windows excluded range, which is what EACCES on connect looked like.
+  const share = await startShare({ port: 0, targetPort, tunnel: false });
   assert.equal(share.active, true, share.lastError);
+  const port = share.port;
+  assert.ok(port > 0, 'the proxy reports the port it bound');
   t.after(() => stopShare());
   const token = share.token;
   const auth = { cookie: `sightline_share=${token}` };
