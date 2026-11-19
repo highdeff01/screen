@@ -82,3 +82,9 @@ step that named its tool by name survived planning but execution only looked up
 `params.toolId`. Plans now resolve the name to the tool's id, unapproved tools
 are dropped when a plan is aligned or a supervisor replan is applied, and the
 executor resolves either form so workflows saved earlier keep working.
+
+## Dismissed — 2026-11-19
+
+`runTool` now resolves a tool by id or name (commit 806ad54); the test passes. Verified on `d6711c9`: `npm test` → 589 tests, 584 pass, 0 fail, 5 skipped.
+
+Dismissed in the repair queue after that run; re-open it if the same failure returns.

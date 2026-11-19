@@ -69,3 +69,9 @@ test at test\sendkeys.test.js:35:1
 ```
 
 Leave findings, fixes and follow-up questions below; auto-sync carries this folder to GitHub so every connected app and agent sees it.
+
+## Dismissed — 2026-11-19
+
+Superseded by later fixes; the full suite passes on this head. Verified on `d6711c9`: `npm test` → 589 tests, 584 pass, 0 fail, 5 skipped.
+
+Dismissed in the repair queue after that run; re-open it if the same failure returns.

@@ -80,3 +80,9 @@ snapshot was the older `16f70a0` version, which no longer exists at HEAD.
 The same sentinel now reports its own suite green on `4f96e16`:
 `586 tests, 581 pass, 0 fail, 5 skipped`. Re-ran locally after the change with
 the same result (`npm test`, exit 0). Nothing to fix in the tree.
+
+## Dismissed — 2026-11-19
+
+Caught the working tree mid-edit; the settled source passes. Verified on `d6711c9`: `npm test` → 589 tests, 584 pass, 0 fail, 5 skipped.
+
+Dismissed in the repair queue after that run; re-open it if the same failure returns.

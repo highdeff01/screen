@@ -118,3 +118,9 @@ test at test\workflow-run-mode.test.js:75:1
 ```
 
 Leave findings, fixes and follow-up questions below; auto-sync carries this folder to GitHub so every connected app and agent sees it.
+
+## Dismissed — 2026-11-19
+
+Caught the working tree mid-edit (`automation.js` had a half-written `case`); the settled source parses and the full suite passes. Verified on `d6711c9`: `npm test` → 589 tests, 584 pass, 0 fail, 5 skipped.
+
+Dismissed in the repair queue after that run; re-open it if the same failure returns.
