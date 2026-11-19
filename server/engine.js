@@ -713,6 +713,32 @@ function deriveTypingGuard(step, run) {
   );
 }
 
+/**
+ * A focus step that names an app loosely (“Notepad”) can land on any window of
+ * that app: an older document, another run's, the operator's own file. When
+ * this run already opened or focused an exact window for that app, aim the
+ * focus at that title instead, so the run uses the window it opened.
+ */
+export function deriveFocusTarget(step, run) {
+  if (step.type !== 'focusWindow') return;
+  const window = run?.lastWindow;
+  if (!window?.title) return;
+  const asked = String(step.params?.title || step.params?.windowName || step.params?.windowTitle || '').trim();
+  if (!asked || window.title === asked) return;
+  const process = String(step.params?.process || '').trim();
+  const sameApp = process
+    ? String(window.process || '').toLowerCase().includes(process.toLowerCase())
+    : window.title.toLowerCase().includes(asked.toLowerCase());
+  if (!sameApp) return;
+  step.params = { ...(step.params || {}), title: window.title };
+  pushLog(
+    run,
+    'info',
+    `“${step.name}” asks for “${asked}”, which several windows match; focusing “${window.title}”, the window this run opened.`,
+    step.id
+  );
+}
+
 /** Report a failed or crashed run to the action log and the working agents. */
 function reportRunFailure(run, summary, error = '') {
   try {
@@ -1658,6 +1684,7 @@ async function executeRun(runId) {
           continue;
         }
       }
+      deriveFocusTarget(step, run);
       deriveTypingGuard(step, run);
       // After inheritance a typing step still without a window has no destination
       // this run can name, and "whatever is in front" is how it typed into an

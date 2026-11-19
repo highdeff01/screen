@@ -987,8 +987,13 @@ if (-not $desiredProcess -and $title) {
 $procPattern = '*' + $desiredProcess + '*'
 $fg = [SightlineInput]::GetForegroundWindow()
 $fgProc = Get-Process | Where-Object { $_.MainWindowHandle -ne 0 -and $_.MainWindowHandle -eq $fg } | Select-Object -First 1
+# A window of the same app is not the window that was asked for: several
+# documents often share one process (Notepad, Explorer). Count the foreground
+# only when its title matches too, or the step would type into the wrong file.
 $fgMatch = if ($fgProc) {
-  if ($desiredProcess) { $fgProc.ProcessName -like $procPattern } else { $fgProc.MainWindowTitle -like $pattern }
+  $procOk = if ($desiredProcess) { $fgProc.ProcessName -like $procPattern } else { $true }
+  $titleOk = if ($title) { $fgProc.MainWindowTitle -like $pattern } else { $true }
+  $procOk -and $titleOk
 } else { $false }
 if ($fgMatch) {
   Write-Output ('already focused ' + $fgProc.ProcessName + ' :: ' + $fgProc.MainWindowTitle)
