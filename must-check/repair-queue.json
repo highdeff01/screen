@@ -1,18 +1,16 @@
 {
   "version": 1,
   "by": "sentinel",
-  "updatedAt": "2026-11-19T03:29:31.429Z",
-  "head": "a1c45ddbb814",
+  "updatedAt": "2026-11-19T03:33:36.440Z",
+  "head": "f71fa5ca6da2",
   "lastRun": {
-    "at": "2026-11-19T03:29:31.416Z",
-    "ok": false,
+    "at": "2026-11-19T03:33:36.440Z",
+    "ok": true,
     "tests": 534,
-    "pass": 528,
-    "fail": 1,
+    "pass": 529,
+    "fail": 0,
     "isolated": true,
-    "failingTests": [
-      "literal prose with braces and modifiers stays literal (1.1069ms)"
-    ]
+    "failingTests": []
   },
   "open": 1,
   "items": [
