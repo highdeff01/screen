@@ -421,6 +421,8 @@ const FIELDS = {
     { key: 'question', label: 'What must be visibly true?', type: 'textarea', rows: 3, placeholder: 'The YouTube watch page is visible and the video is playing: no large play overlay, progress is past 0:00.' },
     { key: 'title', label: 'Expected app/page (optional)', type: 'text', placeholder: 'YouTube watch page' },
     { key: 'app', label: 'Foreground app/process must match', type: 'text', placeholder: 'Kiro' },
+    { key: 'text', label: 'Expected text in the window (optional)', type: 'text', placeholder: 'Sightline screen agent', help: 'The free judge reads the window with UI Automation; a missing passage fails without spending a model call.' },
+    { key: 'absent', label: 'Text that must be gone (optional)', type: 'text', placeholder: 'Untitled', help: 'Useful to prove a stale passage or placeholder was replaced.' },
     { key: 'caption', label: 'Evidence caption', type: 'text', placeholder: 'Screen verification' },
     { key: 'onError', label: 'If the model cannot see', type: 'select', options: ['fail', 'warn'], default: 'fail' },
     { key: 'minConfidence', label: 'Minimum confidence', type: 'number', placeholder: '0.7', help: '0–1. A pass below this threshold fails the step.' },
@@ -5474,6 +5476,36 @@ function fileNameLabel(value) {
 }
 
 /* ------------------------------------------------------------------ agents */
+function renderJudgementCard(j) {
+  const modes = j.modes || [
+    { id: 'parallel', label: 'Parallel — both judges, facts gate' },
+    { id: 'vision', label: 'Vision decides' },
+    { id: 'facts', label: 'Facts decide when conclusive' },
+    { id: 'strict', label: 'Strict — both must pass' },
+  ];
+  const stats = j.stats || {};
+  const reviews = j.reviews || [];
+  return `<div class="card section-gap">
+    <div class="card-head"><h3>Screen judgement</h3><span class="badge ${reviews.length ? 'warnbadge' : 'okbadge'}">${reviews.length ? `${reviews.length} to review` : 'in agreement'}</span></div>
+    <div class="card-body">
+      <p class="muted small" style="margin-bottom:10px">Every verifyScreen is read twice from the same moment: the model judges a crop of <strong>this run's own window</strong>, and a free deterministic pass checks that window's handle and text. Both verdicts are kept, so you can see which judge decided and which method to trust.</p>
+      <div class="row wrap" style="gap:5px;margin-bottom:10px">
+        ${modes.map((mode) => `<button class="chip ${j.mode === mode.id ? 'active' : ''}" data-act="judge-mode" data-mode="${esc(mode.id)}" title="${esc(mode.label)}">${esc(mode.label)}</button>`).join('')}
+      </div>
+      <div class="row wrap" style="gap:8px;margin-bottom:10px">
+        <span class="badge">${stats.total || 0} checked</span>
+        <span class="badge">${stats.agree || 0} agree${stats.agreementRate != null ? ` · ${stats.agreementRate}%` : ''}</span>
+        <span class="badge">${stats.disagree || 0} disagree</span>
+        ${stats.visionOnlyPass ? `<span class="badge">${stats.visionOnlyPass} vision-only pass</span>` : ''}
+        ${stats.factsOnlyPass ? `<span class="badge">${stats.factsOnlyPass} facts-only pass</span>` : ''}
+      </div>
+      ${reviews.length
+        ? `<div class="stack" style="gap:6px">${reviews.map((review) => `<div class="hint-box small"><strong>${esc(review.title)}</strong>${review.count > 1 ? ` <span class="dim">×${review.count}</span>` : ''}<br><span class="dim">${esc(review.detail)}</span><div class="row" style="gap:6px;margin-top:6px"><button class="btn btn-sm" data-act="judge-review" data-id="${esc(review.id)}" data-decision="accept">Accept</button><button class="btn btn-sm btn-ghost" data-act="judge-review" data-id="${esc(review.id)}" data-decision="dismiss">Dismiss</button></div></div>`).join('')}</div>`
+        : '<p class="dim small" style="margin:0">No suggestions waiting. A repeated disagreement becomes one for review — nothing changes the switch on its own.</p>'}
+    </div>
+  </div>`;
+}
+
 function renderAgents() {
   const d = ui.data;
   if (!ui.settingsDraft) ui.settingsDraft = { ...d.settings };
@@ -5548,6 +5580,8 @@ function renderAgents() {
       )
       .join('')}
   </div>
+
+  ${renderJudgementCard(d.judgement || { mode: d.settings?.verifyJudgeMode || 'parallel', stats: {}, reviews: [] })}
 
   <div class="section-gap" style="display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,1fr);gap:14px">
     <div class="card">
@@ -7021,6 +7055,25 @@ async function runAction(name, ds, el) {
       const res = await api('/api/factoring/apply', { method: 'POST', body: { planId: ds.id } });
       if (!res.ok) return toast(res.error, 'error');
       toast(`Pushed ${res.applied?.suggestions?.length ?? 0} refactor suggestion(s) to the builder for your approval.`, 'ok');
+      await refresh();
+      render();
+      break;
+    }
+    case 'judge-mode': {
+      const res = await api('/api/judgement/mode', { method: 'POST', body: { mode: ds.mode } });
+      if (!res.ok) return toast(res.error, 'error');
+      toast(`Screen judgement: ${ds.mode}.`, 'ok');
+      await refresh();
+      render();
+      break;
+    }
+    case 'judge-review': {
+      const res = await api(`/api/judgement/reviews/${encodeURIComponent(ds.id)}/${ds.decision}`, {
+        method: 'POST',
+        body: {},
+      });
+      if (!res.ok) return toast(res.error, 'error');
+      toast(ds.decision === 'accept' ? 'Applied the judgement suggestion.' : 'Suggestion dismissed.', 'ok');
       await refresh();
       render();
       break;
