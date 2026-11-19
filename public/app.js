@@ -41,6 +41,9 @@ const ui = {
   trayDismissed: '',
   sim: null,
   simBusy: false,
+  review: null,
+  reviewBusy: false,
+  reviewSort: 'risk',
   observationReview: null,
   observationReviewBusy: false,
   observationProposal: { simulationId: '', proposalId: '' },
@@ -1945,6 +1948,7 @@ function renderRunDetail(run) {
       </div>
     </div>
     <div class="card"><div class="card-head"><h3>Screenshot check review</h3><button class="btn btn-sm" data-act="run-simulate" data-id="${esc(full.id)}" ${ui.simBusy ? 'disabled' : ''}>Screenshot check</button></div><div class="card-body">${renderSimulationCard(ui.sim?.runId === full.id ? ui.sim.record : null) || '<p class="muted small">No screenshot check loaded for this run.</p>'}</div></div>
+    <div class="card"><div class="card-head"><h3>Test review</h3><div class="row" style="gap:6px;align-items:flex-end"><label class="field" style="margin:0;min-width:130px"><span>Sort</span><select data-scope="review-sort" data-id="${esc(full.id)}" ${ui.reviewBusy ? 'disabled' : ''}>${['risk', 'phase', 'status', 'seq', 'name'].map((mode) => `<option value="${mode}" ${ui.reviewSort === mode ? 'selected' : ''}>${mode}</option>`).join('')}</select></label><button class="btn btn-sm" data-act="run-review" data-id="${esc(full.id)}" ${ui.reviewBusy ? 'disabled' : ''}>${ui.reviewBusy ? 'Reviewing…' : 'Build review'}</button></div></div><div class="card-body">${renderTestReviewCard(ui.review?.runId === full.id ? ui.review.record : null)}</div></div>
 
     ${
       failedSteps.length
@@ -3492,6 +3496,41 @@ function renderSimulationCard(sim) {
         ${staticReview ? `<div><b>Bounded static proposal check: ${esc(staticReview.staticTest.status)}</b><ul class="rule-list">${staticReview.staticTest.checks.map((check) => `<li>${check.ok ? '✓' : '✕'} ${esc(check.label)}${check.warningOnly ? ' (warning only)' : ''}</li>`).join('')}</ul>${staticReview.staticTest.failures.map((failure) => `<div>${esc(failure.name || 'Step')}: ${esc(failure.reason)}</div>`).join('')}<p class="dim small">${esc(staticReview.limitations)} Omitted: ${staticReview.truncation.stepsOmitted} steps, ${staticReview.truncation.preflightOmitted} preflight checks, ${staticReview.truncation.lintIssuesOmitted} lint issues.</p><button class="btn btn-sm btn-ghost" data-act="observation-proposal-open" data-id="${esc(staticReview.proposalId)}" data-workflow="${esc(sim.workflowId)}">Open proposal in workflow for separate review / approval</button></div>` : ''}
       </div>` : ''}
     </div>
+  </div>`;
+}
+
+function renderTestReviewCard(record) {
+  if (!record) {
+    return '<p class="muted small">No review yet. Build one to break the run into individual tests, compare it with the steps that worked before, and check whether it would survive another environment.</p>';
+  }
+  const verdictBadge = record.verdict === 'ready' ? 'okbadge' : record.verdict === 'blocked' ? 'warnbadge' : '';
+  const counts = record.counts || {};
+  const evidence = record.evidence || {};
+  const cross = record.crossRef || {};
+  const alt = record.altEnv || {};
+  const apps = record.apps || { immediate: [], longTerm: [] };
+  const riskBadge = (risk) => (risk >= 75 ? 'warnbadge' : risk >= 45 ? '' : 'okbadge');
+  const rows = (record.tests || []).slice(0, 12);
+  const appLine = (entry) => `<div class="cc-event"><span class="badge">${esc(entry.effort || 'app')}</span><span class="small"><b>${esc(entry.name)}</b> — ${esc(entry.why)}</span></div><div class="dim small" style="margin:2px 0 5px 6px">${esc(entry.next)}</div>`;
+  return `<div class="hint-box small sim-card">
+    <div class="row wrap" style="gap:6px">
+      <b>Test review</b>
+      <span class="badge ${verdictBadge}">${esc(record.verdict || 'unknown')}</span>
+      <span class="badge">${Number(counts.tests) || 0} tests</span>
+      <span class="badge okbadge">${Number(counts.passed) || 0} passed</span>
+      ${counts.failed ? `<span class="badge warnbadge">${counts.failed} failed</span>` : ''}
+      <span class="badge">${Number(counts.checks) || 0} checks</span>
+      <span class="dim small">evidence ${Number(evidence.coveragePct) || 0}%</span>
+    </div>
+    ${(record.review?.summary || []).map((line) => `<div class="dim small" style="margin-top:4px">• ${esc(line)}</div>`).join('')}
+    ${(record.phases || []).length ? `<div class="chip-row" style="margin-top:5px">${record.phases.map((phase) => `<span class="badge">${esc(phase.label)} · ${Number(phase.tests) || 0}${phase.highRisk ? ` · ${phase.highRisk} at risk` : ''}</span>`).join('')}</div>` : ''}
+    <div style="margin-top:8px"><b>Now (reuse what is ready)</b>${apps.immediate.length ? apps.immediate.slice(0, 3).map(appLine).join('') : '<div class="dim small">Nothing is ready to reuse yet.</div>'}</div>
+    <div style="margin-top:6px"><b>Long term (needs setup)</b>${apps.longTerm.length ? apps.longTerm.slice(0, 3).map(appLine).join('') : '<div class="dim small">No extra app is required.</div>'}</div>
+    <div style="margin-top:8px"><b>Compared with previous steps · ${esc(cross.verdict || 'first_run')}</b>${(cross.summary || []).map((line) => `<div class="dim small" style="margin-top:2px">• ${esc(line)}</div>`).join('')}${(cross.newDetails || []).slice(0, 2).map((entry) => `<div class="small" style="margin-top:2px">new · ${esc(entry.detail)}</div>`).join('')}</div>
+    <div style="margin-top:8px"><b>Alternate environment · ${esc(alt.summary?.verdict || 'not checked')}</b><div class="dim small" style="margin-top:2px">${Number(alt.summary?.holds) || 0} hold · ${Number(alt.summary?.reused) || 0} reused · ${Number(alt.summary?.diverged) || 0} diverge · ${Number(alt.summary?.blocked) || 0} blocked · ${Number(alt.summary?.portable) || 0}% portable</div></div>
+    ${rows.length ? `<div class="stack" style="gap:3px;margin-top:8px">${rows.map((test) => `<div class="cc-event"><span class="badge ${riskBadge(test.risk)}">${esc(test.status)}</span><span class="badge">${esc(test.kind)}</span><span class="small">${Number(test.seq) || 0}. ${esc(test.name)} · ${esc(test.phase)} · risk ${Number(test.risk) || 0}${test.evidence?.verdict ? ` · ${esc(test.evidence.verdict)}` : ''}${(test.riskReasons || []).length ? ` · ${esc(test.riskReasons.join(', '))}` : ''}</span></div>`).join('')}</div>${(record.tests || []).length > rows.length ? `<div class="dim small" style="margin-top:3px">+${(record.tests || []).length - rows.length} more test(s) in this review.</div>` : ''}` : '<div class="dim small" style="margin-top:6px">This run has no steps to review.</div>'}
+    ${(record.suggestions?.now || []).length ? `<div style="margin-top:8px"><b>Do now</b>${record.suggestions.now.map((line) => `<div class="dim small">• ${esc(line)}</div>`).join('')}</div>` : ''}
+    ${(record.suggestions?.later || []).length ? `<div style="margin-top:5px"><b>Do later</b>${record.suggestions.later.map((line) => `<div class="dim small">• ${esc(line)}</div>`).join('')}</div>` : ''}
   </div>`;
 }
 
@@ -7757,6 +7796,21 @@ async function runAction(name, ds, el) {
       await refresh();
       break;
     }
+    case 'run-review': {
+      const runId = ds.id;
+      if (!runId || ui.reviewBusy) return;
+      ui.reviewBusy = true;
+      render();
+      const res = await api(`/api/runs/${encodeURIComponent(runId)}/review?sort=${encodeURIComponent(ui.reviewSort)}`);
+      ui.reviewBusy = false;
+      if (!res.ok) {
+        render();
+        return toast(res.error, 'error');
+      }
+      ui.review = { runId, record: res.review };
+      render();
+      return;
+    }
     case 'run-simulate': {
       const runId = ds.id;
       if (!runId || ui.simBusy) return;
@@ -9580,6 +9634,17 @@ document.addEventListener('change', (event) => {
   const key = el.dataset.key;
   const value = el.type === 'checkbox' ? el.checked : el.value;
 
+  if (scope === 'review-sort') {
+    ui.reviewSort = value;
+    const runId = el.dataset.id;
+    if (ui.review?.runId !== runId) return;
+    api(`/api/runs/${encodeURIComponent(runId)}/review?sort=${encodeURIComponent(value)}`).then((res) => {
+      if (!res.ok || ui.review?.runId !== runId) return;
+      ui.review = { runId, record: res.review };
+      render();
+    });
+    return;
+  }
   if (scope === 'observation-proposal') {
     ui.observationProposal = { simulationId: el.dataset.id, proposalId: value };
     ui.observationReview = null;

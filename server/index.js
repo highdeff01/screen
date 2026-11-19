@@ -129,6 +129,8 @@ import { latestMonitorSuggestions, monitorState, startLiveMonitor, stopLiveMonit
 import { observerState } from './app-observer.js';
 import { livePreview } from './live-preview.js';
 import { findSimulation, listSimulations, simulationSummary, startSimulation } from './screenshot-sim.js';
+import { buildTestReview, SORTS as TEST_REVIEW_SORTS } from './test-review.js';
+import { replicateRun } from './alt-env.js';
 import { prepareObservationReview } from './observation-review.js';
 import {
   companionState,
@@ -2562,6 +2564,42 @@ route('GET', /^\/api\/simulations\/([^/]+)$/, async (req, res, [id]) => {
   const record = findSimulation(id);
   if (!record) return fail(res, 404, 'Simulation not found');
   sendJson(res, 200, { ok: true, simulation: simulationSummary(record) });
+});
+
+// One review per run: step breakdown sorted by risk/phase, cross-reference with
+// the steps that worked before, the alternate-environment replication, and the
+// immediate vs long-term app suggestions. Read-only and derived from records.
+route('GET', /^\/api\/runs\/([^/]+)\/review$/, async (req, res, [id], url) => {
+  res.setHeader('Cache-Control', 'no-store');
+  const run = findRun(id);
+  if (!run) return fail(res, 404, 'Run not found');
+  const sort = String(url.searchParams.get('sort') || 'risk');
+  if (!TEST_REVIEW_SORTS.includes(sort)) {
+    return fail(res, 400, `sort must be one of ${TEST_REVIEW_SORTS.join(', ')}`);
+  }
+  const workflow = db().workflows.find((entry) => entry.id === run.workflowId) || null;
+  if (!Array.isArray(db().workflowMemory) || !db().workflowMemory.length) backfillWorkflowMemory();
+  const review = buildTestReview({
+    run,
+    workflow,
+    episodes: db().workflowMemory || [],
+    simulation: listSimulations(run.id, 1)[0] || null,
+    sort,
+    longTermGoal: db().settings?.longTermGoal || '',
+  });
+  sendJson(res, 200, { ok: true, review });
+});
+
+route('POST', /^\/api\/runs\/([^/]+)\/replicate$/, async (req, res, [id]) => {
+  const run = findRun(id);
+  if (!run) return fail(res, 404, 'Run not found');
+  let body = {};
+  try {
+    body = (await readBody(req)) || {};
+  } catch {
+    body = {};
+  }
+  sendJson(res, 200, { ok: true, replication: replicateRun({ run, env: body.env || body }) });
 });
 
 // Only stored records are reviewed; monitor events are global, not run-correlated.
