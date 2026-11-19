@@ -398,6 +398,50 @@ export function detectBackend({ env = process.env, platform = HOST } = {}) {
   };
 }
 
+/**
+ * Prove live control with a real action instead of trusting detection.
+ *
+ * Initial detection reads the process environment (PATH, DISPLAY, forced
+ * targets) — any of which can be wrong about a machine that would actually
+ * answer. The probe runs each platform's cheapest real command with a short
+ * timeout: if it talks back, live control works, whatever the checklists
+ * claimed. Used by the engine before converting a run to simulation and as
+ * the workaround when a step hits a platform guard mid-run.
+ */
+export function probeLiveBackend({ timeoutMs = 5000 } = {}) {
+  const platform = process.platform;
+  const attempt = (command, args) =>
+    new Promise((resolve) => {
+      try {
+        const child = execFile(command, args, { timeout: timeoutMs, windowsHide: true }, (err, stdout) => {
+          resolve(err ? { ok: false, detail: String(err.message || err).slice(0, 200) } : { ok: true, detail: String(stdout || '').trim().slice(0, 80) || 'answered' });
+        });
+        if (child && child.on) child.on('error', () => {}); // execFile reports through the callback
+      } catch (err) {
+        resolve({ ok: false, detail: String(err.message || err).slice(0, 200) });
+      }
+    });
+  if (platform === 'win32') {
+    // The Windows dispatcher is PowerShell-based; if PowerShell answers, the
+    // native capture/input machinery it wraps is present.
+    return attempt('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', 'Write-Output ok']);
+  }
+  if (platform === 'darwin') {
+    return attempt('osascript', ['-e', 'return 1']);
+  }
+  if (platform === 'linux') {
+    // xdotool talking back is the actual input proof — DISPLAY may be missing
+    // from this process's env while XWayland still serves it.
+    return attempt('xdotool', ['getmouselocation']);
+  }
+  return Promise.resolve({ ok: false, detail: `no live backend for ${platform}` });
+}
+
+/** The refusal messages a platform guard produces at execution time. */
+export function isPlatformRefusal(message) {
+  return /live control is not implemented|needs an X11 DISPLAY|xdotool on PATH|screenshot tool on PATH|Set SIGHTLINE_TARGET/i.test(String(message || ''));
+}
+
 /** What the API and the UI banner report. */
 export function liveControl(options) {
   const backend = detectBackend(options);

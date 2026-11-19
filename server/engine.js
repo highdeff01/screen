@@ -28,7 +28,7 @@ import { addNote } from './handoff.js';
 import { noteStepOutcome, pinStepIntents, similarSolutions, spotIntent } from './step-factoring.js';
 import { recordCloseout } from './closeout.js';
 import { beginRunObservation, endRunObservation } from './app-observer.js';
-import { liveControl } from './platform.js';
+import { liveControl, probeLiveBackend, isPlatformRefusal } from './platform.js';
 import { expectsScreenChange, windowChecksFor, resumePlan, corroboratesNoChange, lookupWindowFor, screenChangeVerdict } from './step-effects.js';
 
 // Per-run adapters supplied by tests so the screen policy can run without a UI.
@@ -1329,20 +1329,26 @@ async function executeRun(runId) {
   const probe = runProbes.get(run.id) || null;
   // Platform fallback at the source of truth: any run that reaches the queue
   // while no live backend is available (hosted previews, headless machines)
-  // converts to simulation here — whichever path created it. Retries,
-  // recovery packs, shortcut replays and scheduler runs all pass through.
+  // converts to simulation here — whichever path created it. But detection is
+  // a prediction, not proof: the machine gets a real chance to answer before
+  // the run is downgraded, and a live step that hits the guard mid-run gets
+  // one workaround attempt with a fresh probe.
   if (!run.dryRun && !probe) {
-    try {
-      const control = liveControl();
-      if (!control.available) {
+    const control = liveControl();
+    if (!control.available) {
+      const proof = await probeLiveBackend();
+      if (proof.ok) {
+        pushLog(run, 'warn', `Detection said “${control.reason}”, but the machine answers natively (${proof.detail}); initial detection was wrong — the run continues live.`, null);
+        run.detectionCorrected = true;
+      } else {
         run.dryRun = true;
-        run.liveFallback = control.reason || 'no live backend';
+        run.liveFallback = `${control.reason || 'no live backend'} (probe: ${proof.detail || 'no answer'})`;
         pushLog(run, 'warn', `Live refused on this machine (${run.liveFallback}); the run continues simulated instead.`, null);
         try {
           recordAction({ kind: 'run', action: `start-run:${run.workflowName}`, error: run.liveFallback, detail: { runId: run.id, requestedMode: 'live' } });
         } catch { /* logging never blocks the run */ }
       }
-    } catch { /* if the backend probe itself fails, run as queued */ }
+    }
   }
   const repairEnabled = !run.dryRun && run.liveRepair !== false && (run.liveRepair === true || !probe);
   const capture = () => (probe?.captureScreenSignature ? probe.captureScreenSignature() : captureScreenSignature());
