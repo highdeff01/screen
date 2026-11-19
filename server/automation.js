@@ -89,12 +89,28 @@ export function runPowerShell(script, timeoutMs = 20000) {
   });
 }
 
+/**
+ * SendKeys key expressions an author may write on purpose inside typed text.
+ * These are expanded as keys, not escaped as literal braces — a quick-capture
+ * note that ends its first line with {ENTER} means "press Enter here".
+ */
+const SENDKEY_PHRASES =
+  /(\{ENTER\}|\{TAB\}|\{ESC\}|\{BACKSPACE\}|\{BKSP\}|\{DELETE\}|\{DEL\}|\{INSERT\}|\{INS\}|\{HOME\}|\{END\}|\{PGUP\}|\{PGDN\}|\{UP\}|\{DOWN\}|\{LEFT\}|\{RIGHT\}|\{PRTSC\}|\{CAPSLOCK\}|\{F[1-9]\}|\{F1[0-2]\}|\{\s*enter\s*\}|\{\s*tab\s*\}|\{\s*esc\s*\})/gi;
+
 export function sendKeysText(text) {
-  const escaped = String(text)
+  const raw = String(text)
     .replace(/\r\n/g, '\n')
     .replace(/\n/g, '{ENTER}')
-    .replace(/\t/g, '{TAB}')
-    .replace(/[+^%~(){}\[\]]/g, (c) => `{${c}}`);
+    .replace(/\t/g, '{TAB}');
+  // Pass intentional key phrases through; escape everything else so prose
+  // containing braces, carets or percent signs stays literal prose.
+  const escaped = raw
+    .split(SENDKEY_PHRASES)
+    .map((chunk, index) => {
+      if (index % 2 === 1) return chunk.toUpperCase().replace(/\s+/g, '');
+      return chunk.replace(/[+^%~(){}\[\]]/g, (c) => `{${c}}`);
+    })
+    .join('');
   return Buffer.from(escaped, 'utf8').toString('base64');
 }
 
