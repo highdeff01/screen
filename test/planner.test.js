@@ -156,3 +156,37 @@ test('keeps a valid copy-before-write sequence and records step decisions', () =
   const copyIndex = result.steps.findIndex((step) => step.type === 'clickElement' && /copy/i.test(step.name));
   assert.ok(copyIndex >= 0 && copyIndex < writeIndex);
 });
+
+test('a tool reference resolves by id or by name and refuses anything else', () => {
+  const tools = [
+    { id: 'tool_cleanup', name: 'Cleanup' },
+    { id: 'tool_window_list', name: 'List visible windows' },
+  ];
+  assert.equal(planner.resolveToolRef({ toolId: 'tool_cleanup' }, tools)?.id, 'tool_cleanup');
+  assert.equal(planner.resolveToolRef({ toolName: 'List visible windows' }, tools)?.id, 'tool_window_list');
+  assert.equal(planner.resolveToolRef({ toolId: 'List visible windows' }, tools)?.id, 'tool_window_list');
+  assert.equal(planner.resolveToolRef({ toolName: 'shell' }, tools), null);
+  assert.equal(planner.resolveToolRef({}, tools), null);
+  assert.equal(planner.resolveToolRef({ toolId: 'tool_cleanup' }, []), null);
+});
+
+test('a tool step keeps the id execution looks up, even when the plan names the tool', () => {
+  const step = planner.normalizeStep({ type: 'runTool', name: 'List windows', toolName: 'List visible windows' });
+  assert.equal(step.type, 'runTool');
+  assert.equal(step.params.toolName, 'List visible windows');
+  assert.equal(step.params.toolId, planner.resolveToolRef({ toolName: 'List visible windows' }).id);
+});
+
+test('a tool step that names no approved tool is dropped instead of run', () => {
+  const result = planner.alignPlanToGoal(
+    [
+      { type: 'runTool', name: 'Run nothing', params: {} },
+      { type: 'runTool', name: 'Run an unapproved tool', params: { toolName: 'tool_that_does_not_exist' } },
+      { type: 'runTool', name: 'Run an approved tool by name', params: { toolName: 'List visible windows' } },
+      { type: 'screenshot', name: 'Look at the screen', params: {} },
+    ],
+    'list the visible windows'
+  );
+  assert.deepEqual(result.steps.map((step) => step.type), ['runTool', 'screenshot']);
+  assert.equal(result.steps[0].params.toolId, planner.resolveToolRef({ toolName: 'List visible windows' }).id);
+});
