@@ -10,21 +10,29 @@
  *            front, and does it contain (or lack) the expected text?
  *   vision — the existing model call, now shown only that window's pixels.
  *
- * The two verdicts are kept side by side. Agreement is a learned habit; a
- * repeated disagreement becomes a review suggestion (a switch or a condition
- * to adopt), and nothing is applied until the operator accepts it. No extra
- * model call is ever made for the second judge.
+ * The two verdicts are kept side by side as evidence, but they produce one
+ * answer. One switch, two positions: `gate` (the model decides and a
+ * conclusive fact check can veto) and `facts` (a conclusive fact check decides,
+ * so a check still means something when the model is slow or offline). Repeat
+ * disagreement may draft a review, and nothing is applied until the operator
+ * accepts it. No extra model call is ever made for the second judge.
  */
 import { db, persist, now, uid } from './store.js';
 
-export const JUDGE_MODES = ['parallel', 'vision', 'facts', 'strict'];
+export const JUDGE_MODES = ['gate', 'facts'];
 
 export const JUDGE_MODE_LABELS = {
-  parallel: 'Parallel — both judges, facts gate',
-  vision: 'Vision decides',
+  gate: 'Facts can veto the model',
   facts: 'Facts decide when conclusive',
-  strict: 'Strict — both must pass',
 };
+
+/**
+ * Retired names map onto the two positions that survived. `parallel` was the
+ * gate under another name; `vision` and `strict` both meant "let the model
+ * through even when the window check says otherwise", which is how a lookalike
+ * document once passed a screen check.
+ */
+const LEGACY_MODES = { parallel: 'gate', vision: 'gate', strict: 'gate' };
 
 /** Which window this check is about: the step's own target, else the run's window. */
 export function judgeTargetFor(step, run) {
@@ -143,52 +151,30 @@ export function windowFacts({
 }
 
 export function judgeMode(settings = {}) {
-  const mode = String(settings.verifyJudgeMode || 'parallel');
-  return JUDGE_MODES.includes(mode) ? mode : 'parallel';
-}
-
-/** Per-workflow override wins over the global switch, but only when it is valid. */
-export function judgeModeFor(workflow, settings) {
-  const local = String(workflow?.judgeMode || '');
-  if (JUDGE_MODES.includes(local)) return local;
-  return judgeMode(settings || db().settings || {});
+  const mode = String(settings.verifyJudgeMode || '').trim();
+  if (JUDGE_MODES.includes(mode)) return mode;
+  return LEGACY_MODES[mode] || 'gate';
 }
 
 /**
- * Combine the two readings. `parallel` and `strict` keep the free fact check as
- * a gate: a model that passes the wrong window can no longer manufacture a
- * success. `vision` and `facts` exist so the operator can compare the methods
- * and learn which one to trust for a given workflow.
+ * Combine the two readings into one verdict. `gate` keeps the free fact check
+ * as a veto, so a model that passes the wrong window cannot manufacture a
+ * success. `facts` lets a conclusive deterministic reading decide, so a check
+ * still means something when the model is unsure or offline.
  */
-export function mergeJudgement({ mode = 'parallel', facts = { status: 'unknown' }, vision = { pass: false } } = {}) {
+export function mergeJudgement({ mode = 'gate', facts = { status: 'unknown' }, vision = { pass: false } } = {}) {
   const factsStatus = ['pass', 'fail', 'unknown'].includes(facts?.status) ? facts.status : 'unknown';
   const visionPass = vision?.pass === true;
+  const normalised = JUDGE_MODES.includes(mode) ? mode : 'gate';
   let pass = false;
   let decidedBy = 'vision';
-  switch (mode) {
-    case 'vision':
-      pass = visionPass;
-      decidedBy = 'vision';
-      break;
-    case 'facts':
-      if (factsStatus === 'pass' || factsStatus === 'fail') {
-        pass = factsStatus === 'pass';
-        decidedBy = 'facts';
-      } else {
-        pass = visionPass;
-        decidedBy = 'vision';
-      }
-      break;
-    case 'strict':
-      pass = visionPass && factsStatus === 'pass';
-      decidedBy = 'both';
-      break;
-    case 'parallel':
-    default:
-      // Facts may block, but an unknown fact never stands in for proof.
-      pass = visionPass && factsStatus !== 'fail';
-      decidedBy = factsStatus === 'fail' ? 'facts' : factsStatus === 'pass' ? 'both' : 'vision';
-      break;
+  if (normalised === 'facts' && (factsStatus === 'pass' || factsStatus === 'fail')) {
+    pass = factsStatus === 'pass';
+    decidedBy = 'facts';
+  } else {
+    // Facts may block, but an unknown fact never stands in for proof.
+    pass = visionPass && factsStatus !== 'fail';
+    decidedBy = factsStatus === 'fail' ? 'facts' : factsStatus === 'pass' ? 'both' : 'vision';
   }
   const agreement =
     factsStatus === 'unknown'
@@ -200,7 +186,7 @@ export function mergeJudgement({ mode = 'parallel', facts = { status: 'unknown' 
           : 'disagree';
   return {
     pass,
-    mode,
+    mode: normalised,
     decidedBy,
     agreement,
     factsStatus,
@@ -223,22 +209,13 @@ function ensureJudgement(d) {
 
 const REVIEW_AFTER = 3;
 
-function suggestionFor(kind, workflowId, mode) {
-  if (kind === 'vision-only-pass') {
-    return {
-      kind: 'mode',
-      mode: 'parallel',
-      title: 'Keep window facts as a gate',
-      detail: `${REVIEW_AFTER} checks where vision passed but the window facts did not. Parallel mode fails those instead of accepting a lookalike window.`,
-    };
-  }
+function suggestionFor(kind) {
   if (kind === 'facts-only-pass') {
     return {
       kind: 'mode',
       mode: 'facts',
-      workflowId: workflowId || null,
-      title: 'Trust the deterministic check for this workflow',
-      detail: `${REVIEW_AFTER} checks where the window facts passed and vision did not. Facts mode accepts deterministic proof even when the model is unsure.`,
+      title: 'Let the deterministic check decide',
+      detail: `${REVIEW_AFTER} checks where the window facts passed and the model did not. Facts mode accepts the deterministic proof even when the model is unsure or offline.`,
     };
   }
   return {
@@ -284,7 +261,7 @@ export function recordJudgement(entry = {}, deps = {}) {
 
   const record = {
     at: now(),
-    mode: entry.mode || 'parallel',
+    mode: entry.mode || 'gate',
     factsStatus,
     visionPass,
     confidence: entry.vision?.confidence ?? null,
@@ -302,13 +279,15 @@ export function recordJudgement(entry = {}, deps = {}) {
   j.history.unshift(record);
   j.history = j.history.slice(0, 80);
 
-  if (kind && ['vision-only-pass', 'facts-only-pass', 'unscoped'].includes(kind)) {
+  // A vision-only pass needs no review: the gate already blocked it. Only a
+  // habit worth changing (facts winning, or checks naming no window) is drafted.
+  if (kind && ['facts-only-pass', 'unscoped'].includes(kind)) {
     if (!j.streaks || typeof j.streaks !== 'object') j.streaks = {};
     const runs = (Number(j.streaks[kind]) || 0) + 1;
     j.streaks[kind] = runs;
     if (runs % REVIEW_AFTER === 0) {
-      const suggestion = suggestionFor(kind, record.workflowId, record.mode);
-      const pending = j.reviews.find((review) => review.status === 'pending' && review.kind === kind && (review.workflowId || null) === (suggestion.workflowId || null));
+      const suggestion = suggestionFor(kind);
+      const pending = j.reviews.find((review) => review.status === 'pending' && review.kind === kind);
       if (pending) {
         pending.count = (Number(pending.count) || 1) + 1;
         pending.lastAt = record.at;
@@ -320,13 +299,12 @@ export function recordJudgement(entry = {}, deps = {}) {
           count: 1,
           status: 'pending',
           kind,
-          workflowId: suggestion.workflowId || null,
+          workflowId: record.workflowId || null,
           title: suggestion.title,
           detail: suggestion.detail,
           suggestion: {
             kind: suggestion.kind,
             mode: suggestion.mode || null,
-            workflowId: suggestion.workflowId || null,
             ...(suggestion.setting ? { setting: suggestion.setting, value: suggestion.value } : {}),
           },
         });
@@ -358,12 +336,7 @@ export function resolveJudgementReview(id, action = 'dismiss', deps = {}) {
   if (!review) throw new Error('Judgement review not found');
   if (review.status !== 'pending') return review;
   if (action === 'accept' && review.suggestion?.kind === 'mode' && JUDGE_MODES.includes(review.suggestion.mode)) {
-    if (review.suggestion.workflowId) {
-      const workflow = (d.workflows || []).find((entry) => entry.id === review.suggestion.workflowId);
-      if (workflow) workflow.judgeMode = review.suggestion.mode;
-    } else {
-      d.settings.verifyJudgeMode = review.suggestion.mode;
-    }
+    d.settings.verifyJudgeMode = review.suggestion.mode;
   }
   if (action === 'accept' && review.suggestion?.setting === 'verifyJudgeRequireScope') {
     d.settings.verifyJudgeRequireScope = true;

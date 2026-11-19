@@ -3600,10 +3600,10 @@ route('PATCH', /^\/api\/settings$/, async (req, res) => {
   if (body.requireToolApproval !== undefined) s.requireToolApproval = Boolean(body.requireToolApproval);
   if (body.visionEnabled !== undefined) s.visionEnabled = Boolean(body.visionEnabled);
   if (body.replanModel !== undefined) s.replanModel = String(body.replanModel || '').trim();
-  // Which judge decides a screen check: both in parallel (facts gate), vision
-  // alone, facts alone, or strict (both must pass).
+  // Who decides a screen check: the model with the facts as a veto (gate), or
+  // the facts alone when they are conclusive (facts, works offline).
   if (body.verifyJudgeMode !== undefined) {
-    s.verifyJudgeMode = JUDGE_MODES.includes(body.verifyJudgeMode) ? body.verifyJudgeMode : 'parallel';
+    s.verifyJudgeMode = JUDGE_MODES.includes(body.verifyJudgeMode) ? body.verifyJudgeMode : 'gate';
   }
   if (body.visualTesterUrl !== undefined) s.visualTesterUrl = String(body.visualTesterUrl || '').trim();
   if (body.visualTesterEnabled !== undefined) s.visualTesterEnabled = Boolean(body.visualTesterEnabled);

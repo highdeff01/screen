@@ -5479,17 +5479,15 @@ function fileNameLabel(value) {
 /* ------------------------------------------------------------------ agents */
 function renderJudgementCard(j) {
   const modes = j.modes || [
-    { id: 'parallel', label: 'Parallel — both judges, facts gate' },
-    { id: 'vision', label: 'Vision decides' },
+    { id: 'gate', label: 'Facts can veto the model' },
     { id: 'facts', label: 'Facts decide when conclusive' },
-    { id: 'strict', label: 'Strict — both must pass' },
   ];
   const stats = j.stats || {};
   const reviews = j.reviews || [];
   return `<div class="card section-gap">
     <div class="card-head"><h3>Screen judgement</h3><span class="badge ${reviews.length ? 'warnbadge' : 'okbadge'}">${reviews.length ? `${reviews.length} to review` : 'in agreement'}</span></div>
     <div class="card-body">
-      <p class="muted small" style="margin-bottom:10px">Every verifyScreen is read twice from the same moment: the model judges a crop of <strong>this run's own window</strong>, and a free deterministic pass checks that window's handle and text. Both verdicts are kept, so you can see which judge decided and which method to trust.</p>
+      <p class="muted small" style="margin-bottom:10px">Every verifyScreen is read twice from the same moment — the model judges a crop of <strong>this run's own window</strong>, a free deterministic pass checks that window's handle and text — and both readings are kept as evidence behind one verdict. One switch picks who decides: the model, with the facts able to veto a lookalike window, or the facts alone when they are conclusive (which also works when the model is offline).</p>
       <div class="row wrap" style="gap:5px;margin-bottom:10px">
         ${modes.map((mode) => `<button class="chip ${j.mode === mode.id ? 'active' : ''}" data-act="judge-mode" data-mode="${esc(mode.id)}" title="${esc(mode.label)}">${esc(mode.label)}</button>`).join('')}
       </div>
@@ -5584,7 +5582,7 @@ function renderAgents() {
       .join('')}
   </div>
 
-  ${renderJudgementCard(d.judgement || { mode: d.settings?.verifyJudgeMode || 'parallel', stats: {}, reviews: [] })}
+  ${renderJudgementCard(d.judgement || { mode: d.settings?.verifyJudgeMode || 'gate', stats: {}, reviews: [] })}
 
   <div class="section-gap" style="display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,1fr);gap:14px">
     <div class="card">

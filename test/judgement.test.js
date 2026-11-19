@@ -20,7 +20,7 @@ const foreground = (over = {}) => ({ title: 'Untitled - Notepad', process: 'Note
 const target = (over = {}) => ({ hwnd: 111, title: 'Untitled - Notepad', process: 'Notepad', scoped: true, source: 'run-window', ...over });
 
 function fakeDb() {
-  return { settings: { verifyJudgeMode: 'parallel' }, workflows: [{ id: 'wf1', judgeMode: '' }], judgement: null };
+  return { settings: { verifyJudgeMode: 'gate' }, workflows: [{ id: 'wf1', judgeMode: '' }], judgement: null };
 }
 
 test('the same app in a different window fails the deterministic judge', () => {
@@ -90,32 +90,45 @@ test('the target is the run window even when the step names it loosely', () => {
   assert.equal(other.hwnd, 0, 'a different window keeps its own title');
 });
 
-test('parallel mode lets the window facts block a passing model', () => {
+test('gate mode lets the window facts block a passing model', () => {
   const facts = { status: 'fail' };
   const vision = { pass: true };
 
-  const merged = judgement.mergeJudgement({ mode: 'parallel', facts, vision });
+  const merged = judgement.mergeJudgement({ mode: 'gate', facts, vision });
 
   assert.equal(merged.pass, false);
   assert.equal(merged.decidedBy, 'facts');
   assert.equal(merged.agreement, 'disagree');
 });
 
-test('the switch changes which judge decides, without hiding the other', () => {
+test('the one switch picks who decides, without hiding the other reading', () => {
   const vision = { pass: true };
   const facts = { status: 'fail' };
 
-  assert.equal(judgement.mergeJudgement({ mode: 'vision', facts, vision }).pass, true);
+  assert.equal(judgement.mergeJudgement({ mode: 'gate', facts, vision }).pass, false);
   assert.equal(judgement.mergeJudgement({ mode: 'facts', facts, vision }).pass, false);
-  assert.equal(judgement.mergeJudgement({ mode: 'strict', facts: { status: 'pass' }, vision: { pass: false } }).pass, false);
-  assert.equal(judgement.mergeJudgement({ mode: 'parallel', facts: { status: 'unknown' }, vision }).pass, true);
+  assert.equal(judgement.mergeJudgement({ mode: 'gate', facts: { status: 'unknown' }, vision }).pass, true);
+  assert.equal(judgement.mergeJudgement({ mode: 'facts', facts: { status: 'unknown' }, vision }).pass, true);
+  // Conclusive facts decide on their own when the model does not.
+  const offline = judgement.mergeJudgement({ mode: 'facts', facts: { status: 'pass' }, vision: { pass: false } });
+  assert.equal(offline.pass, true);
+  assert.equal(offline.decidedBy, 'facts');
+  assert.equal(judgement.mergeJudgement({ mode: 'gate', facts: { status: 'pass' }, vision: { pass: false } }).pass, false);
+});
+
+test('retired mode names still resolve, and never bypass the facts', () => {
+  for (const legacy of ['parallel', 'vision', 'strict', '', 'nonsense']) {
+    assert.equal(judgement.judgeMode({ verifyJudgeMode: legacy }), 'gate', `${legacy || '(empty)'} resolves to gate`);
+  }
+  assert.equal(judgement.judgeMode({ verifyJudgeMode: 'facts' }), 'facts');
+  assert.deepEqual(judgement.JUDGE_MODES, ['gate', 'facts'], 'one switch, two positions');
 });
 
 test('repeated disagreement drafts a review but changes nothing on its own', () => {
   const d = fakeDb();
   const deps = { db: d, persist: () => {} };
   const entry = {
-    mode: 'parallel',
+    mode: 'gate',
     facts: { status: 'fail' },
     vision: { pass: true },
     agreement: 'disagree',
@@ -125,22 +138,21 @@ test('repeated disagreement drafts a review but changes nothing on its own', () 
 
   for (let i = 0; i < 3; i += 1) judgement.recordJudgement(entry, deps);
 
-  assert.equal(d.settings.verifyJudgeMode, 'parallel', 'the switch is not changed by learning');
+  assert.equal(d.settings.verifyJudgeMode, 'gate', 'the switch is not changed by learning');
   const summary = d.judgement;
   assert.equal(summary.stats.visionOnlyPass, 3);
-  assert.equal(summary.reviews.length, 1);
-  assert.equal(summary.reviews[0].status, 'pending');
-
-  judgement.resolveJudgementReview(summary.reviews[0].id, 'accept', deps);
-  assert.equal(d.settings.verifyJudgeMode, 'parallel', 'parallel is already the mode this suggestion names');
-  assert.equal(summary.reviews[0].status, 'accepted');
+  assert.equal(
+    summary.reviews.length,
+    0,
+    'a vision-only pass needs no review — the gate already blocked it, so there is nothing to change'
+  );
 });
 
 test('unscoped checks earn a scope condition that only accepting applies', () => {
   const d = fakeDb();
   const deps = { db: d, persist: () => {} };
   const entry = {
-    mode: 'parallel',
+    mode: 'gate',
     facts: { status: 'unknown' },
     vision: { pass: true },
     agreement: 'partial',
@@ -156,11 +168,11 @@ test('unscoped checks earn a scope condition that only accepting applies', () =>
   assert.equal(d.settings.verifyJudgeRequireScope, true);
 });
 
-test('a facts-only pass suggests trusting the deterministic check for that workflow', () => {
+test('a facts-only pass suggests letting the deterministic check decide', () => {
   const d = fakeDb();
   const deps = { db: d, persist: () => {} };
   const entry = {
-    mode: 'parallel',
+    mode: 'gate',
     facts: { status: 'pass' },
     vision: { pass: false },
     agreement: 'disagree',
@@ -170,9 +182,9 @@ test('a facts-only pass suggests trusting the deterministic check for that workf
   for (let i = 0; i < 3; i += 1) judgement.recordJudgement(entry, deps);
   const review = d.judgement.reviews[0];
   assert.equal(review.kind, 'facts-only-pass');
+  assert.equal(d.settings.verifyJudgeMode, 'gate', 'nothing is applied before review');
 
   judgement.resolveJudgementReview(review.id, 'accept', deps);
-  assert.equal(d.workflows[0].judgeMode, 'facts', 'accepting scopes the switch to the workflow');
-  assert.equal(judgement.judgeModeFor(d.workflows[0], d.settings), 'facts');
-  assert.equal(judgement.judgeModeFor({ judgeMode: '' }, d.settings), 'parallel');
+  assert.equal(d.settings.verifyJudgeMode, 'facts', 'accepting moves the one switch');
+  assert.equal(d.workflows[0].judgeMode, '', 'there is no second, per-workflow switch');
 });

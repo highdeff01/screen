@@ -7,7 +7,7 @@ import { CAPTURES, DATA, NOTES, ROOT, TOOLS, db, now, persist, slug, uid, writeF
 import { chat, parseJsonLoose } from './llm.js';
 import { executePortableStep, portableLiveScreenshot } from './portable.js';
 import { decidePreview, describeSurroundings } from './step-context.js';
-import { judgeModeFor, judgeTargetFor, mergeJudgement, recordJudgement, windowFacts } from './judgement.js';
+import { judgeMode, judgeTargetFor, mergeJudgement, recordJudgement, windowFacts } from './judgement.js';
 import {
   catalogEntry,
   discoverInstallerUrls,
@@ -4272,7 +4272,7 @@ try {
       `\nActive foreground window: "${foreground.title || '(unknown)'}" (process: ${foreground.process || 'unknown'}). ` +
       `${target.scoped ? `The image is cropped to ${target.hwnd ? `the run's own window (hwnd ${target.hwnd})` : `“${target.title || target.process}”`}, not the whole desktop. ` : ''}` +
       `If the expected app is named and this foreground window is a different program, fail even when another window behind it looks correct.`;
-    const mode = judgeModeFor(ctx.workflow);
+    const mode = judgeMode(db().settings);
     const cachedVerdict = readVerdict(question, shot.signature);
     let reply = null;
     let vision = cachedVerdict
