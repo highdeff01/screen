@@ -3793,8 +3793,15 @@ try {
   }
 
   if (step.type === 'runTool') {
-    const tool = ctx.getTool ? ctx.getTool(p.toolId) : null;
-    if (!tool) throw new Error(`Tool not found: ${p.toolId || '(missing id)'}`);
+    const ref = String(p.toolId || p.toolName || '').trim();
+    // Plans resolve names to ids before they run, but a workflow saved earlier
+    // may still hold only the tool's name. Resolve either form so that step
+    // keeps working, and name what failed when neither matches.
+    const tool =
+      (p.toolId && ctx.getTool ? ctx.getTool(p.toolId) : null) ||
+      db().tools.find((entry) => entry.id === ref || entry.name === ref) ||
+      null;
+    if (!tool) throw new Error(`Tool not found: ${ref || '(missing id)'}`);
     if (!live) {
       return { output: `Simulated tool run: ${tool.name}`, evidence: [] };
     }
