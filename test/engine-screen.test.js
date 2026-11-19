@@ -49,6 +49,9 @@ function probe({ focused, textFound = false, output = 'done' }) {
     captureScreenSignature: async () => ({ at: new Date().toISOString(), cells: [] }),
     readFocusedElement: async () => focused,
     findUiElement: async () => ({ found: textFound }),
+    // Tests stub the whole desktop; window inspection is no exception. Without
+    // this the engine polls the real OS for five seconds per attempt.
+    inspectWindowState: async ({ title } = {}) => ({ state: 'foreground', foreground: { title: title || '' } }),
   };
 }
 

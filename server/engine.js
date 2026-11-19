@@ -925,6 +925,19 @@ async function verifyStepWindow(step, run, probe = null) {
   if (run?.dryRun) return { ok: true };
   const checks = windowChecksFor(step);
   if (!checks.length) return { ok: true };
+  // A focused element that names the destination window is live proof the
+  // step's target is really there — no need to poll the OS for a window list.
+  // Exact title match only: contains-matches are how focus was lost before.
+  try {
+    const focused = probe?.readFocusedElement ? await probe.readFocusedElement() : await readFocusedElement();
+    const focusedWindow = String(focused?.window || focused?.title || '').trim();
+    if (focused?.found !== false && focusedWindow) {
+      const match = checks.find((check) => String(check.title || '').trim().toLowerCase() === focusedWindow.toLowerCase());
+      if (match) return { ok: true, detail: `${match.label} confirmed by the focused element` };
+    }
+  } catch {
+    // Fall through to window inspection.
+  }
   const deadline = Date.now() + 5000;
   for (;;) {
     for (const check of checks) {
