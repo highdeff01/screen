@@ -1,27 +1,16 @@
 {
   "version": 1,
   "by": "sentinel",
-  "updatedAt": "2026-11-19T10:01:15.579Z",
-  "head": "8a98e3a5ef1a",
+  "updatedAt": "2026-11-19T16:10:36.778Z",
+  "head": "93659d09458d",
   "lastRun": {
-    "at": "2026-11-19T10:01:15.527Z",
-    "ok": false,
-    "tests": 556,
-    "pass": 541,
-    "fail": 9,
-    "isolated": false,
-    "failingTests": [
-      "the engine executes an AI replacement and records the repair (20173.9889ms)",
-      "a repair that opens another app is adopted by the presenter and verifier (25322.894ms)",
-      "the engine rewrites the remainder after an irreparable action and still passes (45041.9394ms)",
-      "API mutations require a valid same-host Origin when one is present (6673.9243ms)",
-      "continuation requires explicit approval of a tested candidate and queues exactly one retry (30006.6303ms)",
-      "a type step with a named window proves its destination instead of guessing from the screen (14815.3079ms)",
-      "a display-name launch target confirms the process it really focused (14328.0257ms)",
-      "chat() reaches the console provider through the local gateway (25589.8873ms)",
-      "HTTP endpoints expose state, validate actions and reject cross-origin starts (7012.4048ms)",
-      "observation review uses stored evidence and is read-only (11940.2145ms)"
-    ]
+    "at": "2026-11-19T16:10:36.777Z",
+    "ok": true,
+    "tests": 564,
+    "pass": 559,
+    "fail": 0,
+    "isolated": true,
+    "failingTests": []
   },
   "open": 4,
   "items": [
