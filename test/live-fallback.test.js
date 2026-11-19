@@ -84,6 +84,44 @@ test('detection refuses but the machine answers natively: the run continues live
   assert.equal(finished.status, 'passed');
 });
 
+test('a run downgraded to simulation by a stale Linux refusal continues live when the machine answers', async () => {
+  platform.setProbeOverride(() => ({ ok: true, detail: 'answered' }));
+  const workflow = probeWorkflow();
+  // Exactly what the API stores when it downgrades a live request: the refusal
+  // text, and nothing that proves this machine cannot act.
+  const run = engine.createRun(workflow, {
+    dryRun: true,
+    liveFallback:
+      'Live control is not implemented for linux. Set SIGHTLINE_TARGET=android with adb and a device attached, or run the console on Windows, macOS or Linux.',
+  });
+  const finished = await engine.waitForRun(run.id, { timeoutMs: 30000, intervalMs: 20 });
+  assert.equal(finished.dryRun, false, 'the downgrade was undone once the machine answered');
+  assert.equal(finished.liveFallback, null, 'the stale refusal is cleared');
+  assert.equal(finished.detectionCorrected, true);
+  assert.ok(
+    (finished.log || []).some((line) => /Workaround applied: the run continues live/i.test(line.message || '')),
+    'the run log names the workaround'
+  );
+  assert.equal(finished.status, 'passed');
+});
+
+test('a simulated run whose earlier refusal still holds stays simulated and says why', async () => {
+  platform.setProbeOverride(() => ({ ok: false, detail: 'xdotool: command not found' }));
+  const workflow = probeWorkflow();
+  const run = engine.createRun(workflow, {
+    dryRun: true,
+    liveFallback: 'Linux live control needs xdotool on PATH for input.',
+  });
+  const finished = await engine.waitForRun(run.id, { timeoutMs: 20000, intervalMs: 20 });
+  assert.equal(finished.dryRun, true, 'no live control was claimed');
+  assert.equal(finished.status, 'passed');
+  assert.match(String(finished.liveFallback || ''), /xdotool/);
+  assert.ok(
+    (finished.log || []).some((line) => /earlier refusal .* still holds/i.test(line.message || '')),
+    'the run log keeps the refusal visible'
+  );
+});
+
 test('a live step that hits a platform guard mid-run gets one probe-based workaround', async () => {
   const d = store.db();
   platform.setProbeOverride(() => ({ ok: true, detail: 'answered' }));
