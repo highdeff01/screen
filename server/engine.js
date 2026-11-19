@@ -23,7 +23,7 @@ import { sendContinuation } from './agent-awareness.js';
 import { enqueue } from './pipeline.js';
 import { firewallCheck } from './firewall.js';
 import { addNote } from './handoff.js';
-import { noteStepOutcome, pinStepIntents, similarSolutions } from './step-factoring.js';
+import { noteStepOutcome, pinStepIntents, similarSolutions, spotIntent } from './step-factoring.js';
 import { beginRunObservation, endRunObservation } from './app-observer.js';
 import { expectsScreenChange, windowChecksFor, resumePlan, corroboratesNoChange, lookupWindowFor, screenChangeVerdict } from './step-effects.js';
 
@@ -319,10 +319,17 @@ export function createRun(workflow, { trigger = 'manual', dryRun = null, agentRo
     persist();
     logActivity('workflow', `Added a launch prerequisite before the first focus in "${workflow.name}"`, { workflowId: workflow.id });
   }
-  // Spot and pin each step's intent once, so similar steps across workflows
-  // carry the same tag and duplication is visible to the factoring scanner.
+  // Spot and pin each step's intent on the run's own step copies, so similar
+  // steps across runs carry the same tag without rewriting the saved workflow.
+  // The builder's "Pin intents" button persists them into the workflow itself.
   try {
-    pinStepIntents(workflow);
+    for (const step of run.steps) {
+      const spotted = spotIntent(step);
+      if (!step.intent) {
+        step.intent = spotted.intent;
+        step.intentBasis = spotted.basis;
+      }
+    }
   } catch { /* pinning never blocks a run */ }
   const run = {
     id: uid('run'),
