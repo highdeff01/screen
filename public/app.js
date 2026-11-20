@@ -41,6 +41,9 @@ const ui = {
   trayDismissed: '',
   sim: null,
   simBusy: false,
+  review: null,
+  reviewBusy: false,
+  reviewSort: 'risk',
   observationReview: null,
   observationReviewBusy: false,
   observationProposal: { simulationId: '', proposalId: '' },
@@ -1636,7 +1639,8 @@ function renderPreviewOutput() {
   const image = state.active && preview?.running && preview.available !== false && !preview.error && preview.imagePath;
   const status = state.message || (state.active ? (image ? 'Preview is running.' : 'Waiting for a screenshot…') : 'Preview is off.');
   return `<p class="small ${state.message ? 'preview-error' : 'dim'}" role="status">${esc(status)}</p>
-    <div class="preview-image">${image ? `<figure class="preview-frame"><img src="/api/files/raw?path=${encodeURIComponent(preview.imagePath)}&t=${encodeURIComponent(preview.cacheKey)}" alt="Latest read-only screenshot of the desktop" data-preview-image /><figcaption class="dim small">Captured ${esc(fmtTime(preview.capturedAt))} · refresh interval ${esc(preview.intervalMs || 2000)} ms</figcaption></figure>` : ''}</div>`;
+    <div class="preview-image">${image ? `<figure class="preview-frame"><img src="/api/files/raw?path=${encodeURIComponent(preview.imagePath)}&t=${encodeURIComponent(preview.cacheKey)}" alt="Latest read-only screenshot of the desktop" data-preview-image /><figcaption class="dim small">Captured ${esc(fmtTime(preview.capturedAt))} · refresh interval ${esc(preview.intervalMs || 2000)} ms</figcaption></figure>` : ''}</div>
+    ${image ? `<button class="btn btn-sm btn-ghost" data-act="annotate-live-frame" data-path="${esc(preview.imagePath)}" title="Open the current live frame full-size and draw on it">✎ Annotate this frame</button>` : ''}`;
 }
 
 function renderLivePreview() {
@@ -1953,10 +1957,12 @@ function renderRunDetail(run) {
           ${full.failureSignature ? `<p class="dim small mono" style="margin-top:5px">signature: ${esc(full.failureSignature)}</p>` : ''}
           ${full.errorSummary ? `<div class="hint-box" style="margin-top:8px;border-color:rgba(251,113,133,.35)"><strong>${failedSteps.length} step${failedSteps.length === 1 ? '' : 's'} failed</strong><div class="small" style="margin-top:4px">${esc(full.errorSummary)}</div>${full.continuedAfterFailure ? '<div class="small dim" style="margin-top:4px">The run continued with the remaining independent steps after the failure.</div>' : ''}</div>` : ''}
           ${full.followup ? `<div class="hint-box" style="margin-top:8px;border-color:${full.followup.ok ? 'rgba(74,222,128,.3)' : 'rgba(251,191,36,.35)'}"><strong>Follow-up check · ${full.followup.ok ? 'passed' : 'needs review'}</strong><div class="small" style="margin-top:4px">${esc(full.followup.summary)}</div>${(full.followup.verificationFailed || []).length ? `<div class="small" style="color:var(--bad);margin-top:3px">Failed checks: ${esc((full.followup.verificationFailed || []).join(', '))}</div>` : ''}</div>` : ''}
+          ${(() => { const co = full.closeout; if (!co || !co.action) return ''; const stepsText = (co.followUpSteps || []).map((step) => `${step.type}: ${esc(step.name || '')}`).join(' · '); const button = co.appended ? '<div class="small" style="color:var(--ok);margin-top:4px">Steps already appended to the workflow.</div>' : (co.followUpSteps || []).length ? `<button class="btn btn-sm" data-act="closeout-append" data-id="${esc(run.id)}" style="margin-top:6px">Append to workflow</button>` : ''; return `<div class="hint-box" style="margin-top:8px;border-color:rgba(56,189,248,.35)"><strong>Predicted follow-up · ${esc(co.action)}</strong><div class="small" style="margin-top:4px">${esc((co.reasons || []).join('; '))}</div>${stepsText ? `<div class="small dim" style="margin-top:4px">Proposed: ${stepsText}</div>` : ''}${button}</div>`; })()}
           ${(full.agentReplans || []).length ? `<div class="hint-box" style="margin-top:8px;border-color:rgba(129,140,248,.35)"><strong>AI repair agent</strong>${full.agentReplans.map((replan) => `<div class="small" style="margin-top:6px"><b>${esc(replan.step)}</b> · ${esc(replan.method)}${replan.confidence != null ? ` · ${Math.round(Number(replan.confidence) * 100)}% confidence` : ''}${replan.diagnosis ? `<div class="dim" style="margin-top:2px">${esc(replan.diagnosis)}</div>` : ''}<div class="dim" style="margin-top:2px">${replan.replacesStep ? 'replaced the failed step' : 'ran prerequisites, then retried'}${(replan.steps || []).length ? ` · ${esc((replan.steps || []).join(' → '))}` : ''}${(replan.remaining || []).length ? ` · rewrote ${replan.remaining.length} remaining step(s)` : ''}</div></div>`).join('')}</div>` : ''}
           ${full.replannedAfterFailure ? `<div class="hint-box" style="margin-top:8px"><strong>AI replanned the remainder</strong><div class="small" style="margin-top:4px">${esc((full.supersededSteps || []).length)} failed action step(s) were superseded; later steps were rebuilt from the current screen.</div></div>` : ''}
         </div>
           ${full.presence?.holding ? `<div class="hint-box" style="margin-top:8px;border-color:rgba(251,191,36,.4)"><strong>Waiting for your desktop to go quiet</strong><div class="small" style="margin-top:3px">${esc(full.presence.reason || 'the presence guard is holding this step')} · held ${Math.round((Number(full.presence.deferredMs) || 0) / 1000)}s so far — live steps start the moment you stop moving the mouse, or press <b>Run now anyway</b>.</div></div>` : ''}
+          ${full.liveOffer ? `<div class="hint-box" style="margin-top:8px;border-color:rgba(56,189,248,.35)"><strong>This machine can run it live</strong><div class="small" style="margin-top:4px">The run was downgraded to simulated (“${esc(full.liveOffer.reason || 'no live backend')}”) but a probe answered (${esc(full.liveOffer.detail || 'ok')}). It stayed simulated — switching to real desktop input needs your consent. <button class="btn btn-sm" data-act="run-live-offer" data-id="${esc(full.id)}" style="margin-left:6px">Start it live</button></div></div>` : ''}
           ${renderDeepFocusCard(full)}
         <div class="row wrap">
           <button class="btn btn-sm" data-act="retry-run" data-id="${full.id}" ${retryBusy ? 'disabled' : ''}>${retryBusy ? 'Re-planning…' : '↻ Re-plan & retry'}</button>
@@ -1982,6 +1988,7 @@ function renderRunDetail(run) {
       </div>
     </div>
     <div class="card"><div class="card-head"><h3>Screenshot check review</h3><button class="btn btn-sm" data-act="run-simulate" data-id="${esc(full.id)}" ${ui.simBusy ? 'disabled' : ''}>Screenshot check</button></div><div class="card-body">${renderSimulationCard(ui.sim?.runId === full.id ? ui.sim.record : null) || '<p class="muted small">No screenshot check loaded for this run.</p>'}</div></div>
+    <div class="card"><div class="card-head"><h3>Test review</h3><div class="row" style="gap:6px;align-items:flex-end"><label class="field" style="margin:0;min-width:130px"><span>Sort</span><select data-scope="review-sort" data-id="${esc(full.id)}" ${ui.reviewBusy ? 'disabled' : ''}>${['risk', 'phase', 'status', 'seq', 'name'].map((mode) => `<option value="${mode}" ${ui.reviewSort === mode ? 'selected' : ''}>${mode}</option>`).join('')}</select></label><button class="btn btn-sm" data-act="run-review" data-id="${esc(full.id)}" ${ui.reviewBusy ? 'disabled' : ''}>${ui.reviewBusy ? 'Reviewing…' : 'Build review'}</button></div></div><div class="card-body">${renderTestReviewCard(ui.review?.runId === full.id ? ui.review.record : null)}</div></div>
 
     ${
       failedSteps.length
@@ -3529,6 +3536,41 @@ function renderSimulationCard(sim) {
         ${staticReview ? `<div><b>Bounded static proposal check: ${esc(staticReview.staticTest.status)}</b><ul class="rule-list">${staticReview.staticTest.checks.map((check) => `<li>${check.ok ? '✓' : '✕'} ${esc(check.label)}${check.warningOnly ? ' (warning only)' : ''}</li>`).join('')}</ul>${staticReview.staticTest.failures.map((failure) => `<div>${esc(failure.name || 'Step')}: ${esc(failure.reason)}</div>`).join('')}<p class="dim small">${esc(staticReview.limitations)} Omitted: ${staticReview.truncation.stepsOmitted} steps, ${staticReview.truncation.preflightOmitted} preflight checks, ${staticReview.truncation.lintIssuesOmitted} lint issues.</p><button class="btn btn-sm btn-ghost" data-act="observation-proposal-open" data-id="${esc(staticReview.proposalId)}" data-workflow="${esc(sim.workflowId)}">Open proposal in workflow for separate review / approval</button></div>` : ''}
       </div>` : ''}
     </div>
+  </div>`;
+}
+
+function renderTestReviewCard(record) {
+  if (!record) {
+    return '<p class="muted small">No review yet. Build one to break the run into individual tests, compare it with the steps that worked before, and check whether it would survive another environment.</p>';
+  }
+  const verdictBadge = record.verdict === 'ready' ? 'okbadge' : record.verdict === 'blocked' ? 'warnbadge' : '';
+  const counts = record.counts || {};
+  const evidence = record.evidence || {};
+  const cross = record.crossRef || {};
+  const alt = record.altEnv || {};
+  const apps = record.apps || { immediate: [], longTerm: [] };
+  const riskBadge = (risk) => (risk >= 75 ? 'warnbadge' : risk >= 45 ? '' : 'okbadge');
+  const rows = (record.tests || []).slice(0, 12);
+  const appLine = (entry) => `<div class="cc-event"><span class="badge">${esc(entry.effort || 'app')}</span><span class="small"><b>${esc(entry.name)}</b> — ${esc(entry.why)}</span></div><div class="dim small" style="margin:2px 0 5px 6px">${esc(entry.next)}</div>`;
+  return `<div class="hint-box small sim-card">
+    <div class="row wrap" style="gap:6px">
+      <b>Test review</b>
+      <span class="badge ${verdictBadge}">${esc(record.verdict || 'unknown')}</span>
+      <span class="badge">${Number(counts.tests) || 0} tests</span>
+      <span class="badge okbadge">${Number(counts.passed) || 0} passed</span>
+      ${counts.failed ? `<span class="badge warnbadge">${counts.failed} failed</span>` : ''}
+      <span class="badge">${Number(counts.checks) || 0} checks</span>
+      <span class="dim small">evidence ${Number(evidence.coveragePct) || 0}%</span>
+    </div>
+    ${(record.review?.summary || []).map((line) => `<div class="dim small" style="margin-top:4px">• ${esc(line)}</div>`).join('')}
+    ${(record.phases || []).length ? `<div class="chip-row" style="margin-top:5px">${record.phases.map((phase) => `<span class="badge">${esc(phase.label)} · ${Number(phase.tests) || 0}${phase.highRisk ? ` · ${phase.highRisk} at risk` : ''}</span>`).join('')}</div>` : ''}
+    <div style="margin-top:8px"><b>Now (reuse what is ready)</b>${apps.immediate.length ? apps.immediate.slice(0, 3).map(appLine).join('') : '<div class="dim small">Nothing is ready to reuse yet.</div>'}</div>
+    <div style="margin-top:6px"><b>Long term (needs setup)</b>${apps.longTerm.length ? apps.longTerm.slice(0, 3).map(appLine).join('') : '<div class="dim small">No extra app is required.</div>'}</div>
+    <div style="margin-top:8px"><b>Compared with previous steps · ${esc(cross.verdict || 'first_run')}</b>${(cross.summary || []).map((line) => `<div class="dim small" style="margin-top:2px">• ${esc(line)}</div>`).join('')}${(cross.newDetails || []).slice(0, 2).map((entry) => `<div class="small" style="margin-top:2px">new · ${esc(entry.detail)}</div>`).join('')}</div>
+    <div style="margin-top:8px"><b>Alternate environment · ${esc(alt.summary?.verdict || 'not checked')}</b><div class="dim small" style="margin-top:2px">${Number(alt.summary?.holds) || 0} hold · ${Number(alt.summary?.reused) || 0} reused · ${Number(alt.summary?.diverged) || 0} diverge · ${Number(alt.summary?.blocked) || 0} blocked · ${Number(alt.summary?.portable) || 0}% portable</div></div>
+    ${rows.length ? `<div class="stack" style="gap:3px;margin-top:8px">${rows.map((test) => `<div class="cc-event"><span class="badge ${riskBadge(test.risk)}">${esc(test.status)}</span><span class="badge">${esc(test.kind)}</span><span class="small">${Number(test.seq) || 0}. ${esc(test.name)} · ${esc(test.phase)} · risk ${Number(test.risk) || 0}${test.evidence?.verdict ? ` · ${esc(test.evidence.verdict)}` : ''}${(test.riskReasons || []).length ? ` · ${esc(test.riskReasons.join(', '))}` : ''}</span></div>`).join('')}</div>${(record.tests || []).length > rows.length ? `<div class="dim small" style="margin-top:3px">+${(record.tests || []).length - rows.length} more test(s) in this review.</div>` : ''}` : '<div class="dim small" style="margin-top:6px">This run has no steps to review.</div>'}
+    ${(record.suggestions?.now || []).length ? `<div style="margin-top:8px"><b>Do now</b>${record.suggestions.now.map((line) => `<div class="dim small">• ${esc(line)}</div>`).join('')}</div>` : ''}
+    ${(record.suggestions?.later || []).length ? `<div style="margin-top:5px"><b>Do later</b>${record.suggestions.later.map((line) => `<div class="dim small">• ${esc(line)}</div>`).join('')}</div>` : ''}
   </div>`;
 }
 
@@ -5528,17 +5570,15 @@ function fileNameLabel(value) {
 /* ------------------------------------------------------------------ agents */
 function renderJudgementCard(j) {
   const modes = j.modes || [
-    { id: 'parallel', label: 'Parallel — both judges, facts gate' },
-    { id: 'vision', label: 'Vision decides' },
+    { id: 'gate', label: 'Facts can veto the model' },
     { id: 'facts', label: 'Facts decide when conclusive' },
-    { id: 'strict', label: 'Strict — both must pass' },
   ];
   const stats = j.stats || {};
   const reviews = j.reviews || [];
   return `<div class="card section-gap">
     <div class="card-head"><h3>Screen judgement</h3><span class="badge ${reviews.length ? 'warnbadge' : 'okbadge'}">${reviews.length ? `${reviews.length} to review` : 'in agreement'}</span></div>
     <div class="card-body">
-      <p class="muted small" style="margin-bottom:10px">Every verifyScreen is read twice from the same moment: the model judges a crop of <strong>this run's own window</strong>, and a free deterministic pass checks that window's handle and text. Both verdicts are kept, so you can see which judge decided and which method to trust.</p>
+      <p class="muted small" style="margin-bottom:10px">Every verifyScreen is read twice from the same moment — the model judges a crop of <strong>this run's own window</strong>, a free deterministic pass checks that window's handle and text — and both readings are kept as evidence behind one verdict. One switch picks who decides: the model, with the facts able to veto a lookalike window, or the facts alone when they are conclusive (which also works when the model is offline).</p>
       <div class="row wrap" style="gap:5px;margin-bottom:10px">
         ${modes.map((mode) => `<button class="chip ${j.mode === mode.id ? 'active' : ''}" data-act="judge-mode" data-mode="${esc(mode.id)}" title="${esc(mode.label)}">${esc(mode.label)}</button>`).join('')}
       </div>
@@ -5633,7 +5673,7 @@ function renderAgents() {
       .join('')}
   </div>
 
-  ${renderJudgementCard(d.judgement || { mode: d.settings?.verifyJudgeMode || 'parallel', stats: {}, reviews: [] })}
+  ${renderJudgementCard(d.judgement || { mode: d.settings?.verifyJudgeMode || 'gate', stats: {}, reviews: [] })}
 
   <div class="section-gap" style="display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,1fr);gap:14px">
     <div class="card">
@@ -5743,7 +5783,7 @@ function renderModal() {
           <div class="row">
             ${c.runId ? `<button class="btn btn-sm" data-mact="open-run" data-id="${c.runId}">Open run</button>` : ''}
             <button class="btn btn-sm ${ui.annotateMode ? 'btn-primary' : 'btn-ghost'}" data-mact="toggle-annotate" data-id="${esc(c.id || '')}">${ui.annotateMode ? 'Annotating…' : 'Annotate'}</button>
-            <button class="btn btn-sm btn-ghost" data-mact="delete-capture" data-id="${c.id || ''}" data-path="${esc(c.path)}">Delete</button>
+            ${String(c.id || '').startsWith('live-frame:') ? '' : `<button class="btn btn-sm btn-ghost" data-mact="delete-capture" data-id="${c.id || ''}" data-path="${esc(c.path)}">Delete</button>`}
             <button class="btn btn-sm" data-mact="close">Close</button>
           </div>
         </div>
@@ -7073,6 +7113,13 @@ async function runAction(name, ds, el) {
       await loadRun(ds.id);
       break;
     }
+    case 'closeout-append': {
+      const res = await api(`/api/closeout/${encodeURIComponent(ds.id)}/append`, { method: 'POST', body: {} });
+      if (!res.ok) return toast(res.error, 'error');
+      toast(`Appended ${res.appended?.appended ?? 0} follow-up step(s) to the workflow.`, 'ok');
+      await loadRun(ds.id);
+      break;
+    }
     case 'df-presentation': {
       toast('Forming the presentation from the focus rounds…');
       const res = await api(`/api/deep-focus/${encodeURIComponent(ds.id)}/presentation`, { method: 'POST', body: {} });
@@ -7260,6 +7307,24 @@ async function runAction(name, ds, el) {
       await refresh();
       break;
     }
+    case 'run-live-offer': {
+      openModal('confirm', {
+        title: 'Run this workflow live',
+        message:
+          'The console will drive your real desktop for this workflow: the pointer moves and keystrokes are typed into the focused window. The simulated run you just reviewed stays as it is.',
+        confirmLabel: 'Run live now',
+        action: { act: 'run-live-consent', id: ds.id },
+      });
+      break;
+    }
+    case 'run-live-consent': {
+      closeModal();
+      const res = await api(`/api/runs/${encodeURIComponent(ds.id)}/run-live`, { method: 'POST', body: {} });
+      if (!res.ok) return toast(res.error, 'error');
+      toast('Live run started with your consent.', 'ok');
+      await refresh();
+      break;
+    }
     case 'run-workflow': {
       const wf = d.workflows.find((w) => w.id === ds.id) || d.workflows.find((w) => w.id === ui.selectedWorkflow);
       if (!wf) return;
@@ -7382,6 +7447,14 @@ async function runAction(name, ds, el) {
     case 'live-preview':
       await changeLivePreview(ds.mode === 'stop' ? 'stop' : 'start');
       break;
+    case 'annotate-live-frame': {
+      // The live frame is served by path, not a capture row; annotations key
+      // on the frame path so every re-open of the same frame finds its pins.
+      openModal('lightbox', { capture: { id: `live-frame:${ds.path}`, path: ds.path, runId: null, caption: 'Live preview frame' } });
+      ui.annotateMode = true;
+      renderModal();
+      break;
+    }
     case 'live-watch': {
       const mode = ds.mode === 'stop' ? 'stop' : 'start';
       const res = await api('/api/live/monitor', { method: 'POST', body: { action: mode } });
@@ -7792,6 +7865,21 @@ async function runAction(name, ds, el) {
       ui.railTab = 'copilot';
       await refresh();
       break;
+    }
+    case 'run-review': {
+      const runId = ds.id;
+      if (!runId || ui.reviewBusy) return;
+      ui.reviewBusy = true;
+      render();
+      const res = await api(`/api/runs/${encodeURIComponent(runId)}/review?sort=${encodeURIComponent(ui.reviewSort)}`);
+      ui.reviewBusy = false;
+      if (!res.ok) {
+        render();
+        return toast(res.error, 'error');
+      }
+      ui.review = { runId, record: res.review };
+      render();
+      return;
     }
     case 'run-simulate': {
       const runId = ds.id;
@@ -9310,6 +9398,79 @@ document.addEventListener('error', (event) => {
   updatePreviewCard();
 }, true);
 
+/* Drag-to-draw annotation boxes: in annotate mode, a drag over the capture
+   draws a rectangle and asks what it marks; a plain click still drops a pin. */
+let annotateDraw = null;
+document.addEventListener('mousedown', (event) => {
+  if (!ui.annotateMode || !event.target.matches?.('#annotate-stage img')) return;
+  const rect = event.target.getBoundingClientRect();
+  annotateDraw = {
+    image: event.target,
+    startX: (event.clientX - rect.left) / rect.width,
+    startY: (event.clientY - rect.top) / rect.height,
+    endX: null,
+    endY: null,
+    box: null,
+  };
+  event.preventDefault();
+});
+document.addEventListener('mousemove', (event) => {
+  if (!annotateDraw) return;
+  const rect = annotateDraw.image.getBoundingClientRect();
+  annotateDraw.endX = Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width));
+  annotateDraw.endY = Math.min(1, Math.max(0, (event.clientY - rect.top) / rect.height));
+  let ghost = document.getElementById('annotate-ghost');
+  if (!ghost) {
+    ghost = document.createElement('div');
+    ghost.id = 'annotate-ghost';
+    ghost.style.cssText = 'position:absolute;border:2px dashed #7c5cff;background:rgba(124,92,255,.12);border-radius:4px;pointer-events:none';
+    annotateDraw.image.parentElement.appendChild(ghost);
+  }
+  const left = Math.min(annotateDraw.startX, annotateDraw.endX);
+  const top = Math.min(annotateDraw.startY, annotateDraw.endY);
+  const w = Math.abs(annotateDraw.endX - annotateDraw.startX);
+  const h = Math.abs(annotateDraw.endY - annotateDraw.startY);
+  ghost.style.left = `${left * 100}%`;
+  ghost.style.top = `${top * 100}%`;
+  ghost.style.width = `${w * 100}%`;
+  ghost.style.height = `${h * 100}%`;
+});
+document.addEventListener('mouseup', async (event) => {
+  if (!annotateDraw) return;
+  const draw = annotateDraw;
+  annotateDraw = null;
+  document.getElementById('annotate-ghost')?.remove();
+  if (draw.endX === null) return; // a click without movement: the pin handler takes it
+  const w = Math.abs(draw.endX - draw.startX);
+  const h = Math.abs(draw.endY - draw.startY);
+  if (w < 0.03 || h < 0.03) return; // too small to be deliberate: treat as a click
+  ui.annotateDragged = true;
+  setTimeout(() => { ui.annotateDragged = false; }, 250); // the click event fires after mouseup
+  const capture = ui.modal?.payload?.capture;
+  if (!capture?.id) return;
+  const text = window.prompt('What does this region mark?') || '';
+  if (!text) return;
+  const res = await api('/api/annotations', {
+    method: 'POST',
+    body: {
+      ref: { captureId: capture.id, runId: capture.runId || null },
+      kind: 'box',
+      x: Math.min(draw.startX, draw.endX),
+      y: Math.min(draw.startY, draw.endY),
+      w,
+      h,
+      text,
+      by: 'operator',
+      color: '#7c5cff',
+    },
+  });
+  if (!res.ok) return toast(res.error, 'error');
+  const list = await api(`/api/annotations?captureId=${encodeURIComponent(capture.id)}`);
+  ui.captureAnnotations = list.ok ? list.annotations || [] : [];
+  renderModal();
+  toast('Box annotation added.', 'ok');
+});
+
 document.addEventListener('click', (event) => {
   if (event.target.hasAttribute?.('data-modal-backdrop')) return closeModal();
   if (event.target.hasAttribute?.('data-lightbox-backdrop')) return closeModal();
@@ -9431,6 +9592,7 @@ document.addEventListener('click', (event) => {
       return;
     }
     if (ui.annotateMode && event.target.matches?.('#annotate-stage img')) {
+      if (ui.annotateDragged) { ui.annotateDragged = false; return; } // a drag just drew a box
       const capture = ui.modal?.payload?.capture;
       if (!capture?.id) return toast('This screenshot has no saved capture id', 'error');
       const rect = event.target.getBoundingClientRect();
@@ -9548,6 +9710,17 @@ document.addEventListener('change', (event) => {
   const key = el.dataset.key;
   const value = el.type === 'checkbox' ? el.checked : el.value;
 
+  if (scope === 'review-sort') {
+    ui.reviewSort = value;
+    const runId = el.dataset.id;
+    if (ui.review?.runId !== runId) return;
+    api(`/api/runs/${encodeURIComponent(runId)}/review?sort=${encodeURIComponent(value)}`).then((res) => {
+      if (!res.ok || ui.review?.runId !== runId) return;
+      ui.review = { runId, record: res.review };
+      render();
+    });
+    return;
+  }
   if (scope === 'observation-proposal') {
     ui.observationProposal = { simulationId: el.dataset.id, proposalId: value };
     ui.observationReview = null;

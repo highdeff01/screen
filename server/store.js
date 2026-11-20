@@ -54,8 +54,8 @@ function seed() {
       visionEnabled: true,
       // Screen checks are read by two judges: the vision model on a crop of the
       // run's own window, and a free deterministic check of that window's
-      // handle and text. Parallel keeps the free check as a gate.
-      verifyJudgeMode: 'parallel',
+      // handle and text. 'gate' keeps the free check as a veto; 'facts' lets it decide.
+      verifyJudgeMode: 'gate',
       visualChecks: true,
       missionCheckIntervalMs: 5000,
       replanModel: '',

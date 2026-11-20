@@ -26,8 +26,10 @@ import { enqueue } from './pipeline.js';
 import { firewallCheck } from './firewall.js';
 import { addNote } from './handoff.js';
 import { noteStepOutcome, pinStepIntents, similarSolutions, spotIntent } from './step-factoring.js';
+import { recordCloseout } from './closeout.js';
+import { checkStepMonitor } from './monitors.js';
 import { beginRunObservation, endRunObservation } from './app-observer.js';
-import { liveControl } from './platform.js';
+import { liveControl, probeLiveBackend, isPlatformRefusal } from './platform.js';
 import { expectsScreenChange, windowChecksFor, resumePlan, corroboratesNoChange, lookupWindowFor, screenChangeVerdict } from './step-effects.js';
 
 // Per-run adapters supplied by tests so the screen policy can run without a UI.
@@ -254,6 +256,7 @@ export function summary(run) {
     })),
     followup: run.followup || null,
     followupFailed: Boolean(run.followupFailed),
+    closeout: run.closeout || null,
     recovered: Boolean(run.recovered),
     patternTags: run.patternTags || [],
     agentRole: run.agentRole || 'operator',
@@ -308,7 +311,7 @@ export async function waitForRun(id, { timeoutMs = 30000, intervalMs = 100 } = {
   return findRun(id);
 }
 
-export function createRun(workflow, { trigger = 'manual', dryRun = null, agentRole = null, missionId = null, shortcutReplayHabitId = null, workflowSnapshot = null, shadowProposalId = null, probe = null, repair = null, aiReplan = null } = {}) {
+export function createRun(workflow, { trigger = 'manual', dryRun = null, agentRole = null, missionId = null, shortcutReplayHabitId = null, workflowSnapshot = null, shadowProposalId = null, probe = null, repair = null, aiReplan = null, liveFallback = null, liveConsent = false } = {}) {
   const d = db();
   if (!workflow || !workflow.steps?.length) {
     throw new Error('Workflow has no steps to run.');
@@ -354,6 +357,12 @@ export function createRun(workflow, { trigger = 'manual', dryRun = null, agentRo
     runComplexityScore: estimateComplexity(workflow),
     requiresAdvancedPlanning: needsAdvancedPlanning(workflow),
     visualChecks: db().settings.visualChecks !== false,
+    // Why a live request became a simulated run, when it did. Kept on the run
+    // so the engine can test the refusal instead of trusting it.
+    ...(liveFallback ? { liveFallback: String(liveFallback) } : {}),
+    // The operator saw the offer and asked for the real desktop. Without this,
+    // a run that was shown as simulated is never switched to live input.
+    ...(liveConsent ? { liveConsent: true } : {}),
     liveRepair: repair == null ? null : Boolean(repair),
     aiReplan: aiReplan == null ? db().settings.agentReplans !== false : Boolean(aiReplan),
     replanCount: 0,
@@ -1328,20 +1337,62 @@ async function executeRun(runId) {
   const probe = runProbes.get(run.id) || null;
   // Platform fallback at the source of truth: any run that reaches the queue
   // while no live backend is available (hosted previews, headless machines)
-  // converts to simulation here — whichever path created it. Retries,
-  // recovery packs, shortcut replays and scheduler runs all pass through.
-  if (!run.dryRun && !probe) {
-    try {
-      const control = liveControl();
-      if (!control.available) {
+  // converts to simulation here — whichever path created it. But detection is
+  // a prediction, not proof: the machine gets a real chance to answer before
+  // the run is downgraded, and a live step that hits the guard mid-run gets
+  // one workaround attempt with a fresh probe.
+  if (!probe) {
+    const control = liveControl();
+    const refusedLive = !run.dryRun && !control.available;
+    // A run can also be downgraded to simulation before it reaches the queue:
+    // the API does it when detection refuses a live request and records why.
+    // That refusal is still only a prediction — and a stale one may even name a
+    // different OS, as when a Linux refusal is carried onto a Windows host. So
+    // a downgraded run gets the same real chance to answer as a live one, and
+    // continues live (through the platform's own implementation) when it does.
+    const downgradedAtRequest = run.dryRun && Boolean(run.liveFallback);
+    if (refusedLive || downgradedAtRequest) {
+      const reason = refusedLive ? control.reason : run.liveFallback;
+      const proof = await probeLiveBackend();
+      if (proof.ok) {
+        const wasSimulated = run.dryRun;
+        if (wasSimulated && run.liveConsent !== true) {
+          // The console already told the operator this run is a simulation.
+          // Switching it to driving the real desktop mid-run would change what
+          // they were shown without asking them, so the correction is offered
+          // instead: the run stays simulated and the offer waits for an
+          // explicit live start.
+          run.liveOffer = {
+            at: now(),
+            reason: String(reason || 'no live backend'),
+            detail: String(proof.detail || 'answered'),
+          };
+          pushLog(
+            run,
+            'warn',
+            `The run was downgraded to simulated (“${reason}”), but the machine answers natively (${proof.detail}). It stays simulated: switching to real desktop input needs the operator's consent, and a live run can be started from this offer.`,
+            null
+          );
+        } else {
+          run.dryRun = false;
+          run.liveFallback = null;
+          run.liveOffer = null;
+          run.detectionCorrected = true;
+          pushLog(run, 'warn', wasSimulated
+            ? `The run was downgraded to simulated (“${reason}”), but the machine answers natively (${proof.detail}) — initial detection was wrong. Workaround applied: the run continues live.`
+            : `Detection said “${control.reason}”, but the machine answers natively (${proof.detail}); initial detection was wrong — the run continues live.`, null);
+        }
+      } else if (refusedLive) {
         run.dryRun = true;
-        run.liveFallback = control.reason || 'no live backend';
+        run.liveFallback = `${control.reason || 'no live backend'} (probe: ${proof.detail || 'no answer'})`;
         pushLog(run, 'warn', `Live refused on this machine (${run.liveFallback}); the run continues simulated instead.`, null);
         try {
           recordAction({ kind: 'run', action: `start-run:${run.workflowName}`, error: run.liveFallback, detail: { runId: run.id, requestedMode: 'live' } });
         } catch { /* logging never blocks the run */ }
+      } else {
+        pushLog(run, 'info', `Simulated run: the earlier refusal (“${reason}”) still holds (probe: ${proof.detail || 'no answer'}).`, null);
       }
-    } catch { /* if the backend probe itself fails, run as queued */ }
+    }
   }
   const repairEnabled = !run.dryRun && run.liveRepair !== false && (run.liveRepair === true || !probe);
   const capture = () => (probe?.captureScreenSignature ? probe.captureScreenSignature() : captureScreenSignature());
@@ -1808,7 +1859,7 @@ async function executeRun(runId) {
     persist();
     pushLog(run, 'info', `Step ${step.name} (${step.type})`, step.id);
 
-    const maxAttempts = run.policy?.onFailure === 'retry' ? Math.max(1, Number(run.policy.maxRetries || 0) + 1) : 1;
+    let maxAttempts = run.policy?.onFailure === 'retry' ? Math.max(1, Number(run.policy.maxRetries || 0) + 1) : 1;
     let lastError = null;
     let verificationFailure = false;
     let succeeded = false;
@@ -1962,11 +2013,36 @@ async function executeRun(runId) {
             step.evidenceIds.push(evidence.id);
           }
           pushLog(run, 'warn', `Attempt ${attempt}/${maxAttempts} failed: ${lastError}`, step.id);
+          // The platform workaround: a refusal that names the platform may be
+          // detection being wrong, not the step being impossible. Prove it with
+          // a real action once per run; if the machine answers natively, grant
+          // one more attempt and continue live.
+          if (!run.dryRun && !run.liveWorkaroundTried && isPlatformRefusal(lastError)) {
+            run.liveWorkaroundTried = true;
+            const proof = await probeLiveBackend();
+            if (proof.ok) {
+              run.detectionCorrected = true;
+              maxAttempts += 1;
+              pushLog(run, 'warn', `Step hit a platform guard (“${String(lastError).slice(0, 120)}”), but the machine answers natively (${proof.detail}) — initial detection was wrong. Workaround applied: one more live attempt.`, step.id);
+              continue;
+            }
+            pushLog(run, 'info', `Platform guard confirmed by probe (${proof.detail || 'no answer'}); the refusal stands.`, step.id);
+          }
           if (attempt < maxAttempts && !run.cancelRequested) {
             const pause = Math.max(0, Number(run.policy?.pauseBeforeRetryMs || 0));
             await waitBeforeRetry(run, pause ? Math.min(pause, 10000) : 300);
           }
         }
+      }
+      // Monitor reflex: a coordinate step that landed on a different screen
+      // than the window it drives is visible here instead of mysterious.
+      if (succeeded && !run.dryRun) {
+        try {
+          const monitor = await checkStepMonitor(step, run);
+          if (monitor?.kind === 'mismatch') {
+            pushLog(run, 'warn', `Monitor note: ${step.monitorNote}`, step.id);
+          }
+        } catch { /* the reflex never fails a passed step */ }
       }
       if (succeeded && step.type === 'launchApp' && !probe) {
         // A launch that only re-raised a window already on the desktop did not
@@ -2247,6 +2323,10 @@ async function executeRun(runId) {
     run.status = 'needs_review';
     run.followupFailed = true;
   }
+  // Closeout prediction: the state the run leaves behind, judged once.
+  try {
+    recordCloseout(run);
+  } catch { /* the prediction never breaks the finish */ }
   run.retryCount = run.steps.reduce((total, step) => total + Math.max(0, Number(step.attempts || 0) - 1), 0);
   run.recovered =
     run.status === 'passed' &&

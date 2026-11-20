@@ -14,6 +14,10 @@ import {
   keyChords,
   LINUX_CAPTURE,
   liveControl,
+  parseWindowsProbe,
+  probeLiveBackend,
+  selectWindowsMechanism,
+  windowsProbeCommand,
   xdotoolKeyArgs,
 } from '../server/platform.js';
 
@@ -198,4 +202,53 @@ test('macOS capture command is a full-screen PNG', () => {
   const command = captureCommand('darwin', '/tmp/shot.png');
   assert.equal(command.cmd, 'screencapture');
   assert.deepEqual(command.args, ['-x', '/tmp/shot.png']);
+});
+
+test('the Windows probe asks for the version and selects the mechanism before a live switch', () => {
+  const command = windowsProbeCommand();
+  assert.match(command, /CurrentBuild/);
+  assert.match(command, /CurrentVersion/);
+  assert.match(command, /UserInteractive/);
+  // The question itself must be read-only: asking may not open, focus or type
+  // into anything, or the check would interrupt the operator's session.
+  assert.doesNotMatch(command, /Start-Process|SendKeys|SetCursorPos|mouse_event|keybd_event|AppActivate/);
+
+  assert.deepEqual(parseWindowsProbe('sightline build=26200 version=25H2 interactive=True'), {
+    build: 26200,
+    version: '25H2',
+    interactive: true,
+  });
+  assert.deepEqual(parseWindowsProbe('sightline build=19045 version=22H2 interactive=False'), {
+    build: 19045,
+    version: '22H2',
+    interactive: false,
+  });
+  assert.deepEqual(parseWindowsProbe(''), { build: 0, version: '', interactive: false });
+
+  const supported = selectWindowsMechanism({ build: 26200, version: '25H2', interactive: true });
+  assert.equal(supported.ok, true);
+  assert.equal(supported.mechanism, 'powershell+sendinput');
+  assert.match(supported.label, /build 26200/);
+  assert.match(supported.label, /SendInput/);
+
+  // No interactive desktop: a live switch would drive a screen nobody can see.
+  const headless = selectWindowsMechanism({ build: 26200, interactive: false });
+  assert.equal(headless.ok, false);
+  assert.equal(headless.mechanism, '');
+  assert.match(headless.reason, /interactive desktop/);
+
+  // A build below the Win32 SendInput floor cannot be driven live at all.
+  const ancient = selectWindowsMechanism({ build: 7601, version: '7', interactive: true });
+  assert.equal(ancient.ok, false);
+  assert.equal(ancient.mechanism, '');
+  assert.match(ancient.reason, /older than 10240/);
+});
+
+test('the real probe only claims a Windows mechanism it could select', async (t) => {
+  if (process.platform !== 'win32') return t.skip('the Windows probe is exercised on Windows hosts');
+  const proof = await probeLiveBackend({ timeoutMs: 20000 });
+  assert.equal(proof.ok, true, proof.detail);
+  assert.equal(proof.mechanism, 'powershell+sendinput');
+  assert.ok(proof.os.build >= 10240, `reported build ${proof.os.build}`);
+  assert.match(proof.detail, /Windows .*build \d+/);
 });

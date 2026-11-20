@@ -16,6 +16,13 @@ import path from 'node:path';
 const HOST = process.platform;
 const IS_WINDOWS = HOST === 'win32';
 
+/**
+ * Windows live control uses PowerShell plus Win32 SendInput, which every
+ * supported Windows 10/11 build has. Older builds have no working SendInput
+ * path, so a run must stay simulated there instead of being switched live.
+ */
+const WINDOWS_MIN_BUILD = 10240;
+
 /** Run a command and never throw; returns { ok, stdout, stderr, code }. */
 export function runCommand(cmd, args = [], { timeoutMs = 20000, input = '' } = {}) {
   return new Promise((resolve) => {
@@ -396,6 +403,123 @@ export function detectBackend({ env = process.env, platform = HOST } = {}) {
     inputReady: false,
     reason: `Live control is not implemented for ${platform}. Set SIGHTLINE_TARGET=android with adb and a device attached, or run the console on Windows, macOS or Linux.`,
   };
+}
+
+/**
+ * The one PowerShell query the Windows probe runs. It is read-only: it asks the
+ * registry for the release and build and .NET whether this process owns an
+ * interactive desktop. It never opens a window, moves the pointer or sends a
+ * key, so asking cannot interrupt the operator's session.
+ */
+export function windowsProbeCommand() {
+  return [
+    "$k='HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion'",
+    '$p=Get-ItemProperty $k -ErrorAction SilentlyContinue',
+    '$b=if($p.CurrentBuild){[int]$p.CurrentBuild}else{[Environment]::OSVersion.Version.Build}',
+    "$v=if($p.DisplayVersion){$p.DisplayVersion}else{'unknown'}",
+    '"sightline build=$b version=$v interactive=$([Environment]::UserInteractive)"',
+  ].join('; ');
+}
+
+/** Read windowsProbeCommand's single output line. */
+export function parseWindowsProbe(output) {
+  const text = String(output || '');
+  const build = Number((text.match(/build=(\d+)/) || [])[1] || 0);
+  const version = (text.match(/version=(\S+)/) || [])[1] || '';
+  const interactive = /interactive=(?:True|true)/.test(text);
+  return { build, version, interactive };
+}
+
+/**
+ * Choose the mechanism that may be used to switch a run live on Windows, and
+ * refuse when the session cannot support it. A run is only flipped live when a
+ * mechanism is selected, so the switch cannot land on a desktop the console
+ * cannot drive (which would interrupt the operator for no result).
+ */
+export function selectWindowsMechanism({ build = 0, version = '', interactive = false } = {}) {
+  if (!interactive) {
+    return {
+      ok: false,
+      mechanism: '',
+      reason: 'this process has no interactive desktop session, so live control would drive a screen the operator cannot see',
+    };
+  }
+  if (!(Number(build) >= WINDOWS_MIN_BUILD)) {
+    return {
+      ok: false,
+      mechanism: '',
+      reason: `Windows build ${build || 'unknown'} is older than ${WINDOWS_MIN_BUILD}, where the Win32 SendInput path is not supported`,
+    };
+  }
+  return {
+    ok: true,
+    mechanism: 'powershell+sendinput',
+    reason: '',
+    label: `Windows ${version && version !== 'unknown' ? version : 'desktop'} (build ${build}), PowerShell + Win32 SendInput`,
+  };
+}
+
+/**
+ * Prove live control with a real action instead of trusting detection.
+ *
+ * Initial detection reads the process environment (PATH, DISPLAY, forced
+ * targets) — any of which can be wrong about a machine that would actually
+ * answer. The probe runs each platform's cheapest real command with a short
+ * timeout: if it talks back, live control works, whatever the checklists
+ * claimed. Used by the engine before converting a run to simulation and as
+ * the workaround when a step hits a platform guard mid-run.
+ */
+export function probeLiveBackend({ timeoutMs = 5000 } = {}) {
+  if (probeOverride) return Promise.resolve(probeOverride());
+  const platform = process.platform;
+  const attempt = (command, args) =>
+    new Promise((resolve) => {
+      try {
+        const child = execFile(command, args, { timeout: timeoutMs, windowsHide: true }, (err, stdout) => {
+          resolve(err ? { ok: false, detail: String(err.message || err).slice(0, 200) } : { ok: true, detail: String(stdout || '').trim().slice(0, 80) || 'answered' });
+        });
+        if (child && child.on) child.on('error', () => {}); // execFile reports through the callback
+      } catch (err) {
+        resolve({ ok: false, detail: String(err.message || err).slice(0, 200) });
+      }
+    });
+  if (platform === 'win32') {
+    // Ask for the OS version and the session, then select the mechanism. The
+    // switch to live only happens when both answer as required, so a stale
+    // refusal is not undone on a build or session that cannot drive the desktop
+    // (which would interrupt the operator without doing any work).
+    return attempt('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', windowsProbeCommand()])
+      .then((answer) => {
+        if (!answer.ok) return { ...answer, mechanism: '' };
+        const os = parseWindowsProbe(answer.detail);
+        const choice = selectWindowsMechanism(os);
+        if (!choice.ok) {
+          return { ok: false, detail: `${choice.reason} (probe: ${answer.detail})`, os, mechanism: '' };
+        }
+        return { ok: true, detail: choice.label, os, mechanism: choice.mechanism };
+      });
+  }
+  if (platform === 'darwin') {
+    return attempt('osascript', ['-e', 'return 1']);
+  }
+  if (platform === 'linux') {
+    // xdotool talking back is the actual input proof — DISPLAY may be missing
+    // from this process's env while XWayland still serves it.
+    return attempt('xdotool', ['getmouselocation']);
+  }
+  return Promise.resolve({ ok: false, detail: `no live backend for ${platform}` });
+}
+
+let probeOverride = null;
+
+/** Tests replace the real probe with a canned answer. */
+export function setProbeOverride(fn) {
+  probeOverride = fn;
+}
+
+/** The refusal messages a platform guard produces at execution time. */
+export function isPlatformRefusal(message) {
+  return /live control is not implemented|needs an X11 DISPLAY|xdotool on PATH|screenshot tool on PATH|Set SIGHTLINE_TARGET/i.test(String(message || ''));
 }
 
 /** What the API and the UI banner report. */

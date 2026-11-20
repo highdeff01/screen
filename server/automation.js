@@ -7,7 +7,7 @@ import { CAPTURES, DATA, NOTES, ROOT, TOOLS, db, now, persist, slug, uid, writeF
 import { chat, parseJsonLoose } from './llm.js';
 import { executePortableStep, portableLiveScreenshot } from './portable.js';
 import { decidePreview, describeSurroundings } from './step-context.js';
-import { judgeModeFor, judgeTargetFor, mergeJudgement, recordJudgement, windowFacts } from './judgement.js';
+import { judgeMode, judgeTargetFor, mergeJudgement, recordJudgement, windowFacts } from './judgement.js';
 import {
   catalogEntry,
   discoverInstallerUrls,
@@ -526,6 +526,22 @@ Write-Output ($record | ConvertTo-Json -Compress)`;
   };
 }
 
+/**
+ * Composite steps (testApp, watchVideo) run several sub-steps. Each sub-step
+ * used to carry its own fixed timeout, so the total could overrun the step's
+ * budget: PowerShell was killed mid-launch ("Command timed out.") and the retry
+ * launched the app into a second window. These helpers hand out what is left of
+ * one budget instead, keeping a reserve for the last sub-step to shut down.
+ */
+export function compositeBudget(timeoutMs, { fallbackMs = 60000, minMs = 6000, maxMs = 1900000 } = {}) {
+  const declared = Number(timeoutMs) > 0 ? Number(timeoutMs) : fallbackMs;
+  return { startedAt: Date.now(), totalMs: Math.max(minMs, Math.min(maxMs, declared)) };
+}
+
+export function budgetLeft(budget, reserveMs = 3000, floorMs = 1000, at = Date.now()) {
+  return Math.max(floorMs, budget.totalMs - reserveMs - (at - budget.startedAt));
+}
+
 function describe(step) {
   const p = step.params || {};
   switch (step.type) {
@@ -848,6 +864,13 @@ Write-Output ('sent ${repeat}x ' + ${psQuote(shortcuts.join(', '))})`;
       const launchArgs = Array.isArray(p.args) ? p.args : p.args ? [p.args] : [];
       const argList = launchArgs.map((arg) => psQuote(arg)).join(', ');
       const argSuffix = launchArgs.length ? ` -ArgumentList @(${argList})` : '';
+      // Everything below has to finish inside the step's timeout: PowerShell
+      // start-up, a Get-StartApps lookup, Start-Process and the fronting poll.
+      // A fixed 8 second poll overran a 15 second budget when the lookup was
+      // slow, so the step was killed ("Command timed out.") and its retry
+      // launched the app again — the second window in the report. The poll now
+      // spends only the time the step has left.
+      const launchBudgetMs = Math.max(4000, Math.min(120000, num(step.timeoutMs, 15000)));
       // A known app may not be on PATH: its catalogue entry lists the real
       // executable paths, which also lets arguments (a video file) be passed.
       const known = catalogEntry([str(p.app), str(p.target)].filter(Boolean));
@@ -865,6 +888,8 @@ foreach ($candidate in $catalogue) {
 }`
         : '';
       return `${pre}
+$launchBudgetMs = ${launchBudgetMs}
+$scriptStarted = Get-Date
 $target = ${psQuote(str(p.target))}
 if (-not $target) { throw 'Launch app step needs a target app name, executable or document path.' }
 $leaf = [System.IO.Path]::GetFileNameWithoutExtension($target)
@@ -883,9 +908,17 @@ $setupPattern = '(?i)(setup|installer|installing|installation|uninstall|download
 # back to a name search when the launched process never shows one.
 function Show-SightlineFront($processLeaf, $preferPid) {
   if (-not $processLeaf) { return }
-  $deadline = (Get-Date).AddSeconds(8)
+  # Spend only what the step has left, keeping 3s for PowerShell to shut down.
+  # A slow Get-StartApps lookup therefore shortens the poll instead of pushing
+  # the script past the step timeout, which killed it and let the retry launch
+  # a second window. At most 8s is ever spent looking for the window.
+  $left = $launchBudgetMs - 3000 - ((Get-Date) - $scriptStarted).TotalMilliseconds
+  $budget = [Math]::Max(0, [Math]::Min(8000, $left))
+  $deadline = (Get-Date).AddMilliseconds($budget)
   $front = $null
-  while ((Get-Date) -lt $deadline) {
+  # Check once even with no budget left: the window may already be there, and
+  # the front line is the evidence the following steps rely on.
+  while ($true) {
     if ($preferPid) {
       $own = @(Get-Process -Id $preferPid -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 })
       if ($own.Count) { $front = $own[0]; break }
@@ -895,6 +928,7 @@ function Show-SightlineFront($processLeaf, $preferPid) {
       if (-not $front) { $front = $hits | Sort-Object Id -Descending | Select-Object -First 1 }
       if ($front) { break }
     }
+    if ((Get-Date) -ge $deadline) { break }
     Start-Sleep -Milliseconds 300
   }
   if (-not $front -and $preferPid) {
@@ -3646,23 +3680,35 @@ try {
     const title = String(p.title || '').trim();
     const processName = String(p.process || '').trim();
     const waitMs = Math.max(500, Math.min(120000, num(p.waitMs, 15000)));
+    // One budget for the whole smoke test: the launch, the settle, the window
+    // wait, the capture and the vision check all spend what is left of it, so
+    // the step cannot be killed mid-launch and retried into a second window.
+    const testBudget = compositeBudget(step.timeoutMs, { fallbackMs: 60000, minMs: 6000, maxMs: 240000 });
     const evidence = [];
     const steps = [];
     try {
       if (flag(p.launch, true)) {
-        const launched = await executeStep({ type: 'launchApp', name: `Launch ${target}`, params: { target }, timeoutMs: 30000 }, ctx);
+        const launched = await executeStep(
+          { type: 'launchApp', name: `Launch ${target}`, params: { target }, timeoutMs: Math.min(30000, budgetLeft(testBudget, 4000)) },
+          ctx
+        );
         steps.push(launched.output);
       }
-      await new Promise((resolve) => setTimeout(resolve, Math.max(100, Math.min(10000, num(p.settleMs, 1500)))));
+      await new Promise((resolve) =>
+        setTimeout(resolve, Math.max(100, Math.min(10000, num(p.settleMs, 1500), budgetLeft(testBudget, 2500))))
+      );
+      // The wait gets only what the launch left; asking for its full timeout
+      // after a slow launch is what pushed the step past its own budget.
+      const readyMs = Math.min(waitMs, budgetLeft(testBudget, 2000));
       if (processName) {
         const ready = await executeStep(
-          { type: 'waitFor', name: `Wait for ${processName}`, params: { kind: 'process', value: processName, mode: 'present', timeoutMs: waitMs }, timeoutMs: waitMs + 5000 },
+          { type: 'waitFor', name: `Wait for ${processName}`, params: { kind: 'process', value: processName, mode: 'present', timeoutMs: readyMs }, timeoutMs: readyMs + 1000 },
           ctx
         );
         steps.push(ready.output);
       } else if (title) {
         const ready = await executeStep(
-          { type: 'waitFor', name: `Wait for ${title}`, params: { kind: 'window', value: title, mode: 'present', timeoutMs: waitMs }, timeoutMs: waitMs + 5000 },
+          { type: 'waitFor', name: `Wait for ${title}`, params: { kind: 'window', value: title, mode: 'present', timeoutMs: readyMs }, timeoutMs: readyMs + 1000 },
           ctx
         );
         steps.push(ready.output);
@@ -3671,11 +3717,24 @@ try {
       if (title && !`${foreground.title} ${foreground.process}`.toLowerCase().includes(title.toLowerCase())) {
         throw new Error(`App test expected “${title}” in front, but the foreground window is “${foreground.title || '(unknown)'}”.`);
       }
-      const shot = await executeStep({ type: 'screenshot', name: `Capture ${title || target}`, params: { caption: str(p.caption, `${target || title} smoke test`) }, timeoutMs: 20000 }, ctx);
+      const shot = await executeStep(
+        {
+          type: 'screenshot',
+          name: `Capture ${title || target}`,
+          params: { caption: str(p.caption, `${target || title} smoke test`) },
+          timeoutMs: Math.min(20000, budgetLeft(testBudget, 1500)),
+        },
+        ctx
+      );
       evidence.push(...(shot.evidence || []));
       if (p.question) {
         const check = await executeStep(
-          { type: 'verifyScreen', name: `Verify ${target}`, params: { question: p.question, title: p.title, app: p.process, caption: str(p.caption, `${target} verification`) }, timeoutMs: 120000 },
+          {
+            type: 'verifyScreen',
+            name: `Verify ${target}`,
+            params: { question: p.question, title: p.title, app: p.process, caption: str(p.caption, `${target} verification`) },
+            timeoutMs: Math.min(120000, budgetLeft(testBudget, 1000, 5000)),
+          },
           ctx
         );
         evidence.push(...(check.evidence || []));
@@ -3693,7 +3752,10 @@ try {
       }
       if (flag(p.close, false)) {
         const closeTitle = title || processName || target;
-        await executeStep({ type: 'closeWindow', name: `Close ${closeTitle}`, params: { title: closeTitle }, timeoutMs: 15000 }, ctx);
+        await executeStep(
+          { type: 'closeWindow', name: `Close ${closeTitle}`, params: { title: closeTitle }, timeoutMs: Math.min(15000, budgetLeft(testBudget, 1000)) },
+          ctx
+        );
       }
       return { output: `App test passed: ${title || target} is running${evidence[0]?.path ? ` and captured in data/${evidence[0].path}` : ''}.`, evidence };
     } catch (err) {
@@ -3717,6 +3779,12 @@ try {
     const title = str(p.title, 'YouTube');
     if (!live) return { output: `Simulated watch of “${title}” with notes.`, evidence: [], skipped: true };
     const noteText = p.textVar ? ctx.run?.variables?.[p.textVar] : p.notes;
+    // The hold legitimately lasts as long as the media does, so this step's
+    // budget comes from how long the hold may run (maxMs), not from the small
+    // generic step timeout; the hold and the captures then share what is left
+    // instead of being killed by a budget the hold never knew about.
+    const holdCapMs = Math.max(30000, Math.min(1800000, num(p.maxMs, 900000)));
+    const videoBudget = compositeBudget(holdCapMs + 60000, { fallbackMs: 960000, minMs: 60000, maxMs: 1900000 });
     const evidence = [];
     let startShot = null;
     if (flag(p.startCapture, true)) {
@@ -3733,13 +3801,13 @@ try {
           params: {
             title,
             bufferMs: p.bufferMs,
-            maxMs: p.maxMs,
+            maxMs: Math.min(holdCapMs, budgetLeft(videoBudget, 5000)),
             checkMs: p.checkMs,
             stallMs: p.stallMs,
             adGraceMs: p.adGraceMs,
             caption: str(p.caption, `${title} ended`),
           },
-          timeoutMs: step.timeoutMs,
+          timeoutMs: budgetLeft(videoBudget, 2000),
         },
         ctx
       );
@@ -3793,8 +3861,15 @@ try {
   }
 
   if (step.type === 'runTool') {
-    const tool = ctx.getTool ? ctx.getTool(p.toolId) : null;
-    if (!tool) throw new Error(`Tool not found: ${p.toolId || '(missing id)'}`);
+    const ref = String(p.toolId || p.toolName || '').trim();
+    // Plans resolve names to ids before they run, but a workflow saved earlier
+    // may still hold only the tool's name. Resolve either form so that step
+    // keeps working, and name what failed when neither matches.
+    const tool =
+      (p.toolId && ctx.getTool ? ctx.getTool(p.toolId) : null) ||
+      db().tools.find((entry) => entry.id === ref || entry.name === ref) ||
+      null;
+    if (!tool) throw new Error(`Tool not found: ${ref || '(missing id)'}`);
     if (!live) {
       return { output: `Simulated tool run: ${tool.name}`, evidence: [] };
     }
@@ -4272,7 +4347,7 @@ try {
       `\nActive foreground window: "${foreground.title || '(unknown)'}" (process: ${foreground.process || 'unknown'}). ` +
       `${target.scoped ? `The image is cropped to ${target.hwnd ? `the run's own window (hwnd ${target.hwnd})` : `“${target.title || target.process}”`}, not the whole desktop. ` : ''}` +
       `If the expected app is named and this foreground window is a different program, fail even when another window behind it looks correct.`;
-    const mode = judgeModeFor(ctx.workflow);
+    const mode = judgeMode(db().settings);
     const cachedVerdict = readVerdict(question, shot.signature);
     let reply = null;
     let vision = cachedVerdict
