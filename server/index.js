@@ -73,6 +73,7 @@ import { addSecondOpinion, lensList } from './second-opinion.js';
 import { actionLogStatus, applyFix, dismissItem, implementSuggestion, listActionLog, recordAction, triageItem } from './action-log.js';
 import { agentActivity, heartbeat, heartbeatDone, sendContinuation, startAgentWatch } from './agent-awareness.js';
 import { nudgeStatus, startNudgeWatch } from './nudge.js';
+import { benchStatus, pollBench, startBenchWatch, stopBenchWatch, answerBenchPopup, testBenchTarget, addBenchTarget } from './bench.js';
 import { applyReshaped, configureDeepFocus, deepFocusStatus, startDeepFocus, stopDeepFocus } from './deep-focus.js';
 import { addAnnotation, annotationsForRun, listAnnotations, pinFindings, removeAnnotation } from './annotations.js';
 import { presentationFromDeepFocus, deepFocusMarkdown } from './presentations-deep.js';
@@ -499,6 +500,7 @@ function buildState() {
     firewall: firewallStatus(),
     factoring: factoringStatus(),
     nudges: nudgeStatus(),
+    bench: benchStatus(),
     share: shareStatus(),
     escalation: escalationStatus(),
     notes: d.notes.slice(0, 60).map(({ body, ...rest }) => ({
@@ -663,6 +665,46 @@ route('POST', /^\/api\/backup\/sync$/, async (req, res) => {
     ok: !backup.lastError,
     backup,
     message: backup.lastError || (backup.inSync ? 'Local copy matches GitHub.' : 'Sync pass finished.'),
+  });
+});
+
+/* ---------------- The standalone test bench ---------------- */
+route('GET', /^\/api\/bench$/, async (req, res) => {
+  sendJson(res, 200, { ok: true, bench: await pollBench() });
+});
+
+route('POST', /^\/api\/bench\/poll$/, async (req, res) => {
+  sendJson(res, 200, { ok: true, bench: await pollBench() });
+});
+
+route('POST', /^\/api\/bench\/popup\/([\w-]+)\/answer$/, async (req, res, match) => {
+  const body = await readBody(req);
+  if (!body?.decision) return sendJson(res, 400, { ok: false, error: 'A decision is required (ok, later, or a choice id).' });
+  const result = await answerBenchPopup(match[1], String(body.decision).slice(0, 40));
+  sendJson(res, 200, {
+    ok: result.ok,
+    bench: benchStatus(),
+    message: result.ok ? 'Answered on the bench.' : result.error || 'The bench did not take the answer.',
+  });
+});
+
+route('POST', /^\/api\/bench\/test\/([\w-]+)$/, async (req, res, match) => {
+  const result = await testBenchTarget(match[1]);
+  sendJson(res, 200, {
+    ok: result.ok,
+    bench: benchStatus(),
+    message: result.ok ? 'The bench finished the run.' : result.error || 'The bench could not run that target.',
+  });
+});
+
+route('POST', /^\/api\/bench\/targets$/, async (req, res) => {
+  const body = await readBody(req);
+  if (!body?.path) return sendJson(res, 400, { ok: false, error: 'A repository path is required.' });
+  const result = await addBenchTarget(body);
+  sendJson(res, 200, {
+    ok: result.ok,
+    bench: benchStatus(),
+    message: result.ok ? 'The bench is watching that repository.' : result.body?.error || 'The bench refused the target.',
   });
 });
 
@@ -4460,6 +4502,8 @@ server.listen(PORT, HOST, () => {
   startAutoSync({ intervalMs: Number(db().settings.autoSyncIntervalMs) || undefined });
   // Keep a second on-disk copy level with GitHub, and prove the link every 10s.
   startBackup({ intervalMs: Number(db().settings.localBackupIntervalMs) || undefined });
+  // Follow the standalone test bench: its verdicts and operator popups show here.
+  startBenchWatch();
   // Watch the process and the tracked files, and report instead of vanishing.
   startSupervisor();
   // Poll any live sources that were added, on their own schedules.

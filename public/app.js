@@ -6174,6 +6174,55 @@ function renderRelay() {
   </div>`;
 }
 
+function renderBenchCard() {
+  const bench = ui.data?.bench || {};
+  const offline = bench.online === false;
+  const unknown = bench.online === null || bench.online === undefined;
+  const badge = offline ? '<span class="badge">offline</span>' : unknown ? '<span class="badge">unknown</span>' : `<span class="badge okbadge">linked · ${Number(bench.latencyMs || 0)}ms</span>`;
+  const popups = bench.popups || [];
+  const targets = bench.targets || [];
+  const runs = bench.runs || [];
+  return `
+  <section class="card">
+    <div class="card-head"><h3>Test bench</h3>${badge}</div>
+    <div class="card-body">
+      <p class="small ${offline ? 'preview-error' : 'muted'}">${offline
+        ? `The bench at ${esc(bench.url || '127.0.0.1:4319')} is not answering. Start it with <span class="mono">npm start</span> in the sightline-bench folder; this card follows within seconds.`
+        : unknown
+        ? 'Checking the bench link…'
+        : `The bench is watching ${targets.length} repository(ies) and tests every commit it detects, in its own process.`}</p>
+      ${popups.length ? `<div class="section-gap">
+        ${popups.map((p) => `
+        <div class="side-card" style="border-color:#7c5cff">
+          <div class="side-card-head"><h3>What the bench is doing next</h3><span class="pill ${p.status === 'stale' ? 'simulated' : 'live'}">${esc(p.status)}</span></div>
+          <div class="side-card-body">
+            <p class="small" style="margin-bottom:6px">${esc(p.text)}</p>
+            ${p.context ? `<p class="small dim" style="margin-bottom:6px">${esc(p.context)}</p>` : ''}
+            <div class="row wrap" style="gap:7px">
+              ${(p.options || []).map((o) => `<button class="btn btn-sm" data-act="bench-answer" data-id="${esc(p.id)}" data-decision="${esc(o.id)}">${esc(o.label)}</button>`).join('')}
+              <button class="btn btn-sm btn-primary" data-act="bench-answer" data-id="${esc(p.id)}" data-decision="ok">OK</button>
+              <button class="btn btn-sm btn-ghost" data-act="bench-answer" data-id="${esc(p.id)}" data-decision="later">Later</button>
+            </div>
+            <p class="small dim" style="margin-top:6px">Posted by ${esc(p.source)}${p.targetName ? ` on ${esc(p.targetName)}` : ''} · ${Number(p.ageMin || 0)} min ago</p>
+          </div>
+        </div>`).join('')}
+      </div>` : ''}
+      ${targets.length ? `<div class="section-gap"><table style="width:100%;font-size:12px;border-collapse:collapse">
+        <tr style="color:var(--dim)"><th style="text-align:left;padding:4px 6px">Target</th><th style="text-align:left;padding:4px 6px">Status</th><th style="text-align:left;padding:4px 6px">Last verdict</th><th></th></tr>
+        ${targets.map((t) => {
+          const last = t.lastRun;
+          const verdict = last ? (last.ok ? `<span class="okbadge badge">pass</span> ${last.pass}/${last.tests}` : `<span class="badge warnbadge">fail</span> ${last.fail}/${last.tests}`) : '<span class="dim">not tested yet</span>';
+          return `<tr><td style="padding:4px 6px" class="mono">${esc(t.name)}</td><td style="padding:4px 6px">${esc(t.status)}</td><td style="padding:4px 6px">${verdict}${last?.failingTests?.length ? `<div class="dim small">${esc(last.failingTests[0])}</div>` : ''}</td><td style="padding:4px 6px"><button class="btn btn-sm btn-ghost" data-act="bench-test" data-id="${esc(t.id)}">Test now</button></td></tr>`;
+        }).join('')}
+      </table></div>` : ''}
+      ${runs.length && !targets.length ? '' : ''}
+      <div class="row wrap section-gap" style="gap:7px">
+        <button class="btn btn-sm btn-ghost" data-act="bench-poll">Refresh</button>
+      </div>
+    </div>
+  </section>`;
+}
+
 function renderSync() {
   const info = ui.gitInfo;
   if (!info) {
@@ -6241,6 +6290,8 @@ function renderSync() {
         <button class="btn btn-sm btn-primary" data-act="backup-path">Save folder</button>
       </div>
     </section>
+
+    ${renderBenchCard()}
 
     <section class="card">
       <div class="card-head"><h3>Conflicts</h3><span class="dim small">${conflicts.length ? 'a human or the model picks a side' : 'none'}</span></div>
@@ -6759,6 +6810,24 @@ async function runAction(name, ds, el) {
     case 'backup-check': {
       const res = await api('/api/backup/check', { method: 'POST', body: {} });
       toast(res.message || (res.ok ? 'Local copy checked' : 'The check needs attention'), res.ok ? 'ok' : 'error');
+      await refresh();
+      break;
+    }
+    case 'bench-answer': {
+      const res = await api(`/api/bench/popup/${ds.id}/answer`, { method: 'POST', body: { decision: ds.decision, by: 'operator' } });
+      toast(res.message || (res.ok ? 'Answered' : 'The bench did not take the answer'), res.ok ? 'ok' : 'error');
+      await refresh();
+      break;
+    }
+    case 'bench-test': {
+      toast('Asked the bench to run that target; this can take minutes…', 'ok');
+      const res = await api(`/api/bench/test/${ds.id}`, { method: 'POST', body: {} });
+      toast(res.message || (res.ok ? 'The bench finished the run' : 'The bench could not run it'), res.ok ? 'ok' : 'error');
+      await refresh();
+      break;
+    }
+    case 'bench-poll': {
+      await api('/api/bench/poll', { method: 'POST', body: {} });
       await refresh();
       break;
     }
