@@ -1,19 +1,43 @@
 {
   "version": 1,
   "by": "sentinel",
-  "updatedAt": "2026-11-20T00:23:11.968Z",
-  "head": "0681da9a0d14",
+  "updatedAt": "2026-11-20T00:55:25.312Z",
+  "head": "e9a05539f2e5",
   "lastRun": {
-    "at": "2026-11-20T00:23:11.968Z",
-    "ok": true,
-    "tests": 641,
-    "pass": 636,
-    "fail": 0,
+    "at": "2026-11-20T00:55:25.289Z",
+    "ok": false,
+    "tests": 651,
+    "pass": 646,
+    "fail": 1,
     "isolated": true,
-    "failingTests": []
+    "failingTests": [
+      "live requests are refused before reaching the API when the backend is unavailable (5.3522ms)"
+    ]
   },
-  "open": 2,
+  "open": 3,
   "items": [
+    {
+      "id": "sent_mwo9p7552f5ba7",
+      "at": "2026-11-20T00:55:25.289Z",
+      "status": "queued",
+      "attempts": 1,
+      "fail": 1,
+      "pass": 646,
+      "tests": [
+        "live requests are refused before reaching the API when the backend is unavailable (5.3522ms)"
+      ],
+      "details": [
+        {
+          "name": "live requests are refused before reaching the API when the backend is unavailable",
+          "file": "",
+          "line": null,
+          "message": ""
+        }
+      ],
+      "plan": "",
+      "planError": "",
+      "report": "must-check/2026-11-20T00-55-25-live-requests-are-refused-before-reachin.md"
+    },
     {
       "id": "sent_mwo48bmx583b03",
       "at": "2026-11-19T22:22:19.881Z",
