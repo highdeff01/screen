@@ -28,6 +28,7 @@ const state = {
   targets: [],
   runs: [],
   popups: [],
+  reviews: [],
   checks: 0,
   failures: 0,
 };
@@ -44,7 +45,9 @@ export function benchStatus() {
     targets: state.targets,
     runs: state.runs,
     popups: state.popups,
+    reviews: state.reviews,
     openPopups: state.popups.length,
+    pendingReviews: state.reviews.length,
     checks: state.checks,
     failures: state.failures,
   };
@@ -94,6 +97,7 @@ export async function pollBench({ fetchFn = null } = {}) {
   ]);
   state.targets = status.body?.targets || [];
   state.runs = status.body?.runs || [];
+  state.reviews = status.body?.pendingReviews || [];
   state.popups = popups.body?.popups || [];
   return benchStatus();
 }
@@ -134,6 +138,13 @@ export async function answerBenchPopup(id, decision, { fetchFn = null, by = 'ope
 /** Ask the bench to test a target right now. */
 export async function testBenchTarget(targetId, { fetchFn = null } = {}) {
   const result = await benchCall(`/api/test/${targetId}`, { method: 'POST', fetchFn, timeoutMs: 600000 });
+  await pollBench({ fetchFn });
+  return result;
+}
+
+/** The operator reviewed a cross-app proposal: approve or deny it on the bench. */
+export async function reviewBenchProposal(id, decision, { reasons = [], by = 'operator', fetchFn = null } = {}) {
+  const result = await benchCall(`/api/review/${id}/verdict`, { method: 'POST', body: { decision, reasons, by }, fetchFn });
   await pollBench({ fetchFn });
   return result;
 }

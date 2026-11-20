@@ -111,6 +111,43 @@ test('adding a target goes through to the bench', async () => {
   assert.equal(received.path, 'C:/repos/other');
 });
 
+
+test('a live poll picks up pending reviews', async () => {
+  const status = await bench.pollBench({
+    fetchFn: async (url) => {
+      const pathPart = new URL(url).pathname;
+      if (pathPart === '/api/health') return json({ ok: true, app: 'sightline-bench' });
+      if (pathPart === '/api/status') return json({ ok: true, targets: [], runs: [], pendingReviews: [{ id: 'prp_1', from: 'app-b', status: 'awaiting-review', fileCount: 2, totalBytes: 300, deletions: 0, note: 'add a feature', files: [{ path: 'docs/x.md', action: 'add', bytes: 3 }] }] });
+      if (pathPart === '/api/popup') return json({ ok: true, popups: [] });
+      return json({ ok: false }, 404);
+    },
+  });
+  assert.equal(status.pendingReviews, 1);
+  assert.equal(status.reviews[0].from, 'app-b');
+  assert.equal(status.reviews[0].files[0].path, 'docs/x.md');
+});
+
+test('reviewBenchProposal posts the verdict to the bench', async () => {
+  let received = null;
+  const fetchFn = async (url, opts = {}) => {
+    if (/\/verdict$/.test(new URL(url).pathname)) {
+      received = JSON.parse(opts.body);
+      return json({ ok: true });
+    }
+    const pathPart = new URL(url).pathname;
+    if (pathPart === '/api/health') return json({ ok: true, app: 'sightline-bench' });
+    if (pathPart === '/api/status') return json({ ok: true, targets: [], runs: [], pendingReviews: [] });
+    if (pathPart === '/api/popup') return json({ ok: true, popups: [] });
+    return json({ ok: false }, 404);
+  };
+  const result = await bench.reviewBenchProposal('prp_1', 'deny', { reasons: ['needs a test'], fetchFn });
+  assert.equal(result.ok, true);
+  assert.equal(received.decision, 'deny');
+  assert.deepEqual(received.reasons, ['needs a test']);
+  assert.equal(received.by, 'operator');
+  assert.equal(bench.benchStatus().pendingReviews, 0, 'the reviewed proposal left the pending list');
+});
+
 test('the status snapshot is available synchronously for buildState', () => {
   const snapshot = bench.benchStatus();
   assert.equal(snapshot.url, 'http://127.0.0.1:4319');

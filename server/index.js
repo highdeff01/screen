@@ -73,7 +73,7 @@ import { addSecondOpinion, lensList } from './second-opinion.js';
 import { actionLogStatus, applyFix, dismissItem, implementSuggestion, listActionLog, recordAction, triageItem } from './action-log.js';
 import { agentActivity, heartbeat, heartbeatDone, sendContinuation, startAgentWatch } from './agent-awareness.js';
 import { nudgeStatus, startNudgeWatch } from './nudge.js';
-import { benchStatus, pollBench, startBenchWatch, stopBenchWatch, answerBenchPopup, testBenchTarget, addBenchTarget } from './bench.js';
+import { benchStatus, pollBench, startBenchWatch, stopBenchWatch, answerBenchPopup, testBenchTarget, addBenchTarget, reviewBenchProposal } from './bench.js';
 import { applyReshaped, configureDeepFocus, deepFocusStatus, startDeepFocus, stopDeepFocus } from './deep-focus.js';
 import { addAnnotation, annotationsForRun, listAnnotations, pinFindings, removeAnnotation } from './annotations.js';
 import { presentationFromDeepFocus, deepFocusMarkdown } from './presentations-deep.js';
@@ -694,6 +694,19 @@ route('POST', /^\/api\/bench\/test\/([\w-]+)$/, async (req, res, match) => {
     ok: result.ok,
     bench: benchStatus(),
     message: result.ok ? 'The bench finished the run.' : result.error || 'The bench could not run that target.',
+  });
+});
+
+route('POST', /^\/api\/bench\/review\/([\w-]+)\/verdict$/, async (req, res, match) => {
+  const body = await readBody(req);
+  if (!body?.decision || !['approve', 'deny'].includes(body.decision)) {
+    return sendJson(res, 400, { ok: false, error: 'A decision of approve or deny is required.' });
+  }
+  const result = await reviewBenchProposal(match[1], String(body.decision), { reasons: body.reasons || [], by: 'operator' });
+  sendJson(res, 200, {
+    ok: result.ok,
+    bench: benchStatus(),
+    message: result.ok ? `The proposal was ${body.decision}d on the bench.` : result.body?.error || 'The bench refused the verdict.',
   });
 });
 
@@ -3914,8 +3927,9 @@ route('PATCH', /^\/api\/settings$/, async (req, res) => {
   if (body.gatewayKeyEnv !== undefined) s.gatewayKeyEnv = String(body.gatewayKeyEnv || '').trim();
   if (body.dryRun !== undefined) s.dryRun = Boolean(body.dryRun);
   if (body.autoSync !== undefined) s.autoSync = Boolean(body.autoSync);
+  if (body.autoPull !== undefined) s.autoPull = Boolean(body.autoPull);
   if (body.autoSyncIntervalMs !== undefined) {
-    s.autoSyncIntervalMs = Math.max(5000, Math.min(600000, Number(body.autoSyncIntervalMs) || 20000));
+    s.autoSyncIntervalMs = Math.max(5000, Math.min(600000, Number(body.autoSyncIntervalMs) || 10000));
     if (gitSyncStatus().running) startAutoSync({ intervalMs: s.autoSyncIntervalMs });
   }
   if (body.autoSyncMaxDeletes !== undefined) {
