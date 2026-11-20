@@ -173,7 +173,7 @@ async function stageAndPromote({ run, deps = {}, settings = {}, branch, head }) 
     const verdict = await verifyHead(head, deps);
     if (verdict.deferred) {
       state.status = 'verifying';
-      state.lastError = `${autoBranch} has ${head.slice(0, 7)}; the suite is running, so ${branch} waits for the next check.`;
+      state.lastError = `The suite is running; ${head.slice(0, 7)} waits before publishing to ${branch}.`;
       return gitSyncStatus();
     }
     if (!verdict.ok) {
@@ -187,7 +187,8 @@ async function stageAndPromote({ run, deps = {}, settings = {}, branch, head }) 
     state.held = { sha: head, at: now(), ok: true };
   }
 
-  const staged = await run(['push', 'origin', `HEAD:refs/heads/${autoBranch}`], 120000);
+  if (db().settings.autoSync !== true) return gitSyncStatus();
+  const staged = await run(['push', 'origin', `${head}:refs/heads/${autoBranch}`], 120000);
   if (!staged.ok) {
     state.status = 'stage-failed';
     state.lastError = staged.stderr || staged.stdout || `git push to ${autoBranch} failed.`;
@@ -195,7 +196,8 @@ async function stageAndPromote({ run, deps = {}, settings = {}, branch, head }) 
   }
   state.autoStaged = head;
 
-  const push = await run(['push', 'origin', `HEAD:refs/heads/${branch}`], 120000);
+  if (db().settings.autoSync !== true) return gitSyncStatus();
+  const push = await run(['push', 'origin', `${head}:refs/heads/${branch}`], 120000);
   if (!push.ok) {
     state.status = 'push-failed';
     state.lastError = push.stderr || push.stdout || 'git push failed.';
@@ -411,6 +413,7 @@ export async function pullNow({ ffOnly = true, run, verify, backup } = {}) {
     state.lastError = `Local and origin/${branch} both have commits; merge from the Sync page to combine them.`;
     return { ok: false, status: 'diverged', behind, ahead, message: state.lastError };
   }
+  let testedSha = '';
   if (ffOnly) {
     const remoteHead = await git(['rev-parse', `origin/${branch}`]);
     const sha = String(remoteHead.stdout || '').trim();
@@ -419,6 +422,7 @@ export async function pullNow({ ffOnly = true, run, verify, backup } = {}) {
       state.lastError = remoteHead.stderr || 'Could not read the remote commit.';
       return { ok: false, status: 'error', message: state.lastError };
     }
+    testedSha = sha;
     const verdict = await verifyHead(sha, { run, verify });
     if (verdict.deferred) {
       state.status = 'verifying';
@@ -441,7 +445,7 @@ export async function pullNow({ ffOnly = true, run, verify, backup } = {}) {
       return { ok: false, status: 'backup-failed', message: state.lastError };
     }
   }
-  const merge = await git(ffOnly ? ['merge', '--ff-only', `origin/${branch}`] : ['merge', '--no-edit', `origin/${branch}`], 60000);
+  const merge = await git(ffOnly ? ['merge', '--ff-only', testedSha] : ['merge', '--no-edit', `origin/${branch}`], 60000);
   if (!merge.ok) {
     const conflicts = await conflictFiles({ run: git });
     state.status = conflicts.count ? 'conflict' : 'merge-failed';
@@ -711,10 +715,11 @@ export function startAutoSync({ intervalMs } = {}) {
  * and fast-forward remote updates. Diverged branches wait for manual review.
  */
 async function autoTick(deps = {}) {
-  const status = await checkAndSync(deps);
   if (state.autoTickBusy) return gitSyncStatus();
   state.autoTickBusy = true;
   try {
+    const status = await checkAndSync(deps);
+    if (!status.enabled) return status;
     return await autoPull(status, deps);
   } finally {
     state.autoTickBusy = false;
@@ -723,7 +728,7 @@ async function autoTick(deps = {}) {
 
 async function autoPull(status, deps = {}) {
   const run = deps.run || runGit;
-  if (db().settings.autoPull === false) return status;
+  if (db().settings.autoPull !== true) return status;
   if (state.busy || status.pending || ['conflict', 'error', 'waiting', 'staged', 'held', 'verifying', 'push-failed'].includes(status.status)) return status;
 
   const worktree = await run(['status', '--porcelain']);
@@ -796,7 +801,8 @@ async function autoPull(status, deps = {}) {
     return gitSyncStatus();
   }
 
-  const pulled = await run(['merge', '--ff-only', `origin/${branch}`], 60000);
+  if (db().settings.autoSync !== true || db().settings.autoPull !== true) return gitSyncStatus();
+  const pulled = await run(['merge', '--ff-only', sha], 60000);
   if (!pulled.ok) {
     const conflicts = await conflictFiles({ run });
     state.status = conflicts.count ? 'conflict' : 'pull-failed';

@@ -62,6 +62,25 @@ test('a snapshot captures the folder without touching any branch', async () => {
   assert.equal(listed[0].label, 'first');
 });
 
+test('a snapshot is not recorded if its recovery ref cannot be created', async () => {
+  const before = snapshots.snapshotStatus().count;
+  const run = async (args, options) => {
+    if (args[0] === 'update-ref') return { ok: false, stderr: 'ref storage unavailable' };
+    if (options?.env) {
+      return new Promise((resolve) => {
+        execFile('git', args, { cwd: process.cwd(), env: { ...process.env, ...options.env }, windowsHide: true }, (error, stdout, stderr) => {
+          resolve({ ok: !error, stdout: String(stdout || '').trim(), stderr: String(stderr || '').trim() });
+        });
+      });
+    }
+    return git(args);
+  };
+  const result = await snapshots.createSnapshot('unrecoverable', { run });
+  assert.equal(result.ok, false);
+  assert.equal(result.status, 'ref-failed');
+  assert.equal(snapshots.snapshotStatus().count, before);
+});
+
 test('a second snapshot and a diff between them', async () => {
   fs.writeFileSync(path.join(process.cwd(), 'app.txt'), 'version two');
   fs.writeFileSync(path.join(process.cwd(), 'extra.txt'), 'new file');

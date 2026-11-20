@@ -4909,11 +4909,11 @@ function sharingPanel() {
   };
   const statusText = enabled ? labels[sync.status] || sync.status || 'idle' : 'paused';
   const intervalMs = Number(ui.settingsDraft?.autoSyncIntervalMs || ui.data?.settings?.autoSyncIntervalMs || 10000);
-  const autoPull = ui.settingsDraft?.autoPull ?? ui.data?.settings?.autoPull !== false;
+  const autoPull = (ui.settingsDraft?.autoPull ?? ui.data?.settings?.autoPull) === true;
   return `
   <hr style="border:none;border-top:1px solid var(--line);margin:16px 0 12px" />
   <h3 style="margin:0 0 6px;font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--dim)">GitHub sync</h3>
-  <p class="small muted" style="margin:0 0 8px">Syncs tracked changes on this console's current branch after isolated tests pass. Incoming fast-forwards are tested and backed up first. Data, captures, and tokens stay excluded; other branches need separate review.</p>
+  <p class="small muted" style="margin:0 0 8px">Syncs tracked changes on this console's current branch after tests pass. Tests run project code with this server's permissions in a separate worktree, not a security sandbox; only enable this for trusted repositories. Incoming fast-forwards are tested and backed up first. Other branches need separate review.</p>
   <div class="row wrap" style="gap:8px;align-items:center">
     <span class="pill ${enabled ? 'passed' : ''}">${enabled ? 'auto-sync on' : 'auto-sync off'}</span>
     <span class="small dim">${esc(String(statusText))}${Number(sync.pending) ? ` · ${Number(sync.pending)} file(s) pending` : ''}${sync.lastSyncAt ? ` · last ${esc(fmtTime(sync.lastSyncAt))}` : ''}</span>
@@ -6217,7 +6217,7 @@ function renderSync() {
       <div class="card-body detail-cols">
         <div>
           <p class="small">Local is <b>${Number(info.ahead ?? g.ahead) || 0}</b> commit(s) ahead and <b>${Number(info.behind ?? g.behind) || 0}</b> behind.</p>
-          <p class="small dim">Last sync: ${g.lastSyncAt ? fmtTime(g.lastSyncAt) : 'never'} · auto-sync ${g.enabled ? 'on' : 'off'} every ${Math.round(Number(g.intervalMs || 10000) / 1000)}s · tested auto-pull ${ui.data?.settings?.autoPull === false ? 'off' : 'on'}</p>
+          <p class="small dim">Last sync: ${g.lastSyncAt ? fmtTime(g.lastSyncAt) : 'never'} · auto-sync ${g.enabled ? 'on' : 'off'} every ${Math.round(Number(g.intervalMs || 10000) / 1000)}s · tested auto-pull ${ui.data?.settings?.autoPull === true ? 'on' : 'off'}</p>
           ${g.autoBranch ? `<p class="small dim">Conveyor: <span class="mono">${esc(g.autoBranch)}</span> — every automatic commit lands there first; ${g.branch || 'main'} can only fast-forward to it after the suite passes on that exact commit.${g.held && g.held.ok === false ? ` <span style="color:var(--bad)">Held back by ${g.held.fail ?? 'failing'} test(s).</span>` : ''}</p>` : ''}
         </div>
         <div>
@@ -9224,7 +9224,7 @@ async function runAction(name, ds, el) {
         autoNotes: settings.autoNotes !== false,
         aiSuggestions: settings.aiSuggestions !== false,
         requireToolApproval: settings.requireToolApproval !== false,
-        autoPull: settings.autoPull !== false,
+        autoPull: settings.autoPull === true,
         autoSyncIntervalMs: Number(settings.autoSyncIntervalMs || 10000),
       };
       const res = await api('/api/settings', { method: 'PATCH', body });

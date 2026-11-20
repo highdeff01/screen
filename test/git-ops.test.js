@@ -51,12 +51,13 @@ test('pull fast-forwards commits another app pushed', async () => {
     FETCH_OK,
     ['rev-list', { stdout: '0\t3' }],
     ['rev-parse origin/main', { stdout: 'abc123' }],
-    ['merge --ff-only origin/main', { stdout: 'Updating a1..b2\n file.js | 4 ++\n' }],
+    ['merge --ff-only abc123', { stdout: 'Updating a1..b2\n file.js | 4 ++\n' }],
   ]);
   const result = await git.pullNow({ run, verify: async (sha) => ({ ok: sha === 'abc123' }), backup: async () => ({ ok: true }) });
   assert.equal(result.status, 'pulled');
   assert.match(result.message, /Pulled 3 commit\(s\) from origin\/main/);
-  assert.ok(calls.includes('merge --ff-only origin/main'));
+  assert.ok(calls.includes('merge --ff-only abc123'));
+  assert.ok(!calls.includes('merge --ff-only origin/main'));
 });
 
 test('pull holds a failing remote commit before taking a snapshot or merging', async () => {

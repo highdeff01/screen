@@ -94,6 +94,31 @@ test('verifying a commit tests that commit, not the uncommitted edits', async ()
   assert.equal(fs.existsSync(seenCwd), false, 'the verified worktree is cleaned up');
 });
 
+test('a running commit verification prevents another test suite from starting', async () => {
+  const head = git('rev-parse', 'HEAD');
+  let release;
+  let started;
+  const running = new Promise((resolve) => { started = resolve; });
+  const gate = new Promise((resolve) => { release = resolve; });
+  const first = sentinel.verifyCommit(head, {
+    run: async () => {
+      started();
+      await gate;
+      return { ok: true, output: '' };
+    },
+  });
+  await running;
+  try {
+    const second = await sentinel.verifyCommit(head);
+    assert.equal(second.deferred, true);
+    assert.equal(sentinel.sentinelBusy(), true);
+  } finally {
+    release();
+    await first;
+  }
+  assert.equal(sentinel.sentinelBusy(), false);
+});
+
 test('an unknown commit is reported, not guessed', async () => {
   const result = await sentinel.verifyCommit('deadbeef');
   assert.equal(result.ok, false);

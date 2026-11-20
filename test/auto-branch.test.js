@@ -59,8 +59,8 @@ function fakeGit({ head = HEAD, pushOk = true, dirty = ' M public/app.js' } = {}
   return { run, calls };
 }
 
-const mainPushes = (calls) => calls.filter((call) => call === 'push origin HEAD:refs/heads/main');
-const autoPushes = (calls) => calls.filter((call) => call === 'push origin HEAD:refs/heads/auto/main');
+const mainPushes = (calls) => calls.filter((call) => call === `push origin ${HEAD}:refs/heads/main`);
+const autoPushes = (calls) => calls.filter((call) => call === `push origin ${HEAD}:refs/heads/auto/main`);
 
 test('a failing commit is held before any remote branch is pushed', async () => {
   const git = fakeGit();
@@ -104,7 +104,7 @@ test('a passing verdict fast-forwards main', async () => {
   assert.equal(status.status, 'pushed');
   assert.equal(status.verifiedSha, HEAD);
   assert.equal(autoPushes(git.calls).length, 1);
-  assert.deepEqual(mainPushes(git.calls), ['push origin HEAD:refs/heads/main']);
+  assert.deepEqual(mainPushes(git.calls), [`push origin ${HEAD}:refs/heads/main`]);
   assert.equal(status.ahead, 0);
 });
 
@@ -155,7 +155,7 @@ test('a clean tree with unpushed commits is verified and promoted', async () => 
   assert.equal(status.status, 'pushed');
   assert.deepEqual(seen, [HEAD]);
   assert.equal(autoPushes(git.calls).length, 1);
-  assert.deepEqual(mainPushes(git.calls), ['push origin HEAD:refs/heads/main']);
+  assert.deepEqual(mainPushes(git.calls), [`push origin ${HEAD}:refs/heads/main`]);
 });
 
 test('a clean tree with failing commits holds main without re-running the suite', async () => {

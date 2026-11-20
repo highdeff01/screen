@@ -88,6 +88,19 @@ test('live requests are refused before reaching the API when the backend is unav
   assert.deepEqual(calls, ['Live desktop control is unavailable: No X11 display.']);
 });
 
+test('sync settings show opt-in incoming updates and execution warning', () => {
+  const source = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+  const start = source.indexOf('function sharingPanel()');
+  const end = source.indexOf('\nfunction settingsFields(', start);
+  const ui = { data: { gitSync: { enabled: false }, settings: { autoPull: false }, share: {} }, settingsDraft: null };
+  const context = { ui, esc: (value) => String(value), fmtTime: (value) => value };
+  const panel = vm.runInNewContext(`${source.slice(start, end)}\nsharingPanel();`, context);
+  assert.match(panel, /not a security sandbox/);
+  assert.match(panel, /auto-sync off/);
+  assert.match(panel, /data-key="autoPull"\s*\/>/);
+  assert.match(panel, /value="10000" selected/);
+});
+
 test('header renders and clears the relay review badge', () => {
   const source = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
   const header = source.slice(source.indexOf('function renderHeader()'), source.indexOf('/* ------------------------------------------------------------------ views */'));
