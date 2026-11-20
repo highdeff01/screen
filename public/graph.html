@@ -1,0 +1,328 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Sightline — 3D view</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; height: 100vh; overflow: hidden;
+    background: #080b10; color: #c8d3e0;
+    font: 13px/1.4 ui-sans-serif, system-ui, "Segoe UI", sans-serif;
+  }
+  canvas { display: block; width: 100vw; height: 100vh; cursor: grab; touch-action: none; }
+  canvas.dragging { cursor: grabbing; }
+  .hud {
+    position: fixed; top: 14px; left: 14px; max-width: 330px;
+    background: rgba(10, 14, 20, .82); border: 1px solid #1d2733; border-radius: 10px;
+    padding: 12px 14px; backdrop-filter: blur(6px);
+  }
+  .hud h1 { margin: 0 0 6px; font-size: 13px; letter-spacing: .08em; text-transform: uppercase; color: #7f93aa; }
+  .hud p { margin: 0 0 8px; color: #8d9cb0; font-size: 12px; }
+  .hud .row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  .hud button, .hud a {
+    font: inherit; font-size: 12px; color: #cfe0f2; text-decoration: none;
+    background: #121b25; border: 1px solid #243242; border-radius: 7px; padding: 4px 9px; cursor: pointer;
+  }
+  .hud button:hover, .hud a:hover { border-color: #3c5570; }
+  .legend { position: fixed; bottom: 14px; left: 14px; display: flex; gap: 14px; font-size: 12px; color: #8d9cb0; }
+  .legend i { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 5px; }
+  .status {
+    position: fixed; top: 14px; right: 14px; font-size: 12px; color: #6f8299;
+    background: rgba(10, 14, 20, .82); border: 1px solid #1d2733; border-radius: 9px; padding: 7px 11px;
+  }
+  .status.bad { color: #e2857f; border-color: #4a2624; }
+  .tip {
+    position: fixed; pointer-events: none; padding: 5px 8px; border-radius: 6px;
+    background: #0d141c; border: 1px solid #2a3a4c; color: #dbe7f3; font-size: 12px;
+    transform: translate(10px, 10px); display: none; white-space: nowrap; max-width: 340px;
+    overflow: hidden; text-overflow: ellipsis;
+  }
+</style>
+</head>
+<body>
+<canvas id="view"></canvas>
+<div class="hud">
+  <h1>Sightline 3D view</h1>
+  <p>Workflows, runs, environments, sources and bridges as one space. Depth is real: drag to turn it, scroll to move in, hover to read a label.</p>
+  <div class="row">
+    <button id="spin">Pause spin</button>
+    <button id="reset">Reset view</button>
+    <a href="./index.html">Console</a>
+  </div>
+</div>
+<div class="legend">
+  <span><i style="background:#5aa9e6"></i>workflow</span>
+  <span><i style="background:#63c69a"></i>run</span>
+  <span><i style="background:#d7b45a"></i>environment</span>
+  <span><i style="background:#b07fe0"></i>source</span>
+  <span><i style="background:#e08a7f"></i>bridge</span>
+</div>
+<div class="status" id="status">loading…</div>
+<div class="tip" id="tip"></div>
+
+<script type="module">
+// A small perspective renderer. No libraries: a node is a point in space, an
+// edge is a line between two points, and everything is sorted by depth before
+// it is drawn so a far node never paints over a near one.
+const canvas = document.getElementById('view');
+const ctx = canvas.getContext('2d');
+const statusEl = document.getElementById('status');
+const tipEl = document.getElementById('tip');
+
+const COLORS = {
+  workflow: '#5aa9e6',
+  run: '#63c69a',
+  environment: '#d7b45a',
+  source: '#b07fe0',
+  bridge: '#e08a7f',
+};
+
+const view = { yaw: -0.5, pitch: 0.36, distance: 900, spin: true, autoSpin: 0.0016 };
+let nodes = [];
+let edges = [];
+let hovered = null;
+let drag = null;
+
+function resize() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  canvas.width = Math.floor(window.innerWidth * dpr);
+  canvas.height = Math.floor(window.innerHeight * dpr);
+}
+window.addEventListener('resize', resize);
+resize();
+
+// Everything is laid out on a ring per kind, then the whole ring is lifted so
+// kinds occupy distinct planes. Positions are stable across refreshes because
+// they are seeded from the id, not from insertion order.
+function hashOf(text) {
+  let hash = 2166136261;
+  for (let i = 0; i < text.length; i += 1) {
+    hash ^= text.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0) / 4294967295;
+}
+
+const PLANES = { workflow: -220, run: -60, environment: 90, source: 220, bridge: 340 };
+
+function place(kind, id, index, count) {
+  const angle = (index / Math.max(1, count)) * Math.PI * 2 + hashOf(`${kind}:${id}`) * 0.9;
+  const radius = 260 + hashOf(`r:${id}`) * 190;
+  return {
+    x: Math.cos(angle) * radius,
+    y: Math.sin(angle) * radius * 0.72,
+    z: (PLANES[kind] ?? 0) + (hashOf(`z:${id}`) - 0.5) * 90,
+  };
+}
+
+function project(point) {
+  const cy = Math.cos(view.yaw), sy = Math.sin(view.yaw);
+  const cp = Math.cos(view.pitch), sp = Math.sin(view.pitch);
+  const rx = point.x * cy - point.z * sy;
+  const rz = point.x * sy + point.z * cy;
+  const ry = point.y * cp - rz * sp;
+  const depth = point.y * sp + rz * cp;
+  const scale = view.distance / Math.max(1, view.distance + depth * 0.9);
+  return {
+    x: window.innerWidth / 2 + rx * scale,
+    y: window.innerHeight / 2 + ry * scale,
+    depth,
+    scale,
+  };
+}
+
+function build(state) {
+  const next = [];
+  const nextEdges = [];
+  const seen = new Set();
+  const add = (kind, id, label, extra = {}) => {
+    const key = `${kind}:${id}`;
+    if (seen.has(key)) return key;
+    seen.add(key);
+    next.push({ key, kind, id, label, ...extra });
+    return key;
+  };
+
+  const workflows = Array.isArray(state.workflows) ? state.workflows : [];
+  workflows.forEach((workflow) => add('workflow', workflow.id || workflow.name, workflow.name || workflow.id || 'workflow'));
+
+  const runs = Array.isArray(state.runs) ? state.runs : [];
+  runs.slice(0, 40).forEach((run) => {
+    const label = `${run.workflowName || run.workflow || run.name || 'run'}${run.status ? ` · ${run.status}` : ''}`;
+    const key = add('run', run.id, label, { detail: run.status || '' });
+    const parent = run.workflowId ? `workflow:${run.workflowId}` : null;
+    if (parent && seen.has(parent)) nextEdges.push([parent, key]);
+  });
+
+  const envs = Array.isArray(state.envs?.envs) ? state.envs.envs : [];
+  envs.forEach((env) => add('environment', env.id, env.name, { detail: (env.allowHosts || []).join(', ') }));
+
+  const sources = Array.isArray(state.live?.list) ? state.live.list : [];
+  sources.forEach((source) => add('source', source.id, source.name, { detail: source.url }));
+
+  const bridges = Array.isArray(state.bridge?.list) ? state.bridge.list : [];
+  bridges.forEach((bridge) => add('bridge', bridge.id, bridge.name, { detail: `${bridge.bytes} bytes` }));
+
+  // Sources and bridges belong to the environment they were opened from when the
+  // state says so; otherwise they hang off a workflow, which keeps the space
+  // connected rather than five floating rings.
+  const anchor = next.find((node) => node.kind === 'workflow');
+  if (anchor) {
+    for (const node of next) {
+      if (node.kind === 'source' || node.kind === 'bridge') nextEdges.push([anchor.key, node.key]);
+      if (node.kind === 'environment') nextEdges.push([anchor.key, node.key]);
+    }
+  }
+
+  const counts = {};
+  for (const node of next) counts[node.kind] = (counts[node.kind] || 0) + 1;
+  const index = {};
+  for (const node of next) {
+    index[node.kind] = index[node.kind] || 0;
+    const point = place(node.kind, node.id, index[node.kind], counts[node.kind]);
+    node.x = point.x;
+    node.y = point.y;
+    node.z = point.z;
+    index[node.kind] += 1;
+  }
+  nodes = next;
+  edges = nextEdges;
+  statusEl.textContent = `${nodes.length} node${nodes.length === 1 ? '' : 's'} · ${edges.length} link${edges.length === 1 ? '' : 's'}`;
+  statusEl.classList.remove('bad');
+}
+
+function draw() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, window.innerWidth, window.innerHeight);
+
+  const projected = new Map();
+  for (const node of nodes) projected.set(node.key, project(node));
+
+  // Edges first, dimmer the further away, so they read as structure and not noise.
+  ctx.lineWidth = 1;
+  for (const [from, to] of edges) {
+    const a = projected.get(from);
+    const b = projected.get(to);
+    if (!a || !b) continue;
+    const fade = Math.max(0.05, Math.min(0.5, 1 - (a.depth + b.depth) / 1600));
+    ctx.strokeStyle = `rgba(120, 156, 196, ${fade})`;
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y);
+    ctx.lineTo(b.x, b.y);
+    ctx.stroke();
+  }
+
+  const ordered = [...nodes].sort((left, right) => projected.get(right.key).depth - projected.get(left.key).depth);
+  for (const node of ordered) {
+    const at = projected.get(node.key);
+    const isHover = hovered === node;
+    const radius = Math.max(2.5, 9 * at.scale) * (isHover ? 1.55 : 1);
+    if (isHover) {
+      // A bounding box around the picked node makes "which one am I pointing at"
+      // unambiguous even when two nodes overlap.
+      const pad = radius + 8;
+      ctx.strokeStyle = 'rgba(220, 236, 250, .55)';
+      ctx.setLineDash([4, 4]);
+      ctx.strokeRect(at.x - pad, at.y - pad, pad * 2, pad * 2);
+      ctx.setLineDash([]);
+    }
+    ctx.beginPath();
+    ctx.fillStyle = COLORS[node.kind] || '#9aa7b6';
+    ctx.globalAlpha = Math.max(0.35, Math.min(1, 1.35 - at.depth / 900));
+    ctx.arc(at.x, at.y, radius, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.globalAlpha = 1;
+    if (radius > 4.5) {
+      ctx.fillStyle = isHover ? '#eef5fb' : 'rgba(219, 231, 243, .82)';
+      ctx.font = '12px ui-sans-serif, system-ui, sans-serif';
+      ctx.fillText(node.label.slice(0, 34), at.x + radius + 5, at.y + 4);
+    }
+  }
+}
+
+function hitTest(mx, my) {
+  let best = null;
+  let bestDepth = Infinity;
+  for (const node of nodes) {
+    const at = project(node);
+    const radius = Math.max(6, 11 * at.scale);
+    if ((mx - at.x) ** 2 + (my - at.y) ** 2 <= radius * radius && at.depth < bestDepth) {
+      best = node;
+      bestDepth = at.depth;
+    }
+  }
+  return best;
+}
+
+let lastFrame = performance.now();
+function frame(now) {
+  const elapsed = Math.min(64, now - lastFrame);
+  lastFrame = now;
+  if (view.spin && !drag) view.yaw += view.autoSpin * elapsed;
+  draw();
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+canvas.addEventListener('pointerdown', (event) => {
+  drag = { x: event.clientX, y: event.clientY };
+  canvas.classList.add('dragging');
+  canvas.setPointerCapture(event.pointerId);
+});
+canvas.addEventListener('pointermove', (event) => {
+  if (drag) {
+    view.yaw += (event.clientX - drag.x) * 0.006;
+    view.pitch = Math.max(-1.35, Math.min(1.35, view.pitch + (event.clientY - drag.y) * 0.005));
+    drag = { x: event.clientX, y: event.clientY };
+    tipEl.style.display = 'none';
+    return;
+  }
+  hovered = hitTest(event.clientX, event.clientY);
+  if (hovered) {
+    tipEl.textContent = hovered.detail ? `${hovered.label} — ${hovered.detail}` : hovered.label;
+    tipEl.style.display = 'block';
+    tipEl.style.left = `${event.clientX}px`;
+    tipEl.style.top = `${event.clientY}px`;
+  } else {
+    tipEl.style.display = 'none';
+  }
+});
+canvas.addEventListener('pointerup', () => {
+  drag = null;
+  canvas.classList.remove('dragging');
+});
+canvas.addEventListener('wheel', (event) => {
+  event.preventDefault();
+  view.distance = Math.max(320, Math.min(2400, view.distance + event.deltaY * 0.8));
+}, { passive: false });
+
+document.getElementById('spin').addEventListener('click', (event) => {
+  view.spin = !view.spin;
+  event.currentTarget.textContent = view.spin ? 'Pause spin' : 'Resume spin';
+});
+document.getElementById('reset').addEventListener('click', () => {
+  view.yaw = -0.5;
+  view.pitch = 0.36;
+  view.distance = 900;
+});
+
+async function refresh() {
+  try {
+    const res = await fetch('/api/state', { headers: { accept: 'application/json' } });
+    if (!res.ok) throw new Error(`the console answered ${res.status}`);
+    build(await res.json());
+  } catch (err) {
+    statusEl.textContent = `Not connected: ${err.message}`;
+    statusEl.classList.add('bad');
+  }
+}
+
+await refresh();
+setInterval(refresh, 10000);
+</script>
+</body>
+</html>

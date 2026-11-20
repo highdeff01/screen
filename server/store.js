@@ -57,6 +57,8 @@ function seed() {
       localBackupEnabled: false,
       localBackupPath: '',
       localBackupIntervalMs: 10000,
+      // How often watched pages are re-read when a source does not set its own.
+      liveSourceIntervalMs: 60000,
       visionEnabled: true,
       // Screen checks are read by two judges: the vision model on a crop of the
       // run's own window, and a free deterministic check of that window's
