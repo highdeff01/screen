@@ -15,7 +15,7 @@ async function startServer(t, available) {
   const bin = path.join(cwd, 'bin');
   fs.mkdirSync(bin);
   fs.mkdirSync(path.join(cwd, 'data'));
-  if (available) {
+  if (available && process.platform !== 'win32') {
     // A fake adb makes backend detection deterministic without controlling a device.
     fs.writeFileSync(path.join(bin, 'adb'), '#!/bin/sh\nprintf "List of devices attached\\ntest-device\\tdevice\\n"\n', { mode: 0o755 });
   }
@@ -37,9 +37,17 @@ async function startServer(t, available) {
   const { port } = socket.address();
   await new Promise((resolve) => socket.close(resolve));
   const base = `http://127.0.0.1:${port}`;
+  const env = { ...process.env, HOST: '127.0.0.1', PORT: String(port) };
+  if (available && process.platform === 'win32') {
+    delete env.SIGHTLINE_TARGET;
+  } else {
+    env.PATH = bin;
+    env.SIGHTLINE_TARGET = 'android';
+    env.ANDROID_SERIAL = '';
+  }
   let output = '';
   const child = spawn(process.execPath, [serverPath], {
-    cwd, env: { ...process.env, HOST: '127.0.0.1', PORT: String(port), PATH: bin, SIGHTLINE_TARGET: 'android', ANDROID_SERIAL: '' },
+    cwd, env,
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   child.stdout.on('data', (chunk) => { output += chunk; });
@@ -124,7 +132,7 @@ test('unavailable backend falls back for every resolved live mode before queuing
   assert.equal((await state()).actionLog.items.find((item) => item.id === action.id).count, 4);
 });
 
-test('available backend permits both saved and explicit live modes', { timeout: 30000, skip: process.platform === 'win32' }, async (t) => {
+test('available backend permits both saved and explicit live modes', { timeout: 30000 }, async (t) => {
   const base = await startServer(t, true);
   const run = (body) => request(base, '/api/workflows/wf_mode/runs', 'POST', body);
   for (const body of [{}, { mode: '' }, { mode: 'live' }]) {

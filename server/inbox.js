@@ -90,19 +90,24 @@ export function waitRequest(id, { timeoutMs = 30000 } = {}) {
   const budget = Math.max(1000, Math.min(120000, Number(timeoutMs) || 30000));
   return new Promise((resolve) => {
     const started = Date.now();
-    const timer = setInterval(() => {
+    let timer = null;
+    let settled = false;
+    const finish = (result) => {
+      settled = true;
+      if (timer) clearInterval(timer);
+      resolve(result);
+    };
+    const check = () => {
       let item;
       try {
         item = findRequest(id);
       } catch {
-        clearInterval(timer);
-        return resolve({ ok: false, status: 'not-found' });
+        finish({ ok: false, status: 'not-found' });
+        return;
       }
-      if (!open(item) || Date.now() - started > budget) {
-        clearInterval(timer);
-        resolve({ ok: true, item });
-      }
-    }, 500);
-    if (timer.unref) timer.unref();
+      if (!open(item) || Date.now() - started > budget) finish({ ok: true, item });
+    };
+    check();
+    if (!settled) timer = setInterval(check, 500);
   });
 }

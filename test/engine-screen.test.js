@@ -55,6 +55,11 @@ function probe({ focused, textFound = false, output = 'done' }) {
   };
 }
 
+test('run summaries retain why requested live control fell back', () => {
+  const run = { id: 'run_fallback', status: 'needs_review', dryRun: true, liveFallback: 'No X11 display.', steps: [], evidence: [] };
+  assert.equal(engine.summary(run).liveFallback, 'No X11 display.');
+});
+
 test('an unguarded type step with no window named is skipped, never typed anywhere', async () => {
   const d = resetDb();
   const workflow = {
