@@ -7,9 +7,9 @@ import { pathToFileURL } from 'node:url';
 const root = process.cwd();
 const tempRoot = fs.mkdtempSync(path.join(root, 'test', 'tmp-live-fallback-'));
 process.chdir(tempRoot);
-// Force the live backend unavailable (as a hosted preview or headless host is)
-// without stubbing: no adb device is attached, so android targeting refuses.
+// Force Android targeting with an empty PATH so no attached device can change the fallback path.
 process.env.SIGHTLINE_TARGET = 'android';
+process.env.PATH = tempRoot;
 const load = (name) => import(pathToFileURL(path.join(root, name)).href);
 const store = await load('server/store.js');
 const engine = await load('server/engine.js');
@@ -60,6 +60,7 @@ test('detection refuses and the real probe confirms: the run continues simulated
   const finished = await engine.waitForRun(run.id, { timeoutMs: 20000, intervalMs: 20 });
   assert.equal(finished.status, 'passed', `run finished ${finished.status}: ${(finished.steps?.[0] || {}).error || ''}`);
   assert.equal(finished.dryRun, true, 'the run continues as simulation');
+  assert.ok(String(finished.liveFallback || '').trim(), 'the backend refusal is recorded');
   assert.match(String(finished.liveFallback || ''), /not supported|not implemented|unavailable|probe/i);
   assert.equal(finished.steps[0].status, 'passed');
   assert.ok(

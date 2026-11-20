@@ -1654,11 +1654,58 @@ Before choosing steps, consider that part of the goal may already be in progress
 The research pack may include failed attempts, screenshots and conversation corrections from this workstation. Treat failed attempts as negative evidence: do not replay their order, their wrong target app or their failure signature unchanged. Treat passed attempts as positive evidence, but replace old typed questions and filenames with the current goal. If a screenshot marker shows a control, use a visible-control action rather than a guessed coordinate.
 Prior workflow memory is evidence from this workstation, not a script to copy blindly. Reuse validated step sequences and control labels when the app and goal match. If a remembered step had no visible screen change, add an explicit wait/assertion or choose a more reliable visible control. If memory reports stale clipboard, focus loss or old tab labels, add clipboard clearing, foreground guards and active-message scoping instead of guessing. Never treat a tab label or filename as proof that an app state is current.`;
 
+function variableReads(step) {
+  const params = step.params || {};
+  const reads = [];
+  const add = (field) => {
+    const name = String(params[field] || '').trim();
+    if (name) reads.push(name);
+  };
+  if (step.type === 'launchApp') {
+    add('targetVar');
+    add('argsVar');
+  } else if (step.type === 'openUrl' && !params.url) add('urlVar');
+  else if (step.type === 'type') add('textVar');
+  else if (step.type === 'writeNote' || step.type === 'writeTextFile') add('textVar');
+  else if (step.type === 'clipboard' && ['write', 'paste'].includes(String(params.action || 'copy').toLowerCase())) add('textVar');
+  else if (step.type === 'aiExtract' && params.source === 'text') add('textVar');
+  else if (step.type === 'watchVideo') add('textVar');
+  else if (step.type === 'copyLink' && !params.url) add('urlVar');
+  else if (step.type === 'downloadMedia' && !params.url) add('urlVar');
+  else if (step.type === 'saveImage' && params.source === 'url' && !params.url) add('urlVar');
+  return [...new Set(reads)];
+}
+
+function variableWrites(step) {
+  const params = step.params || {};
+  const writes = [];
+  const add = (fallback) => {
+    const name = String(params.outputVar ?? fallback ?? '').trim();
+    if (name) writes.push(name);
+  };
+  if (step.type === 'clipboard' && ['copy', 'copyall', 'cut', 'read', 'write', 'clear'].includes(String(params.action || 'copy').toLowerCase())) add('clipboardText');
+  else if (step.type === 'aiExtract') add('extractedText');
+  else if (step.type === 'dragCopy') add('selectedText');
+  else if (step.type === 'writeNote') {
+    add('noteId');
+    writes.push('notePath');
+  } else if (step.type === 'writeTextFile') add('savedTextFile');
+  else if (step.type === 'readNote') add('noteText');
+  else if (step.type === 'copyLink') add('copiedLink');
+  else if (step.type === 'downloadMedia') add('savedFile');
+  else if (step.type === 'saveImage') add('savedImage');
+  else if (step.type === 'recordVideo') add('savedVideo');
+  else if (step.type === 'watchVideo') add('videoNotesId');
+  else if (step.type === 'installApp') writes.push('installedApp', 'installDecision', 'installedPackage', 'installedVersion', 'uninstallCommand', 'installReason');
+  return [...new Set(writes)];
+}
+
 export function lintWorkflow(workflow) {
   const steps = Array.isArray(workflow?.steps) ? workflow.steps : [];
   const goal = `${workflow?.name || ''} ${workflow?.description || ''}`.trim();
   const issues = planIssues(steps, goal).map((code) => ({ code, severity: 'error', scope: 'plan' }));
   const seen = new Map();
+  const variableProducers = new Map();
   for (const [index, step] of steps.entries()) {
     const signature = `${step.type}|${JSON.stringify(step.params || {})}`;
     if (seen.has(signature)) {
@@ -1673,7 +1720,56 @@ export function lintWorkflow(workflow) {
     } else {
       seen.set(signature, index);
     }
-    if (step.type === 'key' && !String(step.params?.foreground || '').trim()) {
+    const params = step.params || {};
+    let missing = '';
+    if (step.type === 'launchApp' && !String(params.target || '').trim()) missing = 'an app or document target';
+    else if (step.type === 'openUrl' && !String(params.url || params.urlVar || '').trim()) missing = 'a URL or URL variable';
+    else if (step.type === 'focusWindow' && !String(params.title || params.process || '').trim()) missing = 'a window title or process';
+    else if (step.type === 'windowAction' && !String(params.title || params.process || '').trim()) missing = 'a window title or process';
+    else if (['move', 'click', 'doubleClick', 'rightClick'].includes(step.type) && (params.x == null || params.y == null)) missing = 'both X and Y coordinates';
+    else if (step.type === 'drag' && ['x1', 'y1', 'x2', 'y2'].some((key) => params[key] == null)) missing = 'start and end coordinates';
+    else if (step.type === 'dragCopy') {
+      const hasCoordinates = ['x1', 'y1', 'x2', 'y2'].every((key) => Number(params[key]) > 0);
+      if (!hasCoordinates && !String(params.text || params.name || '').trim()) missing = 'selection text or start and end coordinates';
+    } else if (step.type === 'clickElement' && !String(params.name || '').trim()) missing = 'an element name';
+    else if (step.type === 'type' && !String(params.text || params.textVar || '').trim()) missing = 'text or a text variable';
+    else if (step.type === 'key' && !String(params.keys || '').trim()) missing = 'a key or shortcut';
+    else if (step.type === 'runTool' && !String(params.toolId || '').trim()) missing = 'a tool';
+    else if (step.type === 'downloadMedia' && !String(params.url || params.urlVar || '').trim()) missing = 'a file URL or URL variable';
+    else if (step.type === 'note' && !String(params.text || '').trim()) missing = 'note text';
+    if (missing) {
+      issues.push({
+        code: 'incomplete step configuration',
+        severity: 'warning',
+        scope: 'step',
+        stepId: step.id || null,
+        stepNumber: index + 1,
+        message: `Step ${index + 1} needs ${missing}.`,
+      });
+    }
+    for (const variable of variableReads(step)) {
+      const prior = variableProducers.get(variable) || [];
+      const futureIndex = steps.findIndex((candidate, candidateIndex) => candidateIndex > index && variableWrites(candidate).includes(variable));
+      let message = '';
+      if (!prior.length) {
+        message = futureIndex >= 0
+          ? `Step ${index + 1} reads “${variable}” before step ${futureIndex + 1} produces it.`
+          : `Step ${index + 1} reads “${variable}”, but no step produces it.`;
+      } else if (!prior.some((producer) => !producer.conditional)) {
+        message = `Step ${index + 1} reads “${variable}”, but its earlier producer may be skipped.`;
+      }
+      if (message) {
+        issues.push({
+          code: 'unresolved variable handoff',
+          severity: 'warning',
+          scope: 'step',
+          stepId: step.id || null,
+          stepNumber: index + 1,
+          message,
+        });
+      }
+    }
+    if (step.type === 'key' && !String(params.foreground || '').trim()) {
       issues.push({
         code: 'key step has no foreground guard',
         severity: 'warning',
@@ -1682,6 +1778,11 @@ export function lintWorkflow(workflow) {
         stepNumber: index + 1,
         message: `Step ${index + 1} can send keys to whichever window happens to be focused.`,
       });
+    }
+    for (const variable of variableWrites(step)) {
+      if (!variableProducers.has(variable)) variableProducers.set(variable, []);
+      const conditionalInstallOutput = step.type === 'installApp' && !['installedApp', 'installDecision'].includes(variable);
+      variableProducers.get(variable).push({ conditional: Boolean(step.optional || step.condition || conditionalInstallOutput) });
     }
   }
   if (steps.filter((step) => step.type === 'wait').length > 4) {

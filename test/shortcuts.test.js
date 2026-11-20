@@ -281,6 +281,55 @@ test('workflow lint catches new-chat, duplicate, and unguarded key steps', () =>
   assert.ok(codes.includes('key step has no foreground guard'));
 });
 
+test('workflow lint warns when runnable steps are missing required configuration', () => {
+  const result = planner.lintWorkflow({
+    name: 'Configure workflow',
+    steps: [
+      { id: 'launch', type: 'launchApp', params: {} },
+      { id: 'drag-copy', type: 'dragCopy', params: {} },
+      { id: 'ready', type: 'windowAction', params: { title: 'Notepad', action: 'restore' } },
+    ],
+  });
+  const incomplete = result.issues.filter((issue) => issue.code === 'incomplete step configuration');
+  assert.equal(incomplete.length, 2);
+  assert.deepEqual(incomplete.map((issue) => issue.stepId), ['launch', 'drag-copy']);
+  assert.ok(incomplete.every((issue) => issue.severity === 'warning'));
+  assert.equal(result.errors, 1, 'existing workflow plan checks remain errors');
+});
+
+test('workflow lint catches missing, forward, and conditional variable handoffs', () => {
+  const result = planner.lintWorkflow({
+    name: 'Variable flow',
+    steps: [
+      { id: 'read-forward', type: 'type', params: { textVar: 'futureText' } },
+      { id: 'future-source', type: 'clipboard', params: { action: 'read', outputVar: 'futureText' } },
+      { id: 'missing-source', type: 'openUrl', params: { urlVar: 'missingUrl' } },
+      { id: 'optional-source', type: 'clipboard', params: { action: 'read', outputVar: 'maybeText' }, optional: true },
+      { id: 'conditional-read', type: 'writeTextFile', params: { path: 'answer.txt', textVar: 'maybeText' } },
+    ],
+  });
+  const handoffs = result.issues.filter((issue) => issue.code === 'unresolved variable handoff');
+  assert.deepEqual(handoffs.map((issue) => issue.stepId), ['read-forward', 'missing-source', 'conditional-read']);
+  assert.match(handoffs[0].message, /before step 2 produces it/);
+  assert.match(handoffs[1].message, /no step produces it/);
+  assert.match(handoffs[2].message, /producer may be skipped/);
+  assert.ok(handoffs.every((issue) => issue.severity === 'warning'));
+});
+
+test('workflow lint accepts a producer before its variable consumer', () => {
+  const result = planner.lintWorkflow({
+    name: 'Valid variable flow',
+    steps: [
+      { id: 'extract', type: 'aiExtract', params: { source: 'clipboard', outputVar: 'answer' } },
+      { id: 'write', type: 'writeTextFile', params: { path: 'answer.txt', textVar: 'answer' } },
+      ...Array.from({ length: 4 }, (_, index) => ({ type: 'wait', name: `Wait ${index}`, params: { ms: index + 100 } })),
+      { id: 'read-default', type: 'clipboard', params: { action: 'read' } },
+      { id: 'type-default', type: 'type', params: { textVar: 'clipboardText' } },
+    ],
+  });
+  assert.equal(result.issues.some((issue) => issue.code === 'unresolved variable handoff'), false);
+});
+
 test('planner flags missing and unrequested new-chat conditions', () => {
   const steps = Array.from({ length: 6 }, (_, index) => ({ type: 'wait', name: `Wait ${index}`, params: { ms: 500 } }));
   const conditional = steps.map((step, index) => (index === 0 ? { ...step, condition: 'newChat' } : step));
