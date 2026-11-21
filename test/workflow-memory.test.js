@@ -91,6 +91,7 @@ test('similar goals recall the prior sequence and its hindrances', () => {
     workflow,
     app: { name: 'Kiro' },
     limit: 3,
+    nowMs: Date.parse(run.endedAt),
   });
   assert.equal(recalled.length, 1);
   assert.ok(recalled[0].score >= 0.8);
