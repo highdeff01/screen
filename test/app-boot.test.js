@@ -61,8 +61,8 @@ test('unavailable desktop control is not presented as live mode', () => {
   };
   const ui = {
     data: {
-      settings: { dryRun: false },
-      platform: { backend: 'linux', label: 'Linux', available: false, reason: 'Linux needs X11 and xdotool.' },
+      settings: { dryRun: false, targetPlatform: 'win32' },
+      platform: { backend: 'linux', platform: 'linux', label: 'Linux', available: false, reason: 'Linux needs X11 and xdotool.' },
       counts: {},
     },
   };
@@ -70,11 +70,41 @@ test('unavailable desktop control is not presented as live mode', () => {
   vm.runInNewContext(`${header}\nrenderHeader();`, context);
   assert.equal(element('#mode-label').textContent, 'Live unavailable');
   assert.match(element('#mode-pill').title, /Linux needs X11 and xdotool/);
-  assert.equal(element('#platform-tag').textContent, 'linux · simulated only');
+  assert.match(element('#mode-pill').title, /does not connect another computer/);
+  assert.equal(element('#target-os-select').value, 'win32');
+  assert.equal(element('#platform-tag').textContent, 'Windows 11 plan · executor offline');
   ui.data.settings.dryRun = true;
   vm.runInNewContext(`${header}\nrenderHeader();`, context);
   assert.equal(element('#mode-label').textContent, 'Simulated');
   assert.equal(element('#mode-pill').disabled, true);
+});
+
+test('planning target selection persists without changing executor availability', async () => {
+  const app = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+  const html = fs.readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+  assert.match(html, /id="target-os-select"/);
+  assert.match(html, /value="win32">Plan for Windows 11/);
+  const start = app.indexOf("document.addEventListener('change'");
+  const end = app.indexOf("document.addEventListener('input'", start);
+  const handlers = {};
+  const calls = [];
+  const ui = { data: { platform: { backend: 'linux', available: false }, settings: { targetPlatform: 'win32' } } };
+  const context = {
+    ui,
+    document: { addEventListener: (type, handler) => { handlers[type] = handler; } },
+    api: async (url, options) => { calls.push({ url, options }); return { ok: true }; },
+    toast: (message) => calls.push(message),
+    refresh: async () => calls.push('refresh'),
+  };
+  vm.runInNewContext(app.slice(start, end), context);
+  const select = { dataset: { scope: 'target-os' }, value: 'linux', disabled: false };
+  handlers.change({ target: select });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(calls[0].url, '/api/settings');
+  assert.equal(calls[0].options.body.targetPlatform, 'linux');
+  assert.equal(ui.data.platform.backend, 'linux');
+  assert.equal(ui.data.settings.targetPlatform, 'linux');
+  assert.equal(calls.at(-1), 'refresh');
 });
 
 test('live requests are refused before reaching the API when the backend is unavailable', async () => {

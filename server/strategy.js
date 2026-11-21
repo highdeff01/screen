@@ -161,7 +161,10 @@ export function strategyBrief({
   platform = process.platform,
 } = {}) {
   const phases = goalPhases(goal);
-  const resolved = app || goalApp(goal, platform);
+  const candidate = app || goalApp(goal, platform);
+  const resolved = platform === 'win32' || !candidate
+    ? candidate
+    : { ...candidate, process: '', wingetId: '', exe: '', target: candidate.name };
   const wantsInstall = phases.some((phase) => phase.key === 'install');
   const methods = wantsInstall ? installMethodIdeas(resolved, goal, platform).slice(0, limitMethods) : [];
   const continuations = continuationIdeas({ goal, phases });

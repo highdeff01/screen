@@ -42,6 +42,9 @@ function seed() {
       chatPath: '/api/chat',
       endpoint: 'https://quantumclaw.net/ollama/api/chat',
       model: 'qwen3.5:2b',
+      targetPlatform: ['win32', 'linux', 'darwin', 'android'].includes(process.env.SIGHTLINE_TARGET_PLATFORM)
+        ? process.env.SIGHTLINE_TARGET_PLATFORM
+        : 'win32',
       dryRun: true,
       autoNotes: true,
       aiSuggestions: true,

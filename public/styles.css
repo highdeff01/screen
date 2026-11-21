@@ -90,7 +90,8 @@ a:hover { text-decoration: underline; }
 .mode-pill.live { border-color: rgba(251, 191, 36, 0.45); color: #ffe6a8; background: rgba(251, 191, 36, 0.09); }
 .mode-pill .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
 .mode-pill.live .dot { background: var(--warn); box-shadow: 0 0 0 4px rgba(251, 191, 36, 0.16); }
-.platform-tag { font-family: var(--mono); font-size: 11px; }
+.platform-tag { font-family: var(--mono); font-size: 11px; white-space: nowrap; }
+.target-os-select { max-width: 154px; background: var(--panel-2); border: 1px solid var(--line); border-radius: 999px; padding: 6px 10px; font-size: 11px; color: var(--text); }
 .ai-status .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--dim); }
 .ai-status.ok .dot { background: var(--ok); box-shadow: 0 0 0 3px rgba(74, 222, 128, 0.15); }
 .ai-status.off .dot { background: var(--bad); }

@@ -3651,6 +3651,13 @@ route('PATCH', /^\/api\/settings$/, async (req, res) => {
     } catch {}
   }
   if (body.model !== undefined) s.model = String(body.model).trim();
+  if (body.targetPlatform !== undefined) {
+    const targetPlatform = String(body.targetPlatform);
+    if (!['win32', 'linux', 'darwin', 'android'].includes(targetPlatform)) {
+      return fail(res, 400, 'targetPlatform must be win32, linux, darwin or android');
+    }
+    s.targetPlatform = targetPlatform;
+  }
   if (body.apiStyle !== undefined) s.apiStyle = body.apiStyle === 'openai' ? 'openai' : 'ollama';
   if (body.gatewayEnabled !== undefined) s.gatewayEnabled = Boolean(body.gatewayEnabled);
   if (body.gatewayPort !== undefined) {

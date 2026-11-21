@@ -719,6 +719,10 @@ function renderHeader() {
   const s = ui.data?.settings;
   const platform = ui.data?.platform || {};
   const available = Boolean(platform.available);
+  const targetSelect = $('#target-os-select');
+  const targetPlatform = s?.targetPlatform || 'win32';
+  const targetLabels = { win32: 'Windows 11', linux: 'Linux/X11', darwin: 'macOS', android: 'Android' };
+  if (targetSelect) targetSelect.value = targetPlatform;
   const pill = $('#mode-pill');
   const label = $('#mode-label');
   if (s && pill) {
@@ -728,7 +732,7 @@ function renderHeader() {
     pill.disabled = !available && Boolean(s.dryRun);
     label.textContent = live ? 'Live control' : unavailable ? 'Live unavailable' : 'Simulated';
     pill.title = !available
-      ? `${platform.reason || 'No live desktop backend is available.'}${s.dryRun ? '' : ' Click to switch to simulated mode.'}`
+      ? `Live mode requires a desktop executor with a working backend. This console is running on ${platform.label || platform.platform || 'an unknown platform'}: ${platform.reason || 'no live desktop backend is available.'} The AI planning target does not connect another computer.${s.dryRun ? '' : ' Click to switch to simulated mode.'}`
       : live
         ? 'Live: runs move the real mouse and type on this desktop. Click to switch to simulated.'
         : 'Simulated: steps are validated without touching the desktop. Click to enable live control.';
@@ -740,19 +744,20 @@ function renderHeader() {
     $('#ai-label').textContent = ui.health
       ? ui.health.online
         ? `${ui.health.model}${ui.health.modelPresent === false ? ' (not listed)' : ''}`
-        : `AI offline — ${ui.health.error || 'unreachable'}`
+        : 'AI offline'
       : 'checking AI…';
     ai.title = ui.health?.online
       ? `Connected to ${ui.data?.settings.endpoint}. Local planner is used when the model is unreachable.`
-      : `Cannot reach ${ui.data?.settings.endpoint || 'the AI endpoint'}. Build and run still work with the local planner.`;
+      : `Cannot reach ${ui.data?.settings.endpoint || 'the AI endpoint'}: ${ui.health?.error || 'unreachable'}. Build and run still work with the local planner.`;
   }
   const plat = $('#platform-tag');
   if (plat && ui.data) {
-    const label = String(platform.label || platform.platform || 'desktop').toLowerCase();
-    plat.textContent = platform.available ? `${label} · live` : `${label} · simulated only`;
+    const label = String(platform.label || platform.platform || 'desktop');
+    const target = targetLabels[targetPlatform] || 'Windows 11';
+    plat.textContent = `${target} plan · ${platform.available ? `${label} live` : 'executor offline'}`;
     plat.title = platform.available
-      ? `${platform.input || 'input'} · capture: ${platform.capture || 'unknown'}`
-      : String(platform.reason || 'no live backend');
+      ? `AI plans for ${target}; live input runs on this ${label} executor using ${platform.input || 'input'} and ${platform.capture || 'unknown'} capture.`
+      : `AI plans for ${target}, but actions execute on this ${label} machine and remain simulated: ${platform.reason || 'no live backend'}. Selecting another target OS does not attach a remote desktop.`;
   }
   const counts = ui.data?.counts;
   $('#badge-suggestions').textContent = counts?.suggestions ? String(counts.suggestions) : '';
@@ -9710,6 +9715,21 @@ document.addEventListener('change', (event) => {
   const key = el.dataset.key;
   const value = el.type === 'checkbox' ? el.checked : el.value;
 
+  if (scope === 'target-os') {
+    el.disabled = true;
+    api('/api/settings', { method: 'PATCH', body: { targetPlatform: value } }).then(async (res) => {
+      el.disabled = false;
+      if (!res.ok) {
+        el.value = ui.data?.settings?.targetPlatform || 'win32';
+        toast(res.error || 'Could not update planning OS', 'error');
+        return;
+      }
+      if (ui.data?.settings) ui.data.settings.targetPlatform = value;
+      toast(`AI planning target set to ${{ win32: 'Windows 11', linux: 'Linux/X11', darwin: 'macOS', android: 'Android' }[value] || 'Windows 11'}`, 'ok');
+      await refresh();
+    });
+    return;
+  }
   if (scope === 'review-sort') {
     ui.reviewSort = value;
     const runId = el.dataset.id;
