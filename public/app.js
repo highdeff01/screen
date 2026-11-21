@@ -719,19 +719,22 @@ function renderHeader() {
   const s = ui.data?.settings;
   const platform = ui.data?.platform || {};
   const available = Boolean(platform.available);
+  const targetSelect = $('#target-os-select');
+  const targetPlatform = s?.targetPlatform || 'win32';
+  const targetLabels = { win32: 'Windows 11', linux: 'Linux/X11', darwin: 'macOS', android: 'Android' };
+  if (targetSelect) targetSelect.value = targetPlatform;
   const pill = $('#mode-pill');
   const label = $('#mode-label');
   if (s && pill) {
     const live = !s.dryRun && available;
-    const unavailable = !s.dryRun && !available;
     pill.classList.toggle('live', live);
-    pill.disabled = !available && Boolean(s.dryRun);
-    label.textContent = live ? 'Live control' : unavailable ? 'Live unavailable' : 'Simulated';
+    pill.disabled = false;
+    label.textContent = live ? 'Live control' : !available ? 'Simulated · check live' : 'Simulated';
     pill.title = !available
-      ? `${platform.reason || 'No live desktop backend is available.'}${s.dryRun ? '' : ' Click to switch to simulated mode.'}`
+      ? `Live is not available until the executor passes a real readiness check. This console runs on ${platform.label || platform.platform || 'an unknown platform'}: ${platform.reason || 'no live desktop backend is available.'} Click to check again. The planning target does not connect another computer.`
       : live
         ? 'Live: runs move the real mouse and type on this desktop. Click to switch to simulated.'
-        : 'Simulated: steps are validated without touching the desktop. Click to enable live control.';
+        : 'Simulated: steps are validated without touching the desktop. Click to check the desktop and enable live control.';
   }
   const ai = $('#ai-status');
   if (ai) {
@@ -740,19 +743,20 @@ function renderHeader() {
     $('#ai-label').textContent = ui.health
       ? ui.health.online
         ? `${ui.health.model}${ui.health.modelPresent === false ? ' (not listed)' : ''}`
-        : `AI offline — ${ui.health.error || 'unreachable'}`
+        : 'AI offline'
       : 'checking AI…';
     ai.title = ui.health?.online
       ? `Connected to ${ui.data?.settings.endpoint}. Local planner is used when the model is unreachable.`
-      : `Cannot reach ${ui.data?.settings.endpoint || 'the AI endpoint'}. Build and run still work with the local planner.`;
+      : `Cannot reach ${ui.data?.settings.endpoint || 'the AI endpoint'}: ${ui.health?.error || 'unreachable'}. Build and run still work with the local planner.`;
   }
   const plat = $('#platform-tag');
   if (plat && ui.data) {
-    const label = String(platform.label || platform.platform || 'desktop').toLowerCase();
-    plat.textContent = platform.available ? `${label} · live` : `${label} · simulated only`;
+    const label = String(platform.label || platform.platform || 'desktop');
+    const target = targetLabels[targetPlatform] || 'Windows 11';
+    plat.textContent = `${target} plan · ${platform.available ? `${label} live` : 'executor offline'}`;
     plat.title = platform.available
-      ? `${platform.input || 'input'} · capture: ${platform.capture || 'unknown'}`
-      : String(platform.reason || 'no live backend');
+      ? `AI plans for ${target}; live input runs on this ${label} executor using ${platform.input || 'input'} and ${platform.capture || 'unknown'} capture.`
+      : `AI plans for ${target}, but actions execute on this ${label} machine and remain simulated: ${platform.reason || 'no live backend'}. Selecting another target OS does not attach a remote desktop.`;
   }
   const counts = ui.data?.counts;
   $('#badge-suggestions').textContent = counts?.suggestions ? String(counts.suggestions) : '';
@@ -1061,7 +1065,7 @@ function renderBuilder() {
     .filter((step) => step.type === 'launchApp' && /\.exe(?:$|\s)/i.test(String(step.params?.target || '').trim()))
     .map((step) => String(step.params?.target || '').trim());
   const platformNotice = !liveAvailable || (platform.backend !== 'win32' && windowsOnlyTargets.length)
-    ? `<div class="hint-box" style="margin:0 0 12px;border-color:rgba(251,191,36,.35)"><strong>${!liveAvailable ? 'Live desktop control is unavailable' : 'Windows-only app target'}</strong> · ${!liveAvailable ? esc(platform.reason || 'No live backend is available.') : ''}${windowsOnlyTargets.length && platform.backend !== 'win32' ? ` ${esc(windowsOnlyTargets.join(', '))} cannot run as a native Linux app; use a Windows desktop for this workflow.` : ''} ${!liveAvailable ? 'Live runs are disabled here; simulated runs will not open apps or capture real screenshots.' : ''}</div>`
+    ? `<div class="hint-box" style="margin:0 0 12px;border-color:rgba(251,191,36,.35)"><strong>${!liveAvailable ? 'Live desktop control is unavailable' : 'Windows-only app target'}</strong> · ${!liveAvailable ? esc(platform.reason || 'No live backend is available.') : ''}${windowsOnlyTargets.length && platform.backend !== 'win32' ? ` ${esc(windowsOnlyTargets.join(', '))} cannot run as a native Linux app; use a Windows desktop for this workflow.` : ''} ${!liveAvailable ? 'Live requests remain blocked unless a real executor readiness check succeeds; simulated runs will not open apps or capture real screenshots.' : ''}</div>`
     : '';
 
   const rail = `
@@ -1225,8 +1229,8 @@ function renderBuilderMain(wf, lastRun, sim, liveAvailable, liveReason) {
         <button class="btn" data-act="run-workflow" data-id="${wf.id}" data-mode="${sim ? 'dry' : 'live'}">
           ▶ Run ${sim ? 'simulated' : 'live'}
         </button>
-        <button class="btn btn-ghost btn-sm" data-act="run-workflow" data-id="${wf.id}" data-mode="${sim ? 'live' : 'dry'}" ${liveAvailable ? '' : 'disabled'} title="${esc(liveAvailable ? 'Run once in the other mode' : liveReason || 'Live desktop control is unavailable on this machine.')}">
-          ${liveAvailable ? `or ${sim ? 'live' : 'simulated'}` : 'live unavailable'}
+        <button class="btn btn-ghost btn-sm" data-act="run-workflow" data-id="${wf.id}" data-mode="${sim ? 'live' : 'dry'}" title="${esc(sim ? 'Check desktop readiness, then confirm before a live run.' : 'Run once in simulated mode.')}">
+          or ${sim ? 'live' : 'simulated'}
         </button>
         <button class="btn btn-ghost btn-sm" data-act="delete-workflow" data-id="${wf.id}" title="Delete workflow">🗑</button>
       </div>
@@ -6793,10 +6797,17 @@ async function runAction(name, ds, el) {
       break;
     case 'toggle-mode': {
       const next = !d.settings.dryRun;
-      if (!next && !d.platform?.available) return toast(`Live desktop control is unavailable: ${d.platform?.reason || 'no backend available'}`, 'error');
+      if (!next) {
+        const check = await api('/api/live/check', { method: 'POST', body: {} });
+        if (!check.ok || !check.available) {
+          if (check.platform) d.platform = check.platform;
+          renderHeader();
+          return toast(`Live check failed: ${check.reason || check.error || 'desktop executor is unavailable'}`, 'error');
+        }
+      }
       const res = await api('/api/settings', { method: 'PATCH', body: { dryRun: next } });
       if (res.ok) {
-        toast(next ? 'Live control enabled — runs will move your mouse and type.' : 'Simulated mode — no desktop input.', next ? 'error' : 'ok');
+        toast(next ? 'Simulated mode — no desktop input.' : 'Live control enabled — runs will move your mouse and type.', 'ok');
         await refresh();
       } else toast(res.error, 'error');
       break;
@@ -9495,8 +9506,13 @@ function coerceParams(draft) {
 
 async function queueRun(id, mode) {
   mode = mode || (ui.data?.settings?.dryRun ? 'dry' : 'live');
-  if (mode === 'live' && ui.data?.platform && !ui.data.platform.available) {
-    return toast(`Live desktop control is unavailable: ${ui.data.platform.reason || 'no backend available'}`, 'error');
+  if (mode === 'live') {
+    const check = await api('/api/live/check', { method: 'POST', body: {} });
+    if (!check.ok || !check.available) {
+      if (check.platform) ui.data.platform = check.platform;
+      render();
+      return toast(`Live check failed: ${check.reason || check.error || 'desktop executor is unavailable'}`, 'error');
+    }
   }
   // A double click used to queue two runs and the second one could fail, which
   // read as "the button does not work". One run per click, always.
@@ -9853,6 +9869,21 @@ document.addEventListener('change', (event) => {
   const key = el.dataset.key;
   const value = el.type === 'checkbox' ? el.checked : el.value;
 
+  if (scope === 'target-os') {
+    el.disabled = true;
+    api('/api/settings', { method: 'PATCH', body: { targetPlatform: value } }).then(async (res) => {
+      el.disabled = false;
+      if (!res.ok) {
+        el.value = ui.data?.settings?.targetPlatform || 'win32';
+        toast(res.error || 'Could not update planning OS', 'error');
+        return;
+      }
+      if (ui.data?.settings) ui.data.settings.targetPlatform = value;
+      toast(`AI planning target set to ${{ win32: 'Windows 11', linux: 'Linux/X11', darwin: 'macOS', android: 'Android' }[value] || 'Windows 11'}`, 'ok');
+      await refresh();
+    });
+    return;
+  }
   if (scope === 'review-sort') {
     ui.reviewSort = value;
     const runId = el.dataset.id;

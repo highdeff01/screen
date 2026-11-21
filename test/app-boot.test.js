@@ -61,32 +61,69 @@ test('unavailable desktop control is not presented as live mode', () => {
   };
   const ui = {
     data: {
-      settings: { dryRun: false },
-      platform: { backend: 'linux', label: 'Linux', available: false, reason: 'Linux needs X11 and xdotool.' },
+      settings: { dryRun: false, targetPlatform: 'win32' },
+      platform: { backend: 'linux', platform: 'linux', label: 'Linux', available: false, reason: 'Linux needs X11 and xdotool.' },
       counts: {},
     },
   };
   const context = { ui, $: element, document: { querySelectorAll: () => [] } };
   vm.runInNewContext(`${header}\nrenderHeader();`, context);
-  assert.equal(element('#mode-label').textContent, 'Live unavailable');
+  assert.equal(element('#mode-label').textContent, 'Simulated · check live');
+  assert.equal(element('#mode-pill').disabled, false);
   assert.match(element('#mode-pill').title, /Linux needs X11 and xdotool/);
-  assert.equal(element('#platform-tag').textContent, 'linux · simulated only');
+  assert.match(element('#mode-pill').title, /does not connect another computer/);
+  assert.equal(element('#target-os-select').value, 'win32');
+  assert.equal(element('#platform-tag').textContent, 'Windows 11 plan · executor offline');
   ui.data.settings.dryRun = true;
   vm.runInNewContext(`${header}\nrenderHeader();`, context);
-  assert.equal(element('#mode-label').textContent, 'Simulated');
-  assert.equal(element('#mode-pill').disabled, true);
+  assert.equal(element('#mode-label').textContent, 'Simulated · check live');
+  assert.equal(element('#mode-pill').disabled, false);
 });
 
-test('live requests are refused before reaching the API when the backend is unavailable', async () => {
-  // Normalise CRLF: the slice markers below are written with plain newlines.
-  const source = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
+test('planning target selection persists without changing executor availability', async () => {
+  const app = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+  const html = fs.readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+  assert.match(html, /id="target-os-select"/);
+  assert.match(html, /value="win32">Plan for Windows 11/);
+  assert.match(app, /api\/live\/check/);
+  assert.match(app, /or \$\{sim \? 'live' : 'simulated'\}/);
+  const start = app.indexOf("document.addEventListener('change'");
+  const end = app.indexOf("document.addEventListener('input'", start);
+  const handlers = {};
+  const calls = [];
+  const ui = { data: { platform: { backend: 'linux', available: false }, settings: { targetPlatform: 'win32' } } };
+  const context = {
+    ui,
+    document: { addEventListener: (type, handler) => { handlers[type] = handler; } },
+    api: async (url, options) => { calls.push({ url, options }); return { ok: true }; },
+    toast: (message) => calls.push(message),
+    refresh: async () => calls.push('refresh'),
+  };
+  vm.runInNewContext(app.slice(start, end), context);
+  const select = { dataset: { scope: 'target-os' }, value: 'linux', disabled: false };
+  handlers.change({ target: select });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(calls[0].url, '/api/settings');
+  assert.equal(calls[0].options.body.targetPlatform, 'linux');
+  assert.equal(ui.data.platform.backend, 'linux');
+  assert.equal(ui.data.settings.targetPlatform, 'linux');
+  assert.equal(calls.at(-1), 'refresh');
+});
+
+test('live requests call the readiness endpoint before refusing an unavailable backend', async () => {
+  const source = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8').split(String.fromCharCode(13, 10)).join(String.fromCharCode(10));
   const start = source.indexOf('async function queueRun(id, mode)');
   const end = source.indexOf('\n}\n\n/* ------------------------------------------------------------------ events */', start) + 2;
   const calls = [];
   const ui = { data: { platform: { available: false, reason: 'No X11 display.' } }, runStarting: false };
-  const context = { ui, api: async () => calls.push('api'), toast: (message) => calls.push(message) };
+  const context = {
+    ui,
+    api: async (url) => { calls.push(url); return { ok: true, available: false, reason: 'No X11 display.' }; },
+    toast: (message) => calls.push(message),
+    render: () => {},
+  };
   await vm.runInNewContext(`${source.slice(start, end)}\nqueueRun('wf', 'live');`, context);
-  assert.deepEqual(calls, ['Live desktop control is unavailable: No X11 display.']);
+  assert.deepEqual(calls, ['/api/live/check', 'Live check failed: No X11 display.']);
 });
 
 test('sync settings show opt-in incoming updates and execution warning', () => {

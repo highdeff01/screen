@@ -1433,6 +1433,13 @@ async function executeRun(runId) {
       } else {
         pushLog(run, 'info', `Simulated run: the earlier refusal (“${reason}”) still holds (probe: ${proof.detail || 'no answer'}).`, null);
       }
+    } else if (!run.dryRun && control.backend === 'linux' && !control.mobile) {
+      const proof = await probeLiveBackend();
+      if (!proof.ok) {
+        run.dryRun = true;
+        run.liveFallback = `Linux X11 display is not reachable or authorized (probe: ${proof.detail || 'no answer'}).`;
+        pushLog(run, 'warn', `Live refused on this machine (${run.liveFallback}); the run continues simulated instead.`, null);
+      }
     }
   }
   const repairEnabled = !run.dryRun && run.liveRepair !== false && (run.liveRepair === true || !probe);

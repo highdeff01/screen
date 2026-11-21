@@ -59,8 +59,14 @@ async function adb(args, timeoutMs = 20000) {
 }
 
 function spawnDetached(cmd, args) {
-  const child = spawn(cmd, args, { detached: true, stdio: 'ignore' });
-  child.unref();
+  return new Promise((resolve, reject) => {
+    const child = spawn(cmd, args, { detached: true, stdio: 'ignore' });
+    child.once('error', (error) => reject(new Error(`Could not start "${cmd}": ${error.message}`)));
+    child.once('spawn', () => {
+      child.unref();
+      resolve();
+    });
+  });
 }
 
 /** Width/height straight from a PNG's IHDR chunk; no image library needed. */
@@ -426,14 +432,14 @@ export async function portableLaunch({ target = '', args = [] } = {}) {
     return { ok: true, detail: `Opened ${value}` };
   }
   if (isUrl) {
-    spawnDetached('xdg-open', [value]);
-    return { ok: true, detail: `Opened ${value}` };
+    await spawnDetached('xdg-open', [value]);
+    return { ok: true, detail: `Asked the desktop to open ${value}` };
   }
-  if (fs.existsSync(value)) {
-    spawnDetached(value, args);
-    return { ok: true, detail: `Launched ${value}` };
+  if (fs.existsSync(value) || commandOnPath(value)) {
+    await spawnDetached(value, args);
+    return { ok: true, detail: `Started ${value}; verify its window opened` };
   }
-  spawnDetached('xdg-open', [value]);
+  await spawnDetached('xdg-open', [value]);
   return { ok: true, detail: `Asked the desktop to open ${value}` };
 }
 

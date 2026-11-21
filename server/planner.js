@@ -936,11 +936,13 @@ export function alignPlanToGoal(steps, goal, context = {}) {
 }
 
 function platformContextText() {
+  const target = db().settings?.targetPlatform || 'win32';
   const backend = liveControl();
   const status = backend.available
     ? `${backend.label} prerequisites detected; live connectivity is verified again before execution`
     : `${backend.label} unavailable: ${backend.reason}; desktop actions will be simulated and must not be described as completed`;
-  return `${platformMethodGuidance()}\nCURRENT LIVE BACKEND: ${status}`;
+  const targetLabel = { win32: 'Windows 11', linux: 'Linux/X11', darwin: 'macOS', android: 'Android' }[target] || 'Windows 11';
+  return `PLANNING TARGET: ${targetLabel}; this changes generated methods only, not the connected executor.\n${platformMethodGuidance(target)}\nACTUAL EXECUTOR: ${status}`;
 }
 
 function appContextText(context = {}) {
@@ -1920,7 +1922,7 @@ async function repairPlan(goal, original, appContext, research = null) {
       { role: 'system', content: REPAIR_SYSTEM },
       {
         role: 'user',
-        content: `Goal: ${goal}\nThe first draft was incomplete (${planIssues(original, goal).join(', ') || 'too generic'}). Produce the complete corrected plan now.\n${platformContextText()}\nSTRATEGY BRIEF:\n${strategyBrief({ goal, longTermGoal: db().settings?.longTermGoal || '' }).text}\n${research?.promptText ? `Research evidence from prior attempts:\n${research.promptText}` : ''}`,
+        content: `Goal: ${goal}\nThe first draft was incomplete (${planIssues(original, goal).join(', ') || 'too generic'}). Produce the complete corrected plan now.\n${platformContextText()}\nSTRATEGY BRIEF:\n${strategyBrief({ goal, longTermGoal: db().settings?.longTermGoal || '', platform: db().settings?.targetPlatform || 'win32' }).text}\n${research?.promptText ? `Research evidence from prior attempts:\n${research.promptText}` : ''}`,
       },
     ],
     { format: 'json', kind: 'plan-repair', timeoutMs: 90000, temperature: 0.1, maxTokens: 8000 }
@@ -2008,6 +2010,7 @@ async function buildPlan(goal, workflow, options = {}) {
     lessons: relevantLessons,
     attempts: memoryAttempts,
     longTermGoal: db().settings?.longTermGoal || '',
+    platform: db().settings?.targetPlatform || 'win32',
   }).text;
   const emptyWorkflow = !Array.isArray(workflow?.steps) || workflow.steps.length === 0;
   const exactMemory = pickReusableMemory(memories, { emptyWorkflow });

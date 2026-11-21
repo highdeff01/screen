@@ -17,6 +17,12 @@
       <span class="dot"></span><span id="mode-label">Simulated</span>
     </button>
     <span class="ai-status" id="ai-status" title="AI endpoint status"><span class="dot"></span><span id="ai-label">checking AI…</span></span>
+    <select class="target-os-select" id="target-os-select" data-scope="target-os" aria-label="AI planning target OS" title="Choose the OS the AI should plan for; this does not connect a remote desktop">
+      <option value="win32">Plan for Windows 11</option>
+      <option value="linux">Plan for Linux/X11</option>
+      <option value="darwin">Plan for macOS</option>
+      <option value="android">Plan for Android</option>
+    </select>
     <span class="platform-tag" id="platform-tag"></span>
   </div>
   <div class="topbar-actions">

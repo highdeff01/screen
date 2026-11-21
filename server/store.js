@@ -42,6 +42,9 @@ function seed() {
       chatPath: '/api/chat',
       endpoint: 'https://quantumclaw.net/ollama/api/chat',
       model: 'qwen3.5:2b',
+      targetPlatform: ['win32', 'linux', 'darwin', 'android'].includes(process.env.SIGHTLINE_TARGET_PLATFORM)
+        ? process.env.SIGHTLINE_TARGET_PLATFORM
+        : 'win32',
       dryRun: true,
       autoNotes: true,
       aiSuggestions: true,
@@ -49,6 +52,7 @@ function seed() {
       agentTickMs: 5000,
       // Explicit opt-in: sync tracked working-tree changes outside data/.
       autoSync: false,
+      autoPull: false,
       autoSyncIntervalMs: 20000,
       // Refuse a pass that would delete this many tracked files at once.
       autoSyncMaxDeletes: 25,

@@ -156,6 +156,19 @@ test('Linux live control requires its X11 input, capture and display prerequisit
   assert.equal(captureToolFor('linux', { PATH: noCapture }), '');
 });
 
+test('Linux live probe requires both X11 prerequisites and a reachable display', { skip: process.platform === 'win32' }, async (t) => {
+  const tools = fixture(t, { xdotool: '#!/bin/sh\nexit 0\n' });
+  const env = { PATH: tools, DISPLAY: ':99' };
+  const noCapture = await probeLiveBackend({ platform: 'linux', env });
+  assert.equal(noCapture.ok, false);
+  assert.match(noCapture.detail, /screenshot tool/);
+
+  fs.writeFileSync(path.join(tools, 'scrot'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+  assert.equal((await probeLiveBackend({ platform: 'linux', env })).ok, true);
+  fs.writeFileSync(path.join(tools, 'xdotool'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+  assert.equal((await probeLiveBackend({ platform: 'linux', env })).ok, false);
+});
+
 test('PATH entries must be executable regular files', { skip: process.platform === 'win32' }, (t) => {
   const dir = fixture(t, { scrot: '' });
   fs.chmodSync(path.join(dir, 'scrot'), 0o644);

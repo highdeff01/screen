@@ -459,23 +459,13 @@ export function selectWindowsMechanism({ build = 0, version = '', interactive = 
   };
 }
 
-/**
- * Prove live control with a real action instead of trusting detection.
- *
- * Initial detection reads the process environment (PATH, DISPLAY, forced
- * targets) — any of which can be wrong about a machine that would actually
- * answer. The probe runs each platform's cheapest real command with a short
- * timeout: if it talks back, live control works, whatever the checklists
- * claimed. Used by the engine before converting a run to simulation and as
- * the workaround when a step hits a platform guard mid-run.
- */
-export function probeLiveBackend({ timeoutMs = 5000 } = {}) {
+/** Probe native input connectivity; Linux also requires all configured backend prerequisites. */
+export function probeLiveBackend({ timeoutMs = 5000, env = process.env, platform = process.platform } = {}) {
   if (probeOverride) return Promise.resolve(probeOverride());
-  const platform = process.platform;
   const attempt = (command, args) =>
     new Promise((resolve) => {
       try {
-        const child = execFile(command, args, { timeout: timeoutMs, windowsHide: true }, (err, stdout) => {
+        const child = execFile(command, args, { timeout: timeoutMs, windowsHide: true, env }, (err, stdout) => {
           resolve(err ? { ok: false, detail: String(err.message || err).slice(0, 200) } : { ok: true, detail: String(stdout || '').trim().slice(0, 80) || 'answered' });
         });
         if (child && child.on) child.on('error', () => {}); // execFile reports through the callback
@@ -503,8 +493,9 @@ export function probeLiveBackend({ timeoutMs = 5000 } = {}) {
     return attempt('osascript', ['-e', 'return 1']);
   }
   if (platform === 'linux') {
-    // xdotool talking back is the actual input proof — DISPLAY may be missing
-    // from this process's env while XWayland still serves it.
+    const backend = detectBackend({ env, platform });
+    if (!backend.available) return Promise.resolve({ ok: false, detail: backend.reason });
+    if (backend.mobile) return Promise.resolve({ ok: true, detail: 'Authorized Android device available' });
     return attempt('xdotool', ['getmouselocation']);
   }
   return Promise.resolve({ ok: false, detail: `no live backend for ${platform}` });

@@ -22,7 +22,7 @@ import {
   writeFileDurable,
 } from './store.js';
 import { executeStep, runPowerShell, STEP_TYPES, IS_WINDOWS, describe, findUiElement, readFocusedElement, readForegroundWindow, readScreenContext } from './automation.js';
-import { liveControl } from './platform.js';
+import { liveControl, probeLiveBackend } from './platform.js';
 import { loopStatus, reviewPendingVerifications, startVerificationLoop, stopVerificationLoop } from './verification-loop.js';
 import {
   aiResolveConflicts,
@@ -1625,6 +1625,21 @@ route('GET', /^\/api\/health$/, async (req, res) => {
   sendJson(res, 200, { ok: true, ...h, platform: process.platform, windows: IS_WINDOWS, ...liveControl() });
 });
 
+route('POST', /^\/api\/live\/check$/, async (req, res) => {
+  const detected = liveControl();
+  const proof = detected.available
+    ? await probeLiveBackend()
+    : { ok: false, detail: detected.reason || 'No desktop backend is available.' };
+  const available = Boolean(detected.available && proof.ok);
+  const reason = available ? '' : proof.detail || detected.reason || 'Desktop readiness check failed.';
+  sendJson(res, 200, {
+    ok: true,
+    available,
+    reason,
+    platform: { platform: process.platform, ...detected, available, reason, verified: available },
+  });
+});
+
 // The local Respan Gateway that fronts the model provider, when it is enabled.
 route('GET', /^\/api\/gateway$/, async (req, res) => sendJson(res, 200, { ok: true, gateway: gatewayStatus() }));
 
@@ -2789,12 +2804,14 @@ route('POST', /^\/api\/workflows\/([^/]+)\/runs$/, async (req, res, [id]) => {
   let liveFallback = null;
   if (!dryRun) {
     const control = liveControl();
-    if (!control.available) {
-      // Keep resolved live requests moving in simulation when no backend is available.
+    const proof = control.available ? await probeLiveBackend() : { ok: false, detail: control.reason };
+    if (!control.available || !proof.ok) {
+      const reason = proof.detail || liveRefusal();
+      if (body.mode === 'live') return fail(res, 409, reason);
       dryRun = true;
-      liveFallback = liveRefusal();
+      liveFallback = reason;
       const item = recordAction({ kind: 'run', action: `start-run:${wf.name}`, error: liveFallback, detail: { workflowId: wf.id, requestedMode: 'live' } });
-      logActivity('run', `Live refused (${control.reason || 'no backend'}); running simulated instead`, { workflowId: wf.id, itemId: item?.id });
+      logActivity('run', `Live refused (${reason}); running simulated instead`, { workflowId: wf.id, itemId: item?.id });
     }
   }
   let autoPlan = null;
@@ -3918,6 +3935,13 @@ route('PATCH', /^\/api\/settings$/, async (req, res) => {
     } catch {}
   }
   if (body.model !== undefined) s.model = String(body.model).trim();
+  if (body.targetPlatform !== undefined) {
+    const targetPlatform = String(body.targetPlatform);
+    if (!['win32', 'linux', 'darwin', 'android'].includes(targetPlatform)) {
+      return fail(res, 400, 'targetPlatform must be win32, linux, darwin or android');
+    }
+    s.targetPlatform = targetPlatform;
+  }
   if (body.apiStyle !== undefined) s.apiStyle = body.apiStyle === 'openai' ? 'openai' : 'ollama';
   if (body.gatewayEnabled !== undefined) s.gatewayEnabled = Boolean(body.gatewayEnabled);
   if (body.gatewayPort !== undefined) {
@@ -3925,7 +3949,15 @@ route('PATCH', /^\/api\/settings$/, async (req, res) => {
     s.gatewayPort = Number.isFinite(port) ? Math.max(0, Math.min(65535, Math.round(port))) : 0;
   }
   if (body.gatewayKeyEnv !== undefined) s.gatewayKeyEnv = String(body.gatewayKeyEnv || '').trim();
-  if (body.dryRun !== undefined) s.dryRun = Boolean(body.dryRun);
+  if (body.dryRun !== undefined) {
+    const dryRun = Boolean(body.dryRun);
+    if (!dryRun) {
+      const detected = liveControl();
+      const proof = detected.available ? await probeLiveBackend() : { ok: false, detail: detected.reason };
+      if (!detected.available || !proof.ok) return fail(res, 409, proof.detail || detected.reason || 'Desktop readiness check failed.');
+    }
+    s.dryRun = dryRun;
+  }
   if (body.autoSync !== undefined) s.autoSync = Boolean(body.autoSync);
   if (body.autoPull !== undefined) s.autoPull = Boolean(body.autoPull);
   if (body.autoSyncIntervalMs !== undefined) {

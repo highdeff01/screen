@@ -69,6 +69,24 @@ test('detection refuses and the real probe confirms: the run continues simulated
   );
 });
 
+test('an unreachable X11 display is refused even when the tools are installed', { skip: process.platform !== 'linux' }, async (t) => {
+  const previousDisplay = process.env.DISPLAY;
+  const previousTarget = process.env.SIGHTLINE_TARGET;
+  t.after(() => {
+    if (previousDisplay === undefined) delete process.env.DISPLAY;
+    else process.env.DISPLAY = previousDisplay;
+    process.env.SIGHTLINE_TARGET = previousTarget;
+  });
+  fs.writeFileSync(path.join(tempRoot, 'xdotool'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+  fs.writeFileSync(path.join(tempRoot, 'scrot'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+  process.env.DISPLAY = ':99';
+  delete process.env.SIGHTLINE_TARGET;
+  const run = engine.createRun(probeWorkflow(), { dryRun: false });
+  const finished = await engine.waitForRun(run.id, { timeoutMs: 20000, intervalMs: 20 });
+  assert.equal(finished.dryRun, true);
+  assert.match(finished.liveFallback, /not reachable or authorized/);
+});
+
 test('a run the operator asked to simulate is never flipped live by the probe', async () => {
   let probes = 0;
   platform.setProbeOverride(() => {
