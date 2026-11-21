@@ -1,18 +1,16 @@
 {
   "version": 1,
   "by": "sentinel",
-  "updatedAt": "2026-11-20T00:55:25.312Z",
-  "head": "e9a05539f2e5",
+  "updatedAt": "2026-11-21T12:54:06.976Z",
+  "head": "d17dfa55b10a",
   "lastRun": {
-    "at": "2026-11-20T00:55:25.289Z",
-    "ok": false,
-    "tests": 651,
-    "pass": 646,
-    "fail": 1,
+    "at": "2026-11-21T12:54:06.976Z",
+    "ok": true,
+    "tests": 681,
+    "pass": 674,
+    "fail": 0,
     "isolated": true,
-    "failingTests": [
-      "live requests are refused before reaching the API when the backend is unavailable (5.3522ms)"
-    ]
+    "failingTests": []
   },
   "open": 3,
   "items": [
