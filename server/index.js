@@ -23,6 +23,15 @@ import {
 } from './store.js';
 import { executeStep, runPowerShell, STEP_TYPES, IS_WINDOWS, describe, findUiElement, readFocusedElement, readForegroundWindow, readScreenContext } from './automation.js';
 import { liveControl, probeLiveBackend } from './platform.js';
+import {
+  cancelDownload,
+  downloadModel,
+  installLlamaCpp,
+  installOllama,
+  localModelStatus,
+  startLlamaServer,
+  stopLlamaServer,
+} from './local-model.js';
 import { loopStatus, reviewPendingVerifications, startVerificationLoop, stopVerificationLoop } from './verification-loop.js';
 import {
   aiResolveConflicts,
@@ -486,6 +495,7 @@ function buildState() {
       pid: process.pid,
       ...liveControl(),
     },
+    localModel: localModelStatus(),
     workflows: d.workflows.map(workflowView),
     runs: d.runs.slice(0, 80).map(summary),
     verificationLoop: loopStatus(),
@@ -1656,6 +1666,55 @@ route('POST', /^\/api\/live\/check$/, async (req, res) => {
 
 // The local Respan Gateway that fronts the model provider, when it is enabled.
 route('GET', /^\/api\/gateway$/, async (req, res) => sendJson(res, 200, { ok: true, gateway: gatewayStatus() }));
+
+/* ---------------- Local backup model: GGUF via llama.cpp, or a local Ollama ---------------- */
+route('GET', /^\/api\/local-model$/, async (req, res) =>
+  sendJson(res, 200, { ok: true, localModel: localModelStatus() })
+);
+
+route('POST', /^\/api\/local-model\/download$/, async (req, res) => {
+  const body = await readBody(req);
+  const id = String(body?.id || 'qwen2.5-0.5b-instruct-q4_k_m');
+  try {
+    const result = await downloadModel(id);
+    sendJson(res, 200, { ok: true, ...result, localModel: localModelStatus() });
+  } catch (err) {
+    return fail(res, 502, err.message);
+  }
+});
+
+route('POST', /^\/api\/local-model\/cancel$/, async (req, res) =>
+  sendJson(res, 200, { ok: true, download: cancelDownload() })
+);
+
+route('POST', /^\/api\/local-model\/install$/, async (req, res) => {
+  const body = await readBody(req);
+  const runtime = body?.runtime === 'ollama' ? 'ollama' : 'llamacpp';
+  try {
+    const result = runtime === 'ollama' ? await installOllama() : await installLlamaCpp();
+    sendJson(res, 200, { ok: true, runtime, ...result, localModel: localModelStatus() });
+  } catch (err) {
+    return fail(res, 502, err.message);
+  }
+});
+
+route('POST', /^\/api\/local-model\/start$/, async (req, res) => {
+  const body = await readBody(req);
+  try {
+    const server = await startLlamaServer({
+      file: String(body?.file || ''),
+      port: Number(body?.port) || undefined,
+    });
+    sendJson(res, 200, { ok: true, server, localModel: localModelStatus() });
+  } catch (err) {
+    return fail(res, 409, err.message);
+  }
+});
+
+route('POST', /^\/api\/local-model\/stop$/, async (req, res) => {
+  const server = await stopLlamaServer();
+  sendJson(res, 200, { ok: true, server, localModel: localModelStatus() });
+});
 
 route('GET', /^\/api\/live\/preview$/, async (req, res) => sendJson(res, 200, { ok: true, preview: livePreview.state() }));
 route('POST', /^\/api\/live\/preview$/, async (req, res) => {
@@ -3957,6 +4016,17 @@ route('PATCH', /^\/api\/settings$/, async (req, res) => {
     s.targetPlatform = targetPlatform;
   }
   if (body.apiStyle !== undefined) s.apiStyle = body.apiStyle === 'openai' ? 'openai' : 'ollama';
+  if (body.localModelEnabled !== undefined) s.localModelEnabled = Boolean(body.localModelEnabled);
+  if (body.localModelProvider !== undefined) {
+    s.localModelProvider = body.localModelProvider === 'ollama' ? 'ollama' : 'llamacpp';
+  }
+  if (body.localModelFile !== undefined) s.localModelFile = String(body.localModelFile || '').trim();
+  if (body.localModelName !== undefined) s.localModelName = String(body.localModelName || '').trim();
+  if (body.localModelPort !== undefined) {
+    const port = Number(body.localModelPort);
+    s.localModelPort = Number.isFinite(port) ? Math.max(1024, Math.min(65535, Math.round(port))) : 8399;
+  }
+  if (body.localModelAutoStart !== undefined) s.localModelAutoStart = Boolean(body.localModelAutoStart);
   if (body.gatewayEnabled !== undefined) s.gatewayEnabled = Boolean(body.gatewayEnabled);
   if (body.gatewayPort !== undefined) {
     const port = Number(body.gatewayPort);

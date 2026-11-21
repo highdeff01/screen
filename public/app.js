@@ -62,6 +62,7 @@ const ui = {
   models: null,
   modelsError: '',
   modelsBusy: false,
+  localModelBusy: '',
   fileTab: 'files',
   selectedFile: null,
   fileText: null,
@@ -4998,12 +4999,51 @@ function sharingPanel() {
   }`;
 }
 
+/**
+ * The local backup engine: download a GGUF, install llama.cpp or Ollama, start
+ * or stop the server. Everything here is opt-in by click; nothing is fetched
+ * or installed because the page loaded.
+ */
+function renderLocalModelCard() {
+  const lm = ui.data?.localModel;
+  if (!lm) return '';
+  const busy = ui.localModelBusy || '';
+  const size = (bytes) => `${(Number(bytes || 0) / 1e9).toFixed(2)} GB`;
+  const models = (lm.models || [])
+    .map((m) => `<li class="small mono">${esc(m.file)} · ${size(m.bytes)}</li>`)
+    .join('');
+  const catalog = (lm.catalog || [])
+    .map((m) => `<li class="small">${esc(m.label)} · ${size(m.bytes)} · ${esc(m.license)} <span class="dim">— ${esc(m.note)}</span></li>`)
+    .join('');
+  const dl = lm.download || {};
+  const pct = dl.total ? Math.min(100, Math.round((dl.received / dl.total) * 100)) : 0;
+  const provider = lm.provider === 'ollama' ? 'Ollama' : 'llama.cpp';
+  const serving = lm.server?.running ? `, serving ${esc(lm.server.file)} on port ${lm.server.port}` : '';
+  return `<div class="hint-box" style="margin:4px 0 12px">
+    <strong>Local backup model</strong>
+    <div class="small" style="margin-top:4px">${lm.ready ? `Ready — ${provider}${serving}` : 'Not ready — download a model and a runtime; the console falls back to it when the endpoint above cannot answer.'}</div>
+    <div class="small dim" style="margin-top:3px">llama.cpp: ${lm.llama.found ? 'installed' : 'not installed'} · Ollama: ${lm.ollama.found ? 'installed' : 'not installed'} · GGUF models: ${(lm.models || []).length}</div>
+    ${(lm.models || []).length ? `<ul style="margin:6px 0 0 16px">${models}</ul>` : ''}
+    ${dl.id && !dl.doneAt && !dl.error ? `<div class="small" style="margin-top:6px">Downloading ${esc(dl.file)} — ${pct}% (${size(dl.received)} of ${size(dl.total)})</div>` : ''}
+    ${dl.error ? `<div class="small" style="color:var(--bad);margin-top:6px">${esc(dl.error)}</div>` : ''}
+    <div class="row wrap" style="margin-top:8px;gap:6px">
+      <button class="btn btn-sm" data-act="local-model-install" data-runtime="llamacpp" ${busy ? 'disabled' : ''}>${busy === 'llamacpp' ? 'Installing…' : 'Install llama.cpp'}</button>
+      <button class="btn btn-sm btn-ghost" data-act="local-model-install" data-runtime="ollama" ${busy ? 'disabled' : ''}>${busy === 'ollama' ? 'Installing Ollama…' : 'Install Ollama'}</button>
+      <button class="btn btn-sm btn-primary" data-act="local-model-download" data-id="qwen2.5-0.5b-instruct-q4_k_m" ${busy ? 'disabled' : ''}>${busy === 'download' ? 'Downloading…' : 'Download backup (0.5B)'}</button>
+      <button class="btn btn-sm" data-act="local-model-start" ${busy || !(lm.llama.found && lm.file) ? 'disabled' : ''}>Start local server</button>
+      <button class="btn btn-sm btn-ghost" data-act="local-model-stop" ${lm.server?.running ? '' : 'disabled'}>Stop</button>
+    </div>
+    <details style="margin-top:6px"><summary class="small dim">Other models</summary><ul style="margin:6px 0 0 16px">${catalog}</ul></details>
+  </div>`;
+}
+
 function settingsFields(s) {
   const models = ui.models || [];
   const names = [...new Set([s.model, ...models.map((m) => m.name)].filter(Boolean))];
   const selectedModel = models.find((m) => m.name === s.model);
   const endpointPreview = `${String(s.baseUrl || '').replace(/\/+$/, '')}${s.chatPath || '/api/chat'}`;
   return `
+    ${renderLocalModelCard()}
     <label class="field"><span>Model API style</span><select data-scope="settings" data-key="apiStyle">
       <option value="ollama" ${s.apiStyle !== 'openai' ? 'selected' : ''}>Ollama / Qwen — /api/chat</option>
       <option value="openai" ${s.apiStyle === 'openai' ? 'selected' : ''}>OpenAI-compatible — /v1/chat/completions</option>
@@ -7849,6 +7889,50 @@ async function runAction(name, ds, el) {
       await loadPython(true);
       toast('Python file deleted', 'ok');
       render();
+      break;
+    }
+    case 'local-model-download': {
+      ui.localModelBusy = 'download';
+      render();
+      if (ui.modal) renderModal();
+      const res = await api('/api/local-model/download', { method: 'POST', body: { id: ds.id } });
+      ui.localModelBusy = '';
+      toast(res.ok ? 'Backup model downloaded.' : res.error || 'Download failed', res.ok ? 'ok' : 'error');
+      await refresh();
+      render();
+      if (ui.modal) renderModal();
+      break;
+    }
+    case 'local-model-install': {
+      ui.localModelBusy = ds.runtime || 'llamacpp';
+      render();
+      if (ui.modal) renderModal();
+      const res = await api('/api/local-model/install', { method: 'POST', body: { runtime: ds.runtime } });
+      ui.localModelBusy = '';
+      toast(res.ok ? `${ds.runtime === 'ollama' ? 'Ollama' : 'llama.cpp'} installed.` : res.error || 'Install failed', res.ok ? 'ok' : 'error');
+      await refresh();
+      render();
+      if (ui.modal) renderModal();
+      break;
+    }
+    case 'local-model-start': {
+      ui.localModelBusy = 'start';
+      render();
+      if (ui.modal) renderModal();
+      const res = await api('/api/local-model/start', { method: 'POST', body: {} });
+      ui.localModelBusy = '';
+      toast(res.ok ? `Serving ${res.server?.file || 'the model'} on port ${res.server?.port || ''}.` : res.error || 'Could not start the local model', res.ok ? 'ok' : 'error');
+      await refresh();
+      render();
+      if (ui.modal) renderModal();
+      break;
+    }
+    case 'local-model-stop': {
+      const res = await api('/api/local-model/stop', { method: 'POST', body: {} });
+      toast(res.ok ? 'Local model server stopped.' : res.error || 'Could not stop the local model', res.ok ? 'ok' : 'error');
+      await refresh();
+      render();
+      if (ui.modal) renderModal();
       break;
     }
     case 'models-refresh': {

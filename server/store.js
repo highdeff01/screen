@@ -42,6 +42,14 @@ function seed() {
       chatPath: '/api/chat',
       endpoint: 'https://quantumclaw.net/ollama/api/chat',
       model: 'qwen3.5:2b',
+      // A second engine on this machine, used when the endpoint above cannot
+      // answer: a GGUF served by llama.cpp, or a local Ollama.
+      localModelEnabled: true,
+      localModelProvider: 'llamacpp',
+      localModelFile: '',
+      localModelName: 'qwen2.5:0.5b',
+      localModelPort: 8399,
+      localModelAutoStart: true,
       targetPlatform: ['win32', 'linux', 'darwin', 'android'].includes(process.env.SIGHTLINE_TARGET_PLATFORM)
         ? process.env.SIGHTLINE_TARGET_PLATFORM
         : 'win32',

@@ -3,6 +3,7 @@ import path from 'node:path';
 import { DATA, HISTORY_FILE, db, persist, recordUsage, ROOT, uid, now, writeFileAtomic } from './store.js';
 import { buildChatContext, estimateTokens, extractiveSummary } from './context.js';
 import { ensureGateway } from './gateway.js';
+import { localChat } from './local-model.js';
 
 const LEGACY_HISTORY = path.join(ROOT, 'conversation_history.txt');
 let cachedHistory = null;
@@ -290,6 +291,14 @@ export async function chat(messages, options = {}) {
     } finally {
       clearTimeout(timeout);
     }
+  }
+
+  // Local backup: the configured endpoint could not answer, so a GGUF model on
+  // this machine (llama.cpp) or a local Ollama takes the call instead.
+  if (db().settings.localModelEnabled !== false) {
+    const local = await localChat(messages, options).catch(() => null);
+    if (local?.ok) return local;
+    if (local?.error) console.warn(`[llm] local backup unavailable: ${local.error}`);
   }
 
   const ms = Date.now() - started;
