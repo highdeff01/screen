@@ -6,6 +6,7 @@ import {
   learnHold,
   completionFor,
   isFocusStealing,
+  isQuickStep,
   silentChecksFor,
   continuationMode,
 } from '../server/presence.js';
@@ -65,6 +66,61 @@ test('a focus-stealing step waits for the rest of the hold when the user is movi
   assert.equal(decision.action, 'wait');
   assert.ok(decision.waitMs >= 7000 && decision.waitMs <= 8200, String(decision.waitMs));
   assert.match(decision.reason, /holding 7s/);
+});
+
+test('one quick action is recognised and a long edit is not', () => {
+  for (const type of ['click', 'clickElement', 'key', 'scroll', 'focusWindow', 'clipboard']) {
+    assert.equal(isQuickStep({ type }), true, type);
+  }
+  assert.equal(isQuickStep({ type: 'type', params: { text: 'Hello' } }), true);
+  assert.equal(isQuickStep({ type: 'type', params: { text: 'x'.repeat(400) } }), false);
+  assert.equal(isQuickStep({ type: 'type' }), false);
+  for (const type of ['launchApp', 'openUrl', 'playMedia', 'installApp', 'recordVideo']) {
+    assert.equal(isQuickStep({ type }), false, type);
+  }
+});
+
+test('a quick action continues while the user is only nudging the pointer', () => {
+  const decision = holdDecision({
+    step: { type: 'clickElement' },
+    presence: classifyPresence({ idleMs: 4000 }),
+    holdMs: 10000,
+    quick: true,
+  });
+  assert.equal(decision.action, 'proceed');
+  assert.equal(decision.fastPath, true);
+  assert.match(decision.reason, /quick action/);
+});
+
+test('a quick action still waits while the user is typing', () => {
+  const decision = holdDecision({
+    step: { type: 'clickElement' },
+    presence: classifyPresence({ idleMs: 300 }),
+    holdMs: 10000,
+    quick: true,
+  });
+  assert.equal(decision.action, 'wait');
+  assert.equal(decision.fastPath, false);
+});
+
+test('a step continues when the user is working in the window this run opened', () => {
+  const steering = holdDecision({
+    step: { type: 'type', params: { text: 'a long body' } },
+    presence: classifyPresence({ idleMs: 4000 }),
+    holdMs: 10000,
+    steering: true,
+  });
+  assert.equal(steering.action, 'proceed');
+  assert.equal(steering.fastPath, true);
+  assert.match(steering.reason, /window this run opened/);
+
+  const typing = holdDecision({
+    step: { type: 'type', params: { text: 'a long body' } },
+    presence: classifyPresence({ idleMs: 300 }),
+    holdMs: 10000,
+    steering: true,
+  });
+  assert.equal(typing.action, 'wait', 'their own edit is not interrupted');
 });
 
 test('nothing is held when the target is already in front or the user is away', () => {

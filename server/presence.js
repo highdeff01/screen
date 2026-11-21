@@ -39,6 +39,36 @@ const FOCUS_STEALING = new Set([
 
 const NEEDS_FULL_RUN = new Set(['playMedia', 'mediaHold', 'watchVideo', 'recordVideo', 'downloadMedia', 'installApp']);
 
+// Steps that finish in one short action and leave the desktop as they found it.
+// When the user is only nudging the pointer, these are cheaper to run than to
+// hold: the whole step is done before the person next reaches for the mouse.
+const QUICK_STEPS = new Set([
+  'move',
+  'scroll',
+  'key',
+  'clipboard',
+  'copyLink',
+  'click',
+  'clickElement',
+  'doubleClick',
+  'rightClick',
+  'drag',
+  'dragCopy',
+  'focusWindow',
+]);
+
+/** One short action (a click, a shortcut, a small edit) rather than a long one. */
+export function isQuickStep(step) {
+  const type = String(step?.type || '');
+  if (QUICK_STEPS.has(type)) return true;
+  // A short piece of text is one action too; a document-sized edit is not.
+  if (type === 'type') {
+    const text = String(step?.params?.text ?? '');
+    return text.length > 0 && text.length <= 120;
+  }
+  return false;
+}
+
 const clip = (value, max = 120) => {
   const text = String(value ?? '').replace(/\s+/g, ' ').trim();
   return text.length > max ? `${text.slice(0, Math.max(0, max - 1))}…` : text;
@@ -123,12 +153,33 @@ export function holdDecision({
   maxDeferMs = 60000,
   deferredMs = 0,
   silentAvailable = false,
+  quick = false,
+  steering = false,
 } = {}) {
-  const out = { action: 'proceed', waitMs: 0, reason: '', silent: false };
+  const out = { action: 'proceed', waitMs: 0, reason: '', silent: false, fastPath: false };
   if (!step || !isFocusStealing(step)) return { ...out, reason: 'the step does not take focus' };
   if (!presence) return out;
   if (presence.watching) return { ...out, reason: 'the step already targets the window in front' };
   if (presence.state === 'idle') return { ...out, reason: 'the user is away from the desktop' };
+  // The user is working in the window this run opened: they are steering the
+  // same task, so the step continues there instead of pulling focus elsewhere.
+  // Active typing is the exception — their edit is not ours to interrupt.
+  if (steering && presence.state !== 'typing') {
+    return {
+      ...out,
+      fastPath: true,
+      reason: 'the user is working in the window this run opened; continuing there instead of holding',
+    };
+  }
+  // The user only moved the pointer (not typing, not in our window): a single
+  // quick action finishes before they act again, so run it rather than hold.
+  if (quick && presence.state === 'moving') {
+    return {
+      ...out,
+      fastPath: true,
+      reason: 'the user only nudged the pointer and this step is one quick action; continuing instead of holding',
+    };
+  }
 
   const remaining = Math.max(0, holdMs - Number(presence.idleMs || 0));
   if (Number(deferredMs || 0) + remaining <= Math.max(1000, Number(maxDeferMs) || 60000)) {
@@ -137,6 +188,7 @@ export function holdDecision({
       waitMs: Math.max(600, Math.min(remaining + 400, 15000)),
       reason: `holding ${Math.round(remaining / 1000)}s for the user to finish moving`,
       silent: false,
+      fastPath: false,
     };
   }
   if (silentAvailable) {
@@ -145,12 +197,14 @@ export function holdDecision({
       waitMs: 0,
       reason: 'the user is still active; continuing with read-only checks and deferring anything that needs focus',
       silent: true,
+      fastPath: false,
     };
   }
   return {
     action: 'proceed',
     waitMs: 0,
     reason: 'the maximum hold has passed; continuing without waiting further',
+    fastPath: false,
   };
 }
 

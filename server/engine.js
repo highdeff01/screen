@@ -19,7 +19,7 @@ import {
 } from './automation.js';
 import { normalizeText } from './judgement.js';
 import { assessStep, launchProducedNewWindow, looksLikeSavedDocument, reviewPrevious } from './step-context.js';
-import { classifyPresence, holdDecision, learnHold, completionFor, isFocusStealing, silentChecksFor } from './presence.js';
+import { classifyPresence, holdDecision, learnHold, completionFor, isFocusStealing, isQuickStep, silentChecksFor } from './presence.js';
 import { recordAction } from './action-log.js';
 import { sendContinuation } from './agent-awareness.js';
 import { enqueue } from './pipeline.js';
@@ -801,6 +801,31 @@ function reportRunFailure(run, summary, error = '') {
   }
 }
 
+/**
+ * The operator is active and a step goes ahead anyway. Re-run the read-only
+ * checks the run still owes first, so a step they finished or moved on from is
+ * noticed now rather than after the next action.
+ */
+async function recheckBeforeContinue(run, step) {
+  const pending = (run.pendingVerification || []).length;
+  if (!pending) return { at: now(), pending: 0, remaining: 0 };
+  try {
+    const result = await verifyRunSilently(run.id);
+    const remaining = Number(result?.remaining) || 0;
+    pushLog(
+      run,
+      remaining ? 'warn' : 'info',
+      `Presence: re-checked ${pending} pending verification(s) while the operator was active — ${remaining} still open${
+        remaining ? '; the run continues and the open check stays queued' : ''
+      }.`,
+      step.id
+    );
+    return { at: now(), pending, remaining };
+  } catch (err) {
+    return { at: now(), pending, remaining: pending, error: err.message };
+  }
+}
+
 async function awaitUserSettle(step, run, probe = null) {
   // A probe without presence belongs to a desktop-free test run.
   if (probe && typeof probe.readPresence !== 'function') return;
@@ -828,6 +853,12 @@ async function awaitUserSettle(step, run, probe = null) {
     }
     if (presence?.error) return;
     const classified = classifyPresence({ idleMs: presence.idleMs, foreground: presence.foreground, target, holdMs });
+    // The window this run opened, in front, means the operator is steering the
+    // same task rather than working somewhere else.
+    const ownTitle = String(run.lastWindow?.title || '').trim().toLowerCase();
+    const steering = Boolean(
+      ownTitle && String(classified.foreground?.title || '').trim().toLowerCase() === ownTitle
+    );
     const decision = holdDecision({
       step,
       presence: classified,
@@ -838,6 +869,8 @@ async function awaitUserSettle(step, run, probe = null) {
       // A playback check with a named player must run with that player in
       // front, so it cannot fall back to a silent read-only check.
       silentAvailable: step.type === 'verifyPlayback' ? false : silentChecksFor(step).length > 0,
+      quick: isQuickStep(step),
+      steering,
     });
     // A held step says so on the run itself: the console can then explain why a
     // step is still "running" without opening the log.
@@ -863,6 +896,14 @@ async function awaitUserSettle(step, run, probe = null) {
       }
       if (classified.state !== 'idle' && !classified.watching) {
         pushLog(run, 'info', `Presence: ${decision.reason}.`, step.id);
+      }
+      if (decision.fastPath) {
+        run.presence = {
+          ...run.presence,
+          fastPath: true,
+          rechecked: await recheckBeforeContinue(run, step),
+        };
+        persist();
       }
       return;
     }
