@@ -4,11 +4,10 @@ import { db, persist } from './store.js';
 /**
  * Local admin session for privileged operator commands.
  *
- * The console stays a loopback tool; the admin login exists to gate dangerous
- * operator actions (FORCE_REPLAN, OVERRIDE_PAUSE, CANCEL, RERUN) behind an
- * explicit sign-in instead of protecting every read API and breaking the
- * bundled Python clients. Default credentials are printed in the login modal
- * and can be rotated from the same modal.
+ * The console stays a loopback tool; the admin login gates privileged operator
+ * actions and repository relay writes without protecting every read API or
+ * breaking the bundled Python clients. Default credentials are printed in the
+ * login modal and can be rotated from the same modal.
  */
 
 const COOKIE = 'sightline_sid';
@@ -58,7 +57,7 @@ export function adminStatus(req) {
     username: admin?.username || null,
     defaultUser: account?.username || 'admin',
     mustChangePassword: Boolean(account?.mustChange),
-    authScope: 'operator-commands',
+    authScope: 'operator-commands-and-repository-relay',
   };
 }
 
