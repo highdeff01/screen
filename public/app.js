@@ -202,6 +202,11 @@ async function api(path, options = {}) {
         body: options.body == null ? undefined : JSON.stringify(options.body),
       });
       const data = await res.json().catch(() => ({ ok: false, error: `Unexpected response (${res.status})` }));
+      if (res.status === 401 && /sign in as admin/i.test(data.error || '')) {
+        await loadAuth();
+        if (!ui.auth?.authenticated) ui.authDraft = { username: ui.auth?.defaultUser || 'admin', password: '', current: '', next: '' };
+        openModal('admin');
+      }
       return { data, status: res.status };
     })();
     const { data, status } = await Promise.race([request, timeout]);

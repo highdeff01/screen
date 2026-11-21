@@ -290,6 +290,12 @@ function fail(res, code, message, detail = null) {
   sendJson(res, code, { ok: false, error: message });
 }
 
+function requireAdmin(req, res, action) {
+  if (adminStatus(req).authenticated) return true;
+  fail(res, 401, `Sign in as admin to ${action}`);
+  return false;
+}
+
 /**
  * Live control is available on Windows, macOS, Linux and Android over adb.
  * Only a target with no backend at all (adb requested without a device, or an
@@ -1037,6 +1043,7 @@ route('GET', /^\/api\/relay$/, async (req, res) => {
 });
 
 route('POST', /^\/api\/relay\/links$/, async (req, res) => {
+  if (!requireAdmin(req, res, 'manage repository links')) return;
   try {
     const body = await readBody(req);
     sendJson(res, 200, { ok: true, link: addLink(body) });
@@ -1046,6 +1053,7 @@ route('POST', /^\/api\/relay\/links$/, async (req, res) => {
 });
 
 route('DELETE', /^\/api\/relay\/links\/([^/]+)$/, async (req, res, [id]) => {
+  if (!requireAdmin(req, res, 'manage repository links')) return;
   try {
     sendJson(res, 200, { ok: true, link: removeLink(id) });
   } catch (err) {
@@ -1054,6 +1062,7 @@ route('DELETE', /^\/api\/relay\/links\/([^/]+)$/, async (req, res, [id]) => {
 });
 
 route('POST', /^\/api\/relay\/links\/([^/]+)\/settings$/, async (req, res, [id]) => {
+  if (!requireAdmin(req, res, 'change repository link permissions')) return;
   try {
     const body = await readBody(req);
     sendJson(res, 200, { ok: true, link: updateLink(id, body) });
@@ -1063,6 +1072,7 @@ route('POST', /^\/api\/relay\/links\/([^/]+)\/settings$/, async (req, res, [id])
 });
 
 route('POST', /^\/api\/relay\/links\/([^/]+)\/send$/, async (req, res, [id]) => {
+  if (!requireAdmin(req, res, 'send repository changes')) return;
   try {
     const body = await readBody(req);
     sendJson(res, 200, await sendToLink(id, body));
@@ -1072,6 +1082,7 @@ route('POST', /^\/api\/relay\/links\/([^/]+)\/send$/, async (req, res, [id]) => 
 });
 
 route('POST', /^\/api\/relay\/links\/([^/]+)\/receive$/, async (req, res, [id]) => {
+  if (!requireAdmin(req, res, 'receive repository changes')) return;
   try {
     sendJson(res, 200, await receiveFromLink(id));
   } catch (err) {
@@ -1080,6 +1091,7 @@ route('POST', /^\/api\/relay\/links\/([^/]+)\/receive$/, async (req, res, [id]) 
 });
 
 route('POST', /^\/api\/relay\/reviews\/([^/]+)\/approve$/, async (req, res, [id]) => {
+  if (!requireAdmin(req, res, 'approve repository changes')) return;
   try {
     sendJson(res, 200, await approveReview(id));
   } catch (err) {
@@ -1088,6 +1100,7 @@ route('POST', /^\/api\/relay\/reviews\/([^/]+)\/approve$/, async (req, res, [id]
 });
 
 route('POST', /^\/api\/relay\/reviews\/([^/]+)\/deny$/, async (req, res, [id]) => {
+  if (!requireAdmin(req, res, 'resolve repository reviews')) return;
   try {
     const body = await readBody(req);
     sendJson(res, 200, { ok: true, review: denyReview(id, body) });
@@ -1097,6 +1110,7 @@ route('POST', /^\/api\/relay\/reviews\/([^/]+)\/deny$/, async (req, res, [id]) =
 });
 
 route('POST', /^\/api\/relay\/reviews\/([^/]+)\/opinion$/, async (req, res, [id]) => {
+  if (!requireAdmin(req, res, 'request a repository review')) return;
   try {
     sendJson(res, 200, { ok: true, review: await reviewOpinion(id) });
   } catch (err) {

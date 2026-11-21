@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { scryptSync } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -25,6 +26,10 @@ async function startServer(t, available) {
       endpoint: 'http://127.0.0.1:1/api/chat', gatewayEnabled: false,
       continuityAutoContinue: false, continuityEnabled: false, continuityFrameWatch: false,
       companionEnabled: false, agentTickMs: 600000,
+    },
+    admin: {
+      username: 'operator', salt: 'test-salt',
+      hash: scryptSync('test-password', 'test-salt', 64).toString('hex'), mustChange: false,
     },
     workflows: [
       { id: 'wf_mode', name: 'Mode test', status: 'ready', failurePolicy: { onFailure: 'stop', maxRetries: 0 }, steps: [{ id: 'note', type: 'note', name: 'Note', params: { text: 'test' } }] },
@@ -145,6 +150,44 @@ test('live check reports unavailable backend and explicit live requests do not s
   // android target is refused by the automation dispatcher instead of X11 terms.
   assert.match(explicitLive.body.error, /unavailable|display|xdotool|screenshot|adb|not supported|dispatcher/i);
   assert.equal((await state()).actionLog.items.find((item) => item.id === action.id).count, 2);
+});
+
+test('repository relay mutations require an authenticated local admin', { timeout: 30000 }, async (t) => {
+  const base = await startServer(t, false);
+  const blocked = [
+    ['POST', '/api/relay/links', { name: 'repo', remote: 'https://example.test/repo.git' }],
+    ['DELETE', '/api/relay/links/unknown', {}],
+    ['POST', '/api/relay/links/unknown/settings', { allowances: { send: false } }],
+    ['POST', '/api/relay/links/unknown/send', { paths: ['src/index.js'] }],
+    ['POST', '/api/relay/links/unknown/receive', {}],
+    ['POST', '/api/relay/reviews/unknown/approve', {}],
+    ['POST', '/api/relay/reviews/unknown/deny', {}],
+    ['POST', '/api/relay/reviews/unknown/opinion', {}],
+  ];
+  for (const [method, route, body] of blocked) {
+    const response = await request(base, route, method, body);
+    assert.equal(response.status, 401, `${method} ${route}`);
+    assert.match(response.body.error, /sign in as admin/i);
+  }
+
+  const login = await fetch(`${base}/api/auth/login`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ username: 'operator', password: 'test-password' }),
+  });
+  assert.equal(login.status, 200);
+  const cookie = login.headers.get('set-cookie').split(';')[0];
+  const create = await fetch(`${base}/api/relay/links`, {
+    method: 'POST', headers: { cookie, 'content-type': 'application/json' },
+    body: JSON.stringify({ name: 'approved repo', remote: 'https://example.test/repo.git' }),
+  });
+  assert.equal(create.status, 200);
+  const { link } = await create.json();
+  const update = await fetch(`${base}/api/relay/links/${encodeURIComponent(link.id)}/settings`, {
+    method: 'POST', headers: { cookie, 'content-type': 'application/json' },
+    body: JSON.stringify({ allowances: { send: false } }),
+  });
+  assert.equal(update.status, 200);
+  assert.equal((await update.json()).link.allowances.send, false);
 });
 
 test('verified backend permits saved and explicit live modes', { timeout: 30000 }, async (t) => {
