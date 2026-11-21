@@ -91,6 +91,9 @@ test('similar goals recall the prior sequence and its hindrances', () => {
     workflow,
     app: { name: 'Kiro' },
     limit: 3,
+    // Score as if recalled an hour after the run: recency must not decay with
+    // the wall clock, or this test passes today and fails next week.
+    nowMs: Date.parse(run.endedAt) + 3600000,
   });
   assert.equal(recalled.length, 1);
   assert.ok(recalled[0].score >= 0.8);

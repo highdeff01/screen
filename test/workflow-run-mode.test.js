@@ -58,7 +58,17 @@ async function startServer(t, available) {
       child.kill();
       await exited;
     }
-    fs.rmSync(cwd, { recursive: true, force: true });
+    // Windows can keep the child's working directory handle for a moment
+    // after it exits, so the first removal races; retry briefly.
+    for (let attempt = 0; ; attempt++) {
+      try {
+        fs.rmSync(cwd, { recursive: true, force: true });
+        break;
+      } catch (err) {
+        if (attempt >= 9) throw err;
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+    }
   });
   for (let i = 0; i < 100; i++) {
     if (child.exitCode !== null) throw new Error(`Server exited: ${output}`);

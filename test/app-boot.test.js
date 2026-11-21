@@ -78,7 +78,8 @@ test('unavailable desktop control is not presented as live mode', () => {
 });
 
 test('live requests are refused before reaching the API when the backend is unavailable', async () => {
-  const source = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+  // Normalise CRLF: the slice markers below are written with plain newlines.
+  const source = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
   const start = source.indexOf('async function queueRun(id, mode)');
   const end = source.indexOf('\n}\n\n/* ------------------------------------------------------------------ events */', start) + 2;
   const calls = [];
