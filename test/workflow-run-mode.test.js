@@ -141,7 +141,9 @@ test('live check reports unavailable backend and explicit live requests do not s
   assert.equal(defaultDry.body.liveFallback, null);
   const explicitLive = await run({ mode: 'live' });
   assert.equal(explicitLive.status, 409, 'explicit live is refused instead of silently becoming simulated');
-  assert.match(explicitLive.body.error, /unavailable|display|xdotool|screenshot|adb/i);
+  // Any refusal that names the platform limitation is enough; on Windows an
+  // android target is refused by the automation dispatcher instead of X11 terms.
+  assert.match(explicitLive.body.error, /unavailable|display|xdotool|screenshot|adb|not supported|dispatcher/i);
   assert.equal((await state()).actionLog.items.find((item) => item.id === action.id).count, 2);
 });
 
