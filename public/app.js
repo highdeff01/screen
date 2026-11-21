@@ -5033,6 +5033,8 @@ function renderLocalModelCard() {
       <button class="btn btn-sm" data-act="local-model-start" ${busy || !(lm.llama.found && lm.file) ? 'disabled' : ''}>Start local server</button>
       <button class="btn btn-sm btn-ghost" data-act="local-model-stop" ${lm.server?.running ? '' : 'disabled'}>Stop</button>
     </div>
+    ${(lm.models || []).length > 1 ? `<label class="field" style="margin-top:6px"><span>Model file</span><select data-scope="settings" data-key="localModelFile">${(lm.models || []).map((m) => `<option value="${esc(m.file)}" ${m.file === lm.file ? 'selected' : ''}>${esc(m.file)}</option>`).join('')}</select><span class="help">Any .gguf copied into data/models is listed here; the first one is used when nothing is chosen.</span></label>` : ''}
+    <label class="field" style="margin-top:6px"><span>Local runtime</span><select data-scope="settings" data-key="localModelProvider"><option value="llamacpp" ${lm.provider !== 'ollama' ? 'selected' : ''}>llama.cpp — GGUF file, no Ollama</option><option value="ollama" ${lm.provider === 'ollama' ? 'selected' : ''}>Ollama — local daemon</option></select><span class="help">Used only when the endpoint above cannot answer. Screen checks need the remote model: a plain GGUF has no vision.</span></label>
     <details style="margin-top:6px"><summary class="small dim">Other models</summary><ul style="margin:6px 0 0 16px">${catalog}</ul></details>
   </div>`;
 }
