@@ -80,16 +80,20 @@ async function request(base, route, method = 'GET', body) {
   return { status: response.status, body: await response.json() };
 }
 
-test('unavailable backend falls back for every resolved live mode before queuing', { timeout: 30000 }, async (t) => {
+test('live check reports unavailable backend and explicit live requests do not simulate silently', { timeout: 30000 }, async (t) => {
   const base = await startServer(t, false);
   const run = (body, id = 'wf_mode') => request(base, `/api/workflows/${id}/runs`, 'POST', body);
   const state = async () => (await request(base, '/api/state')).body;
   const before = await state();
   const refusal = before.platform.reason;
   assert.ok(refusal);
+  const check = await request(base, '/api/live/check', 'POST', {});
+  assert.equal(check.status, 200);
+  assert.equal(check.body.available, false);
+  assert.ok(check.body.reason);
   const runIds = [];
 
-  for (const body of [{}, { mode: '' }, { mode: 'live' }]) {
+  for (const body of [{}, { mode: '' }]) {
     const response = await run(body);
     assert.equal(response.status, 200);
     assert.equal(response.body.ok, true);
@@ -103,10 +107,10 @@ test('unavailable backend falls back for every resolved live mode before queuing
   }
   assert.equal(after.runs.length, before.runs.length + runIds.length);
   const action = after.actionLog.items.find((item) => item.action === 'start-run:Mode test');
-  assert.equal(action?.count, 3);
+  assert.equal(action?.count, 2);
   assert.deepEqual(action.detail, { workflowId: 'wf_mode', requestedMode: 'live' });
   assert.equal(action.error, refusal);
-  assert.equal(after.activity.filter((entry) => entry.itemId === action.id && /running simulated instead/.test(entry.message)).length, 3);
+  assert.equal(after.activity.filter((entry) => entry.itemId === action.id && /running simulated instead/.test(entry.message)).length, 2);
 
   const unplanned = await run({}, 'wf_empty');
   assert.equal(unplanned.status, 200);
@@ -126,14 +130,15 @@ test('unavailable backend falls back for every resolved live mode before queuing
   assert.equal(defaultDry.body.run.dryRun, true);
   assert.equal(defaultDry.body.liveFallback, null);
   const explicitLive = await run({ mode: 'live' });
-  assert.equal(explicitLive.status, 200, 'explicit live overrides a saved dry setting');
-  assert.equal(explicitLive.body.run.dryRun, true);
-  assert.equal(explicitLive.body.liveFallback, refusal);
-  assert.equal((await state()).actionLog.items.find((item) => item.id === action.id).count, 4);
+  assert.equal(explicitLive.status, 409, 'explicit live is refused instead of silently becoming simulated');
+  assert.match(explicitLive.body.error, /unavailable|display|xdotool|screenshot|adb/i);
+  assert.equal((await state()).actionLog.items.find((item) => item.id === action.id).count, 2);
 });
 
-test('available backend permits both saved and explicit live modes', { timeout: 30000 }, async (t) => {
+test('verified backend permits saved and explicit live modes', { timeout: 30000 }, async (t) => {
   const base = await startServer(t, true);
+  const readiness = await request(base, '/api/live/check', 'POST', {});
+  assert.equal(readiness.body.available, true);
   const run = (body) => request(base, '/api/workflows/wf_mode/runs', 'POST', body);
   for (const body of [{}, { mode: '' }, { mode: 'live' }]) {
     const response = await run(body);
