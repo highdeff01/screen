@@ -6,6 +6,7 @@ import {
   goalApp,
   goalPhases,
   installMethodIdeas,
+  platformMethodGuidance,
   strategyBrief,
   wantsInstall,
 } from '../server/strategy.js';
@@ -19,16 +20,19 @@ test('goal phases are read from the words the user used', () => {
 });
 
 test('the goal app resolves through the install catalogue', () => {
-  const app = goalApp('install VLC and play a sample video');
+  const app = goalApp('install VLC and play a sample video', 'win32');
   assert.equal(app.name, 'VLC');
   assert.equal(app.wingetId, 'VideoLAN.VLC');
   assert.match(app.exe, /VideoLAN/);
-  assert.equal(goalApp('open notepad').target, 'notepad.exe');
+  assert.equal(goalApp('open notepad', 'win32').target, 'notepad.exe');
+  assert.equal(goalApp('open notepad', 'linux').target, 'Notepad');
+  assert.equal(goalApp('open VLC', 'linux').exe, '');
+  assert.equal(goalApp('open VLC', 'linux').wingetId, '');
   assert.equal(goalApp('open a spreadsheet'), null);
 });
 
 test('install methods are ordered with the trade-off that decides them', () => {
-  const methods = installMethodIdeas(goalApp('install VLC'), 'install VLC');
+  const methods = installMethodIdeas(goalApp('install VLC', 'win32'), 'install VLC', 'win32');
   assert.match(methods[0].method, /winget install --id VideoLAN\.VLC/);
   assert.match(methods[0].why, /rollback|verification/i);
   assert.match(methods[1].method, /videolan\.org/);
@@ -51,6 +55,7 @@ test('the brief carries objective, order, attempts, lessons, continuations and g
     lessons: ['Use the Button control type on the VLC page.'],
     attempts: ['Download the VLC installer (clickElement): No window matching title "VLC"'],
     longTermGoal: 'Keep this workstation able to play any media file',
+    platform: 'win32',
   });
   assert.match(brief.text, /OBJECTIVE: install VLC/);
   assert.match(brief.text, /LONG-TERM GOAL: Keep this workstation/);
@@ -64,6 +69,16 @@ test('the brief carries objective, order, attempts, lessons, continuations and g
   assert.equal(brief.phases[0].key, 'install');
   assert.ok(brief.methods.length >= 2);
   assert.ok(brief.continuations.length >= 1);
+});
+
+test('non-Windows planning excludes Windows installation methods and paths', () => {
+  const brief = strategyBrief({ goal: 'install VLC', platform: 'linux' });
+  assert.deepEqual(brief.methods, []);
+  assert.match(brief.text, /INSTALLATION LIMIT:.*Windows-only/);
+  assert.doesNotMatch(brief.text, /winget|\.exe|ms-windows-store|Program Files/i);
+  assert.match(platformMethodGuidance('linux'), /xdotool.*X11.*XWayland/);
+  assert.match(platformMethodGuidance('darwin'), /AppleScript/);
+  assert.match(platformMethodGuidance('win32'), /WinGet/);
 });
 
 test('a goal without an install phase gets no install methods', () => {

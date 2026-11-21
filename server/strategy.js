@@ -13,6 +13,19 @@
 
 import { INSTALL_CATALOG, catalogEntry } from './app-install.js';
 
+export function platformMethodGuidance(platform = process.platform) {
+  if (platform === 'win32') {
+    return 'PLATFORM METHODS (Windows): use launchApp with the actual executable or installed app name, then focusWindow and visible UI Automation controls. Use Win32-backed key and pointer actions only after the live backend is confirmed. Ctrl+R goes to the focused app; Win+R opens the Run dialog and is not a general app-launch method. WinGet and .exe/.msi installers are Windows-only and require an explicit install goal.';
+  }
+  if (platform === 'linux') {
+    return 'PLATFORM METHODS (Linux): launch an installed app by its real executable, or use the supported app/file opener for documents and URLs; interact with the desktop using xdotool over a reachable X11/XWayland DISPLAY and capture with an available X11 screenshot tool (scrot, maim, flameshot, gnome-screenshot, spectacle, xfce4-screenshooter, or ImageMagick import). Wayland-only, ydotool-only, a set-but-unreachable DISPLAY, or missing capture/input tools are not live-capable; verify backend availability before planning live actions. Do not suggest WinGet, Windows paths, Microsoft Store URIs, or .exe/.msi installers. Software installation is not a generic desktop action: use only a supported, user-approved installer path.';
+  }
+  if (platform === 'darwin') {
+    return 'PLATFORM METHODS (macOS): use the app name or executable to launch, AppleScript/System Events for keys, screencapture for evidence, and cliclick only when coordinate pointer input is needed and installed. Do not suggest Windows paths, WinGet, Microsoft Store URIs, or .exe/.msi installers; installation needs a supported, user-approved method.';
+  }
+  return 'PLATFORM METHODS: use only the detected backend and its documented actions. Android input/capture requires the explicitly selected, authorized adb device. If no live backend is available, explain the missing capability and keep the workflow simulated; do not invent shell commands, paths, or installers.';
+}
+
 const PHASE_RULES = [
   { key: 'search', label: 'find the right source', match: /\b(?:search|google|look\s*(?:up|around)|find|browse|compare)\b/i },
   { key: 'download', label: 'download the installer or media', match: /\bdownload\b/i },
@@ -48,18 +61,32 @@ export function goalPhases(goal = '') {
 }
 
 /** The app a goal names, as a catalogue entry or a plain executable hint. */
-export function goalApp(goal = '') {
+export function goalApp(goal = '', platform = process.platform) {
   const text = String(goal || '');
   const entry = catalogEntry(text);
   if (entry) {
-    return { name: entry.name, process: entry.process, wingetId: entry.wingetId, exe: entry.exe?.[0] || '', entry };
+    return {
+      name: entry.name,
+      process: entry.process,
+      wingetId: platform === 'win32' ? entry.wingetId : '',
+      exe: platform === 'win32' ? entry.exe?.[0] || '' : '',
+      entry,
+    };
   }
   const alias = APP_ALIASES.find((item) => item.match.test(text));
-  return alias ? { name: alias.name, process: alias.process, wingetId: '', exe: '', target: alias.target, entry: null } : null;
+  return alias ? {
+    name: alias.name,
+    process: platform === 'win32' ? alias.process : '',
+    wingetId: '',
+    exe: '',
+    target: platform === 'win32' ? alias.target : alias.name,
+    entry: null,
+  } : null;
 }
 
 /** Ordered install methods for an app, each with the trade-off that decides it. */
-export function installMethodIdeas(app = null, goal = '') {
+export function installMethodIdeas(app = null, goal = '', platform = process.platform) {
+  if (platform !== 'win32') return [];
   const entry = app?.entry || catalogEntry(goal) || null;
   const name = app?.name || entry?.name || 'the app';
   const methods = [];
@@ -131,11 +158,12 @@ export function strategyBrief({
   attempts = [],
   longTermGoal = '',
   limitMethods = 3,
+  platform = process.platform,
 } = {}) {
   const phases = goalPhases(goal);
-  const resolved = app || goalApp(goal);
+  const resolved = app || goalApp(goal, platform);
   const wantsInstall = phases.some((phase) => phase.key === 'install');
-  const methods = wantsInstall ? installMethodIdeas(resolved, goal).slice(0, limitMethods) : [];
+  const methods = wantsInstall ? installMethodIdeas(resolved, goal, platform).slice(0, limitMethods) : [];
   const continuations = continuationIdeas({ goal, phases });
   const lines = [];
   lines.push(`OBJECTIVE: ${String(goal || 'not recorded').trim()}`);
@@ -151,6 +179,8 @@ export function strategyBrief({
     methods.forEach((entry, index) => {
       lines.push(`${index + 1}. ${entry.method} — ${entry.why} Risk: ${entry.risk}`);
     });
+  } else if (wantsInstall && platform !== 'win32') {
+    lines.push(`INSTALLATION LIMIT: the current installer catalog is Windows-only; no install method is advertised for ${platform}. Do not use a Windows package manager, path, URI or installer. Report the platform limitation instead of guessing an install command.`);
   }
   if (attempts.length) {
     lines.push('ALREADY TRIED (do not repeat these unchanged):');

@@ -15,7 +15,7 @@ import { normalizePlanSteps, workflowGoal } from './planner.js';
 import { windowChecksFor } from './step-effects.js';
 import { appFromGoal } from './repair.js';
 import { catalogEntry } from './app-install.js';
-import { strategyBrief } from './strategy.js';
+import { platformMethodGuidance, strategyBrief } from './strategy.js';
 import { matchAppHint } from './app-launch-hints.js';
 import { liveControl } from './platform.js';
 
@@ -360,6 +360,7 @@ export async function agentReplan({
     .map((entry) => `- ${entry.name || entry.kind}: ${entry.advice}`)
     .join('\n');
   const prompt = `GOAL: ${goal || '(not recorded)'}
+${platformMethodGuidance()}
 PLATFORM FACTS (the truth about this machine — never contradict these; do not diagnose other operating systems): running on ${process.platform}${process.platform === 'win32' ? ' (Windows) with live desktop control available' : ''}; live backend: ${(() => { let c = { available: false, label: 'none' }; try { c = liveControl(); } catch { /* report the fallback below */ } return `${c.label}, ${c.available ? 'available' : 'unavailable (runs continue simulated)'}`; })()}; any error text mentioning other platforms (Linux/X11/xdotool) that the run did not fail on is stale or from a different host — ignore it.
 WORKFLOW: ${run.workflowName || workflow?.name || ''}
 FAILED STEP: ${failedIndex + 1}/${run.steps.length} “${step.name}” (${step.type})
@@ -397,7 +398,7 @@ ${lessons.length ? lessons.map((lesson) => `- ${lesson}`).join('\n') : '(none ma
 
 TASK:
 First compare the screen with what the failed step was trying to produce. If the desktop already shows that state — a Save/Open/install dialog, the app window, the requested page — repair by continuing from it (type into the open dialog, click its own Next/Save/Finish, focus the existing window) instead of restarting the flow, relaunching the app or opening another download. Set params.preview:true on a critical click so the screen is read before it, and params.humanize:true when the pointer must pass over a menu.
-Diagnose why this failed and choose the fastest reliable fix. You may use your Windows/UI-automation knowledge to research an unfamiliar method; do not claim web access. Do not repeat the failed action unchanged.
+Diagnose why this failed and choose the fastest reliable fix using only methods supported by the reported platform and backend. Do not claim web access. Do not repeat the failed action unchanged.
 If the failed step is a windowAction (minimize, maximize, restore), the repair must contain that same action on the same window; opening a different app is not a fix.
 Use only the app the goal names; never substitute another app. Keep the repair to the fewest steps that perform the failed action and prove it.
 Continue from the furthest step that already passed and from the current screen; do not rebuild phases that worked. If the failure is a blocker — an error or confirmation dialog, an installer window, a download page, a loader — deal with that blocker (dismiss it, click its own Next/Finish/Cancel, or act inside it) and then retry only the failed step.
@@ -421,7 +422,7 @@ Semantics:
 - Every type/key/clipboard/drag/scroll input needs params.foreground (or clickElement params.window).
 ${TYPE_GUIDE}`;
   const system =
-    'You are the live repair agent inside a Windows desktop automation runner. Be concrete and fast. Prefer visible UI Automation controls over guessed pixels. Diagnose from the error, the prior steps and the screen state, not from assumptions. Preserve verification: never lower a check to make a step pass. Return JSON only.';
+    'You are the live repair agent inside a cross-platform desktop automation runner. Be concrete and fast. Prefer visible UI Automation controls over guessed pixels. Diagnose from the error, the prior steps and the screen state, not from assumptions. Preserve verification: never lower a check to make a step pass. Return JSON only.';
   let reply;
   try {
     reply = typeof ask === 'function'

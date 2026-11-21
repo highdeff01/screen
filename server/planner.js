@@ -8,7 +8,8 @@ import { slug } from './store.js';
 import { eligibleShortcuts } from './shortcuts.js';
 import { recallWorkflowMemory, recallWorkflowTemplate, formatWorkflowMemory, planStepsFromMemory } from './workflow-memory.js';
 import { buildWorkflowResearch, compactResearch } from './research.js';
-import { strategyBrief } from './strategy.js';
+import { platformMethodGuidance, strategyBrief } from './strategy.js';
+import { liveControl } from './platform.js';
 
 const TYPE_SET = new Set(STEP_TYPES.map((s) => s.type));
 const SAMPLE_VIDEO_URL = 'https://interactive-examples.mdn.mozilla.net/media/cc0-videos/flower.mp4';
@@ -934,6 +935,14 @@ export function alignPlanToGoal(steps, goal, context = {}) {
   return { steps, app, corrected };
 }
 
+function platformContextText() {
+  const backend = liveControl();
+  const status = backend.available
+    ? `${backend.label} prerequisites detected; live connectivity is verified again before execution`
+    : `${backend.label} unavailable: ${backend.reason}; desktop actions will be simulated and must not be described as completed`;
+  return `${platformMethodGuidance()}\nCURRENT LIVE BACKEND: ${status}`;
+}
+
 function appContextText(context = {}) {
   const windows = (context.windows || [])
     .slice(0, 24)
@@ -943,7 +952,7 @@ function appContextText(context = {}) {
     .slice(0, 40)
     .map((app) => `- ${app.name}`)
     .join('\n');
-  return `Running windows:\n${windows || '- none detected'}\nInstalled Start-menu apps:\n${apps || '- none detected'}`;
+  return `Running windows:\n${windows || '- none detected'}\nDetected installed apps:\n${apps || '- none detected'}`;
 }
 
 /** Recover complete step objects when a model truncates the outer JSON array. */
@@ -1604,7 +1613,7 @@ export function heuristicPlan(goal, appContext = {}) {
   return steps;
 }
 
-const PLAN_SYSTEM = `You are the workflow planner inside Sightline, a Windows desktop automation console.
+const PLAN_SYSTEM = `You are the workflow planner inside Sightline, a cross-platform desktop automation console.
 Convert the user's goal into an ordered array of executable UI steps. Reply with JSON only, in this shape:
 {"steps":[{"type":"focusWindow","name":"Focus the target app","params":{"title":"Exact app or window name","process":"optional process name"},"timeoutMs":15000}]}
 Optional step field: "condition":"newChat" marks a step that starts a new chat/session; the runner skips it unless the mission goal asks for a new chat or different topic. Omit condition for normal steps.
@@ -1628,7 +1637,7 @@ Allowed types and params:
 - screenshot {caption}
 - verifyScreen {question,title?,app?,caption?,onError:"fail|warn"} — reads a fresh screenshot with vision and fails unless the visible page/state matches; app is the process/app that must be in the foreground
 - verifyPlayback {title?,caption?,intervalMs?,minConfidence?} — captures two frames a few seconds apart and fails unless the video is visibly advancing (use after and during long playback waits)
-- mediaHold {title,bufferMs?,maxMs?,checkMs?,stallMs?} — reads the player's seek slider through Windows UI Automation, holds for the actual remaining media duration, polls progress, and fails on a stall
+- mediaHold {title,bufferMs?,maxMs?,checkMs?,stallMs?} — use only when the current platform supports reading the player's seek slider; otherwise use verifyPlayback to confirm visible progress.
 - expect {kind:"window|file|process|foreground", value}
 - playMedia {x,y,title} — starts playback only if audio is stopped and the media window is foreground
 - clickElement {window,name,controlType?,button?,fallbackX?,fallbackY?,visionFallback?,verifyAfter?,preview?,humanize?,expect?} — focuses the window, scores visible UI Automation names, retries shortened labels, then uses a confidence-gated vision locator; verifyAfter runs a screen check before the next step; preview reads a screenshot before clicking (skips when expect is already visible, names surrounding elements and can correct the position); humanize moves the pointer through the area so hover menus render
@@ -1644,7 +1653,7 @@ Allowed types and params:
 - recordVideo {durationMs,fps?,filename?,folder?,x?,y?,width?,height?,caption?,note?,noteTitle?,outputVar?} — records the desktop (or a rectangle) to an MP4 with ffmpeg for the requested duration, saves a note and returns the file path
 - writeTextFile {location:"desktop|data",path,text?,textVar?,append?,overwrite?,noteTitle?,outputVar?} — writes the captured text to a .txt file on the Desktop or under data/files; use textVar for a captured Kiro answer
 - watchVideo {title,notes?,textVar?,noteTitle?,bufferMs?,maxMs?,checkMs?,stallMs?,outputVar?} — holds for the real video duration, confirms progress through the player clock, captures before/after frames and saves a Markdown note with the duration, outcome and observations
-- installApp {app?,id?,url?,urls?,installerArgs?,discover?,maxAttempts?,verify?,noteTitle?} — installs a program and proves it; app is the name the goal uses (VLC, 7-Zip, Notepad++), id is a winget package id, url/urls are explicit installers, and discover (default true) searches the vendor page for the official .exe/.msi. The runner tries up to maxAttempts methods in order (winget first, then installers), safe-checks every source and switch, then verifies the executable or uninstall entry. Use only when the goal explicitly asks to install it
+- installApp {app?,id?,url?,urls?,installerArgs?,discover?,maxAttempts?,verify?,noteTitle?} — installs and verifies an app only through methods supported by the current platform; never assume WinGet, .exe/.msi, or a Windows path on another OS. Use only when the goal explicitly asks for installation
 - testApp {target,title?,process?,question?,waitMs?,settleMs?,note?,noteTitle?,close?} — launches the app, waits for its window/process, checks the foreground (and optional vision question), captures a screenshot and saves the smoke-test note
 Rules: use the steps the goal actually needs (typically 10-20, at most 24). Cover each phase once, in order, then stop; never repeat the same action, never add a wait after every click, and never pad the plan with placeholder clicks. Include a focusWindow before typing, foreground guards when a specific app/page matters, and verifyScreen after navigation, installation or playback so success is judged from pixels rather than command logs. For video work, use watchVideo (or mediaHold plus writeNote) rather than a fixed wait. For copied links use copyLink, and for saving media use downloadMedia/saveImage or recordVideo; never invent local file URLs. For installing use installApp with a real winget package id, and for smoke tests use testApp. Save important interaction details with writeNote, then readNote when a later step needs them. Do not stop after the first successful sub-goal: continue through download, launch and verification.
 Prefer element-based actions over guessed pixels. Use clickElement with the actual visible control name (for example Install, Search, Open, Play); never use placeholders such as "UI element", "button" or "control". It searches the whole UI Automation tree, scores near matches and retries with alternate labels plus a vision fallback. Only use click when the goal gives explicit coordinates. If a control name is uncertain, give a short visible label and let clickElement resolve it. Add verifyAfter to a critical click when the next step depends on it; the runner performs that check before continuing.
@@ -1892,7 +1901,7 @@ export function planIssues(steps, goal) {
   return issues;
 }
 
-const REPAIR_SYSTEM = `You are a precise Windows desktop workflow planner. Rewrite the plan from scratch as JSON only: {"steps":[...]}.
+const REPAIR_SYSTEM = `You are a precise cross-platform desktop workflow planner. Rewrite the plan from scratch as JSON only: {"steps":[...]}.
 Allowed step types: openUrl, launchApp, focusWindow, wait, type, key, clipboard, clickElement, waitFor, downloadMedia, installApp, playMedia, watchVideo, verifyScreen, screenshot, writeNote.
 Rules:
 - Mark a step that starts a new chat/session with "condition":"newChat"; reuse missions then skip it.
@@ -1901,9 +1910,9 @@ Rules:
 - clickElement needs the real visible control label in params.name (Install, Get, Search, Open, Play); never use placeholder names like "UI element" or "button".
 - Default to mouse/visible-control actions. Reuse the current chat or tab; do not open a New Session/New Chat unless the goal explicitly asks for a new topic. Use a shortcut only when no visible control exists, the goal requests it, or it is already a validated workflow step.
 - Include one short wait after navigation or installation only; never add a wait after every click.
-- Use installApp {app} (the name the goal uses) when installation is requested: it tries winget and then the official installer, verifies the result and records the rollback. Add id only when you know the real winget package id. Use downloadMedia {url,kind:"video"} when a file must be downloaded. Use playMedia after the player is open, or watchVideo for a long video.
+- Use installApp only when that installer flow is supported on the current platform and the goal explicitly requests installation. Never infer a package manager, installer format, or rollback command from another operating system. Use downloadMedia {url,kind:"video"} when a file must be downloaded. Use playMedia after the player is open, or watchVideo for a long video.
 - Use verifyScreen after the last phase. Never repeat identical steps.
-Common knowledge examples: Microsoft Store VLC search uses ms-windows-store://search/?query=VLC; VLC's winget id is VideoLAN.VLC; VLC's usual desktop path is C:\\Program Files\\VideoLAN\\VLC\\vlc.exe; a real sample video URL is ${SAMPLE_VIDEO_URL}.`;
+Common knowledge examples are platform-specific; use the detected platform methods and app inventory, and never reuse an executable path or installer from another OS. A real sample video URL is ${SAMPLE_VIDEO_URL}.`;
 
 async function repairPlan(goal, original, appContext, research = null) {
   const reply = await chat(
@@ -1911,7 +1920,7 @@ async function repairPlan(goal, original, appContext, research = null) {
       { role: 'system', content: REPAIR_SYSTEM },
       {
         role: 'user',
-        content: `Goal: ${goal}\nThe first draft was incomplete (${planIssues(original, goal).join(', ') || 'too generic'}). Produce the complete corrected plan now.\nSTRATEGY BRIEF:\n${strategyBrief({ goal, longTermGoal: db().settings?.longTermGoal || '' }).text}\n${research?.promptText ? `Research evidence from prior attempts:\n${research.promptText}` : ''}`,
+        content: `Goal: ${goal}\nThe first draft was incomplete (${planIssues(original, goal).join(', ') || 'too generic'}). Produce the complete corrected plan now.\n${platformContextText()}\nSTRATEGY BRIEF:\n${strategyBrief({ goal, longTermGoal: db().settings?.longTermGoal || '' }).text}\n${research?.promptText ? `Research evidence from prior attempts:\n${research.promptText}` : ''}`,
       },
     ],
     { format: 'json', kind: 'plan-repair', timeoutMs: 90000, temperature: 0.1, maxTokens: 8000 }
@@ -2031,7 +2040,7 @@ async function buildPlan(goal, workflow, options = {}) {
       { role: 'system', content: PLAN_SYSTEM },
       {
         role: 'user',
-        content: `Goal: ${goal}\n${ctx}\n${contextText}\nGoal app: ${
+        content: `Goal: ${goal}\n${platformContextText()}\n${ctx}\n${contextText}\nGoal app: ${
           namedApp ? `${namedApp.name}${namedApp.process ? ` (process ${namedApp.process})` : ''}` : 'not named'
         }\nSTRATEGY BRIEF — plan against this, keep the fallback order and the continuations:\n${strategyText}\nValidated shortcuts from passed live reviewed runs (only reuse when the same app/control matches; otherwise prefer the visible control):\n${shortcutText}\nPrior workflow memory and visual checks from this workstation (use as evidence, adapt to the current screen, and do not repeat a known hindrance):\n${memoryText}\nRESEARCH PACK (conversation, failed attempts, screenshots and all-workflow history):\n${research?.promptText || 'No cross-referenced history yet.'}\nIf you reuse a learned shortcut, set the key step's params.foreground to the window title shown for it so the runner refuses the wrong window.\nUse the goal app above. Never use Notepad unless the goal says Notepad.\nReturn JSON.`,
       },

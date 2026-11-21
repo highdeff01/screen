@@ -80,14 +80,14 @@ export async function createSnapshot(label = '', deps = {}) {
     commit: commit.stdout.slice(0, 40),
     parent: head.ok ? head.stdout.slice(0, 40) : null,
   };
+  const ref = await run(['update-ref', `refs/snapshots/${snapshot.id}`, snapshot.commit]);
+  if (!ref.ok) return { ok: false, status: 'ref-failed', message: ref.stderr || 'Could not preserve the snapshot reference.' };
   const list = snapshots();
   list.unshift(snapshot);
   while (list.length > SNAP_LIMIT) {
     const dropped = list.pop();
     try { await run(['update-ref', '-d', `refs/snapshots/${dropped.id}`]); } catch { /* ref may not exist */ }
   }
-  // A named ref keeps the snapshot commit alive against git's garbage collector.
-  await run(['update-ref', `refs/snapshots/${snapshot.id}`, snapshot.commit]);
   persist();
   logActivity('snapshots', `Snapshot “${snapshot.label}” taken`, { snapshotId: snapshot.id, commit: snapshot.commit });
   return { ok: true, status: 'created', snapshot, message: `Snapshot “${snapshot.label}” saved (${snapshot.commit.slice(0, 8)}).` };

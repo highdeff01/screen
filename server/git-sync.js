@@ -8,10 +8,10 @@
  * Any pre-existing staged changes or conflicts stop the sync for manual review,
  * including changes in data/. Existing commits may also be pushed to origin.
  *
- * Two identical status observations are required, but status does not detect
- * content edits to an already modified file. If origin moved, the local commit
- * is kept without a push. Failed pushes require a manual retry when the tree is
- * clean. Git and the settle wait are injectable for testing.
+ * Two identical content observations are required before auto-commit. Incoming
+ * commits are tested in an isolated worktree and backed up before fast-forward.
+ * If origin moved, the local commit is kept without a push. Git and verification
+ * are injectable for testing.
  */
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -25,8 +25,9 @@ const COMMIT_FOOTER =
 
 const state = {
   timer: null,
-  intervalMs: 20000,
+  intervalMs: 10000,
   busy: false,
+  autoTickBusy: false,
   status: 'idle',
   lastCheckAt: null,
   lastSyncAt: null,
@@ -142,16 +143,17 @@ async function verifyHead(sha, deps = {}) {
  * not run since the last edit, ask it for one run — never a second suite of our
  * own, which would compete with it for the machine and make both flaky.
  */
-async function defaultVerify() {
+async function defaultVerify(sha) {
   const sentinel = await import('./sentinel.js');
   if (sentinel.sentinelBusy()) return { ok: false, deferred: true };
-  const fresh = sentinel.lastVerdict();
-  if (fresh) {
-    return { ok: fresh.ok, fail: fresh.fail ?? null, failingTests: fresh.failingTests || [], message: fresh.stale ? 'the last run started before the newest edit' : '' };
-  }
-  const status = await sentinel.runSentinelNow();
-  const run = status.lastRun || {};
-  return { ok: run.ok === true, fail: run.fail ?? null, failingTests: run.failingTests || [] };
+  const result = await sentinel.verifyCommit(sha);
+  return {
+    ok: result.ok === true,
+    deferred: result.deferred === true,
+    fail: result.fail ?? null,
+    failingTests: result.failingTests || [],
+    message: result.error || '',
+  };
 }
 
 /**
@@ -164,29 +166,21 @@ async function defaultVerify() {
 async function stageAndPromote({ run, deps = {}, settings = {}, branch, head }) {
   const autoBranch = `auto/${branch}`;
   state.autoBranch = autoBranch;
-  const staged = await run(['push', '--force', 'origin', `HEAD:refs/heads/${autoBranch}`], 120000);
-  if (!staged.ok) {
-    state.status = 'stage-failed';
-    state.lastError = staged.stderr || staged.stdout || `git push to ${autoBranch} failed.`;
-    return gitSyncStatus();
-  }
-  state.autoStaged = head;
-
   // The gate. `force` is the operator's explicit "push anyway"; an injected
   // `run` without `verify` is a unit test of the git plumbing, which keeps the
   // old path so those decisions stay testable without a suite.
-  const gate = settings.autoSyncGated !== false && !deps.force && Boolean(deps.verify || !deps.run);
+  const gate = Boolean(deps.verify || !deps.run);
   if (gate) {
     const verdict = await verifyHead(head, deps);
     if (verdict.deferred) {
       state.status = 'verifying';
-      state.lastError = `${autoBranch} has ${head.slice(0, 7)}; the suite is running, so ${branch} waits for the next check.`;
+      state.lastError = `The suite is running; ${head.slice(0, 7)} waits before publishing to ${branch}.`;
       return gitSyncStatus();
     }
     if (!verdict.ok) {
       state.status = 'held';
       state.held = { sha: head, at: now(), ok: false, fail: verdict.fail ?? null, tests: verdict.tests || [] };
-      state.lastError = `${verdict.fail ?? '?'} failing test(s) on ${head.slice(0, 7)}; ${autoBranch} has the commit and ${branch} is held back until the suite passes${
+      state.lastError = `${verdict.fail ?? '?'} failing test(s) on ${head.slice(0, 7)}; no remote branch was updated${
         verdict.tests?.length ? ` (first: ${verdict.tests[0]})` : ''
       }.`;
       return gitSyncStatus();
@@ -194,7 +188,17 @@ async function stageAndPromote({ run, deps = {}, settings = {}, branch, head }) 
     state.held = { sha: head, at: now(), ok: true };
   }
 
-  const push = await run(['push', 'origin', `HEAD:refs/heads/${branch}`], 120000);
+  if (db().settings.autoSync !== true) return gitSyncStatus();
+  const staged = await run(['push', 'origin', `${head}:refs/heads/${autoBranch}`], 120000);
+  if (!staged.ok) {
+    state.status = 'stage-failed';
+    state.lastError = staged.stderr || staged.stdout || `git push to ${autoBranch} failed.`;
+    return gitSyncStatus();
+  }
+  state.autoStaged = head;
+
+  if (db().settings.autoSync !== true) return gitSyncStatus();
+  const push = await run(['push', 'origin', `${head}:refs/heads/${branch}`], 120000);
   if (!push.ok) {
     state.status = 'push-failed';
     state.lastError = push.stderr || push.stdout || 'git push failed.';
@@ -286,8 +290,15 @@ export async function checkAndSync(deps = {}) {
       return gitSyncStatus();
     }
 
-    // Wait for a second identical observation unless the operator asked now.
-    const hash = createHash('md5').update(status.stdout).digest('hex');
+    const diff = await run(['diff', '--binary', '--', ...scope]);
+    if (!diff.ok) {
+      state.status = 'error';
+      state.lastError = diff.stderr || 'Could not inspect tracked file contents.';
+      return gitSyncStatus();
+    }
+
+    // Wait for a second identical content observation unless the operator asked now.
+    const hash = createHash('md5').update(`${status.stdout}\0${diff.stdout}`).digest('hex');
     if (!deps.force && state.lastStatusHash !== hash) {
       state.lastStatusHash = hash;
       state.status = 'waiting';
@@ -404,7 +415,7 @@ export async function conflictFiles({ run } = {}) {
  * diverged branch is reported so it can be merged deliberately from the Sync
  * page (or by the operator).
  */
-export async function pullNow({ ffOnly = true, run } = {}) {
+export async function pullNow({ ffOnly = true, run, verify, backup } = {}) {
   const git = run || runGit;
   const branch = await currentBranch(git);
   state.branch = branch;
@@ -426,7 +437,39 @@ export async function pullNow({ ffOnly = true, run } = {}) {
     state.lastError = `Local and origin/${branch} both have commits; merge from the Sync page to combine them.`;
     return { ok: false, status: 'diverged', behind, ahead, message: state.lastError };
   }
-  const merge = await git(ffOnly ? ['merge', '--ff-only', `origin/${branch}`] : ['merge', '--no-edit', `origin/${branch}`], 60000);
+  let testedSha = '';
+  if (ffOnly) {
+    const remoteHead = await git(['rev-parse', `origin/${branch}`]);
+    const sha = String(remoteHead.stdout || '').trim();
+    if (!remoteHead.ok || !sha) {
+      state.status = 'error';
+      state.lastError = remoteHead.stderr || 'Could not read the remote commit.';
+      return { ok: false, status: 'error', message: state.lastError };
+    }
+    testedSha = sha;
+    const verdict = await verifyHead(sha, { run, verify });
+    if (verdict.deferred) {
+      state.status = 'verifying';
+      state.lastError = `origin/${branch} has ${sha.slice(0, 7)}; testing is in progress.`;
+      return { ok: false, status: 'verifying', message: state.lastError };
+    }
+    if (!verdict.ok) {
+      state.status = 'held';
+      state.lastError = `Remote commit ${sha.slice(0, 7)} failed testing; local files were not updated.`;
+      return { ok: false, status: 'held', message: state.lastError };
+    }
+    const takeSnapshot = backup || (async () => {
+      const snapshots = await import('./snapshots.js');
+      return snapshots.createSnapshot(`before sync from ${branch}`);
+    });
+    const safety = await takeSnapshot();
+    if (!safety?.ok) {
+      state.status = 'backup-failed';
+      state.lastError = safety?.message || 'Could not create a recovery snapshot; remote changes were not applied.';
+      return { ok: false, status: 'backup-failed', message: state.lastError };
+    }
+  }
+  const merge = await git(ffOnly ? ['merge', '--ff-only', testedSha] : ['merge', '--no-edit', `origin/${branch}`], 60000);
   if (!merge.ok) {
     const conflicts = await conflictFiles({ run: git });
     state.status = conflicts.count ? 'conflict' : 'merge-failed';
@@ -679,7 +722,7 @@ export function pauseAutoSync(ms = 60000) {
 
 export function startAutoSync({ intervalMs } = {}) {
   const fromSettings = Number(db().settings.autoSyncIntervalMs);
-  state.intervalMs = Math.max(5000, Number(intervalMs) || fromSettings || 20000);
+  state.intervalMs = Math.max(5000, Number(intervalMs) || fromSettings || 10000);
   if (state.timer) clearInterval(state.timer);
   state.timer = setInterval(() => {
     autoTick().catch((err) => {
@@ -692,21 +735,110 @@ export function startAutoSync({ intervalMs } = {}) {
 }
 
 /**
- * One automatic pass: commit and push what changed here, then take updates that
- * other apps pushed to the same repository. The pull only ever fast-forwards, so
- * an automatic pass can never discard local commits; a diverged branch waits for
- * the Sync page.
+ * One automatic pass: test before publishing local commits, then test, snapshot,
+ * and fast-forward remote updates. Diverged branches wait for manual review.
  */
-async function autoTick() {
-  const status = await checkAndSync();
-  if (db().settings.autoPull === false) return status;
-  if (status.busy || status.pending || status.status === 'conflict' || status.status === 'error') return status;
-  if (Number(status.behind || 0) <= 0) return status;
-  const pulled = await pullNow({ ffOnly: true });
-  if (!pulled.ok) {
-    state.status = pulled.status === 'diverged' ? 'diverged' : state.status;
-    state.lastError = pulled.message || state.lastError;
+async function autoTick(deps = {}) {
+  if (state.autoTickBusy) return gitSyncStatus();
+  state.autoTickBusy = true;
+  try {
+    const status = await checkAndSync(deps);
+    if (!status.enabled) return status;
+    return await autoPull(status, deps);
+  } finally {
+    state.autoTickBusy = false;
   }
+}
+
+async function autoPull(status, deps = {}) {
+  const run = deps.run || runGit;
+  if (db().settings.autoPull !== true) return status;
+  if (state.busy || status.pending || ['conflict', 'error', 'waiting', 'staged', 'held', 'verifying', 'push-failed'].includes(status.status)) return status;
+
+  const worktree = await run(['status', '--porcelain']);
+  if (!worktree.ok) return gitSyncStatus();
+  if (worktree.stdout) {
+    state.status = 'dirty';
+    state.lastError = 'Remote updates are waiting until local tracked and untracked changes are resolved.';
+    return gitSyncStatus();
+  }
+
+  const branchResult = await run(['rev-parse', '--abbrev-ref', 'HEAD']);
+  const branch = String(branchResult.stdout || '').trim();
+  if (!branchResult.ok || !branch) {
+    state.status = 'error';
+    state.lastError = branchResult.stderr || 'Could not determine the current branch.';
+    return gitSyncStatus();
+  }
+  state.branch = branch;
+
+  const fetched = await run(['fetch', 'origin', branch], 60000);
+  if (!fetched.ok) {
+    state.status = 'fetch-failed';
+    state.lastError = fetched.stderr || fetched.stdout || 'Could not fetch the remote branch.';
+    return gitSyncStatus();
+  }
+  const counts = await run(['rev-list', '--left-right', '--count', `HEAD...origin/${branch}`]);
+  const countMatch = counts.ok && String(counts.stdout).trim().match(/^(\d+)\s+(\d+)$/);
+  if (!countMatch) {
+    state.status = 'error';
+    state.lastError = counts.stderr || 'Could not compare the local and remote branches.';
+    return gitSyncStatus();
+  }
+  state.ahead = Number(countMatch[1]);
+  state.behind = Number(countMatch[2]);
+  if (!state.behind) return gitSyncStatus();
+  if (state.ahead) {
+    state.status = 'diverged';
+    state.lastError = `Local and origin/${branch} have diverged; merge them manually.`;
+    return gitSyncStatus();
+  }
+
+  const remoteHead = await run(['rev-parse', `origin/${branch}`]);
+  const sha = String(remoteHead.stdout || '').trim();
+  if (!remoteHead.ok || !sha) {
+    state.status = 'error';
+    state.lastError = remoteHead.stderr || 'Could not read the remote commit.';
+    return gitSyncStatus();
+  }
+  const verdict = await verifyHead(sha, deps);
+  if (verdict.deferred) {
+    state.status = 'verifying';
+    state.lastError = `origin/${branch} has ${sha.slice(0, 7)}; testing is in progress.`;
+    return gitSyncStatus();
+  }
+  if (!verdict.ok) {
+    state.status = 'held';
+    state.held = { sha, at: now(), ok: false, fail: verdict.fail ?? null, tests: verdict.tests || [] };
+    state.lastError = `Remote commit ${sha.slice(0, 7)} failed testing; local files were not updated${verdict.tests?.length ? ` (first: ${verdict.tests[0]})` : ''}.`;
+    return gitSyncStatus();
+  }
+
+  const backup = deps.backup || (async () => {
+    const snapshots = await import('./snapshots.js');
+    return snapshots.createSnapshot(`before sync from ${branch}`);
+  });
+  const safety = await backup();
+  if (!safety?.ok) {
+    state.status = 'backup-failed';
+    state.lastError = safety?.message || 'Could not create a recovery snapshot; remote changes were not applied.';
+    return gitSyncStatus();
+  }
+
+  if (db().settings.autoSync !== true || db().settings.autoPull !== true) return gitSyncStatus();
+  const pulled = await run(['merge', '--ff-only', sha], 60000);
+  if (!pulled.ok) {
+    const conflicts = await conflictFiles({ run });
+    state.status = conflicts.count ? 'conflict' : 'pull-failed';
+    state.lastError = conflicts.count
+      ? `${conflicts.count} conflicted file(s): ${conflicts.files.slice(0, 4).join(', ')}.`
+      : pulled.stderr || pulled.stdout || `Could not fast-forward ${branch}.`;
+    return gitSyncStatus();
+  }
+  state.status = 'pulled';
+  state.behind = 0;
+  state.lastError = '';
+  state.lastSyncAt = now();
   return gitSyncStatus();
 }
 

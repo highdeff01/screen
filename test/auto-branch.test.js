@@ -28,6 +28,7 @@ beforeEach(() => {
   sync.__gitSyncState.busy = false;
   sync.__gitSyncState.verified = null;
   sync.__gitSyncState.held = null;
+  sync.__gitSyncState.autoStaged = '';
   store.db().settings.autoSync = true;
 });
 
@@ -58,10 +59,10 @@ function fakeGit({ head = HEAD, pushOk = true, dirty = ' M public/app.js' } = {}
   return { run, calls };
 }
 
-const mainPushes = (calls) => calls.filter((call) => call === 'push origin HEAD:refs/heads/main');
-const autoPushes = (calls) => calls.filter((call) => call === 'push --force origin HEAD:refs/heads/auto/main');
+const mainPushes = (calls) => calls.filter((call) => call === `push origin ${HEAD}:refs/heads/main`);
+const autoPushes = (calls) => calls.filter((call) => call === `push origin ${HEAD}:refs/heads/auto/main`);
 
-test('a failing commit stays on auto/main and main is never pushed', async () => {
+test('a failing commit is held before any remote branch is pushed', async () => {
   const git = fakeGit();
   let verifications = 0;
   const verify = async () => {
@@ -73,11 +74,11 @@ test('a failing commit stays on auto/main and main is never pushed', async () =>
 
   assert.equal(status.status, 'held');
   assert.equal(status.autoBranch, 'auto/main');
-  assert.equal(status.autoStaged, HEAD);
+  assert.equal(status.autoStaged, '');
   assert.equal(status.held.sha, HEAD);
-  assert.equal(autoPushes(git.calls).length, 1, 'the commit is staged on auto/main');
+  assert.deepEqual(autoPushes(git.calls), [], 'the failing commit is not published to the staging branch');
   assert.deepEqual(mainPushes(git.calls), [], 'main is held back');
-  assert.match(status.lastError, /held back until the suite passes/);
+  assert.match(status.lastError, /no remote branch was updated/);
   assert.equal(verifications, 1);
 });
 
@@ -103,11 +104,11 @@ test('a passing verdict fast-forwards main', async () => {
   assert.equal(status.status, 'pushed');
   assert.equal(status.verifiedSha, HEAD);
   assert.equal(autoPushes(git.calls).length, 1);
-  assert.deepEqual(mainPushes(git.calls), ['push origin HEAD:refs/heads/main']);
+  assert.deepEqual(mainPushes(git.calls), [`push origin ${HEAD}:refs/heads/main`]);
   assert.equal(status.ahead, 0);
 });
 
-test('an operator pushing now skips the gate but still stages first', async () => {
+test('an operator sync-now request still tests before pushing', async () => {
   const git = fakeGit();
   let verifications = 0;
   const verify = async () => {
@@ -115,10 +116,10 @@ test('an operator pushing now skips the gate but still stages first', async () =
     return { ok: false, fail: 9, failingTests: [] };
   };
   const status = await sync.checkAndSync({ run: git.run, verify, force: true });
-  assert.equal(status.status, 'pushed');
-  assert.equal(verifications, 0, 'force means the operator already decided');
-  assert.equal(autoPushes(git.calls).length, 1);
-  assert.equal(mainPushes(git.calls).length, 1);
+  assert.equal(status.status, 'held');
+  assert.equal(verifications, 1);
+  assert.equal(autoPushes(git.calls).length, 0);
+  assert.equal(mainPushes(git.calls).length, 0);
 });
 
 test('a verifier that throws holds main instead of pushing', async () => {
@@ -154,7 +155,7 @@ test('a clean tree with unpushed commits is verified and promoted', async () => 
   assert.equal(status.status, 'pushed');
   assert.deepEqual(seen, [HEAD]);
   assert.equal(autoPushes(git.calls).length, 1);
-  assert.deepEqual(mainPushes(git.calls), ['push origin HEAD:refs/heads/main']);
+  assert.deepEqual(mainPushes(git.calls), [`push origin ${HEAD}:refs/heads/main`]);
 });
 
 test('a clean tree with failing commits holds main without re-running the suite', async () => {
@@ -188,7 +189,7 @@ test('a suite that is already running defers the promotion', async () => {
   assert.equal(verifications, 2, 'a deferred verdict is not cached');
 });
 
-test('a failed staging push stops before verification', async () => {
+test('a failed staging push happens only after verification passes', async () => {
   const git = fakeGit({ pushOk: false });
   let verifications = 0;
   const verify = async () => {
@@ -198,7 +199,7 @@ test('a failed staging push stops before verification', async () => {
   await sync.checkAndSync({ run: git.run, verify });
   const status = await sync.checkAndSync({ run: git.run, verify });
   assert.equal(status.status, 'stage-failed');
-  assert.equal(verifications, 0);
+  assert.equal(verifications, 1);
   assert.equal(mainPushes(git.calls).length, 0);
   assert.match(status.lastError, /rejected|auto\/main/);
 });

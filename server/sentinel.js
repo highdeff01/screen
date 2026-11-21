@@ -468,9 +468,11 @@ export async function verifyCommit(sha, deps = {}) {
   if (state.busy) {
     return { ok: false, deferred: true, fail: null, failingTests: [], isolated: false, error: 'a test run is already in progress' };
   }
-  const worktree = deps.worktree === false ? { ok: false, cleanup: async () => {} } : await prepareWorktree({ commit });
-  if (!worktree.ok) return { ok: false, fail: null, failingTests: [], isolated: false, commit, error: worktree.error };
+  state.busy = true;
+  let worktree;
   try {
+    worktree = deps.worktree === false ? { ok: false, cleanup: async () => {} } : await prepareWorktree({ commit });
+    if (!worktree.ok) return { ok: false, fail: null, failingTests: [], isolated: false, commit, error: worktree.error };
     const result = deps.run
       ? await deps.run(settings.testCommand, { cwd: worktree.dir })
       : await runCommand(settings.testCommand, { cwd: worktree.dir, timeoutMs: settings.timeoutMs, showWindow: settings.showWindow });
@@ -485,7 +487,11 @@ export async function verifyCommit(sha, deps = {}) {
       error: '',
     };
   } finally {
-    await worktree.cleanup();
+    try {
+      await worktree?.cleanup();
+    } finally {
+      state.busy = false;
+    }
   }
 }
 

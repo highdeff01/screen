@@ -27,9 +27,13 @@ beforeEach(() => {
   sync.__gitSyncState.lastStatusHash = '';
   sync.__gitSyncState.pausedUntil = 0;
   sync.__gitSyncState.busy = false;
+  sync.__gitSyncState.autoTickBusy = false;
   sync.__gitSyncState.ahead = 0;
   sync.__gitSyncState.behind = 0;
   store.db().settings.autoSync = true;
+  store.db().settings.autoPull = true;
+  sync.__gitSyncState.verified = null;
+  sync.__gitSyncState.verifiedSha = '';
 });
 
 /** A scripted git: handlers receive the argument list, calls are recorded. */
@@ -77,6 +81,14 @@ test('auto-sync off means no git work at all', async () => {
   assert.deepEqual(git.calls, []);
 });
 
+test('disabled auto-sync never fetches or applies remote changes', async () => {
+  store.db().settings.autoSync = false;
+  const git = fakeGit({});
+  const status = await sync.autoTick({ run: git.run });
+  assert.equal(status.status, 'disabled');
+  assert.deepEqual(git.calls, []);
+});
+
 test('missing opt-in and force do not run git', async () => {
   delete store.db().settings.autoSync;
   const git = fakeGit({});
@@ -84,6 +96,95 @@ test('missing opt-in and force do not run git', async () => {
   assert.equal(status.enabled, false);
   assert.equal(status.status, 'disabled');
   assert.deepEqual(git.calls, []);
+});
+
+test('remote updates are tested before the local branch is fast-forwarded', async () => {
+  const remoteSha = 'remote1234567890';
+  const git = fakeGit({
+    'rev-parse': (args) => ({
+      ok: true,
+      stdout: args.includes('--is-inside-work-tree') ? 'true' : args.includes('--abbrev-ref') ? 'main' : args[0] === 'rev-parse' && args[1] === `origin/main` ? remoteSha : 'head1234567890',
+    }),
+    status: { ok: true, stdout: '' },
+    fetch: { ok: true, stdout: '' },
+    'rev-list': (args) => ({ ok: true, stdout: String(args.at(-1)).includes('@{upstream}') ? '0\t0' : '0\t1' }),
+    merge: { ok: true, stdout: 'Updating head..remote' },
+  });
+  const verified = [];
+  const status = await sync.autoTick({
+    run: git.run,
+    verify: async (sha) => {
+      verified.push(sha);
+      return { ok: true };
+    },
+    backup: async () => ({ ok: true }),
+  });
+  assert.deepEqual(verified, [remoteSha]);
+  assert.equal(status.status, 'pulled');
+  assert.ok(git.calls.some((call) => call === `merge --ff-only ${remoteSha}`));
+  assert.ok(!git.calls.some((call) => call === 'merge --ff-only origin/main'));
+});
+
+test('pausing sync during remote verification prevents applying the update', async () => {
+  const git = fakeGit({
+    'rev-parse': (args) => ({
+      ok: true,
+      stdout: args.includes('--is-inside-work-tree') ? 'true' : args.includes('--abbrev-ref') ? 'main' : 'remote1234567890',
+    }),
+    status: { ok: true, stdout: '' },
+    fetch: { ok: true, stdout: '' },
+    'rev-list': (args) => ({ ok: true, stdout: String(args.at(-1)).includes('@{upstream}') ? '0\t0' : '0\t1' }),
+  });
+  await sync.autoTick({
+    run: git.run,
+    verify: async () => {
+      store.db().settings.autoSync = false;
+      return { ok: true };
+    },
+    backup: async () => ({ ok: true }),
+  });
+  assert.equal(git.calls.some((call) => call.startsWith('merge')), false);
+});
+
+test('a remote update is not applied if the recovery snapshot fails', async () => {
+  const git = fakeGit({
+    'rev-parse': (args) => ({
+      ok: true,
+      stdout: args.includes('--is-inside-work-tree') ? 'true' : args.includes('--abbrev-ref') ? 'main' : args[1] === 'origin/main' ? 'remote1234567890' : 'head1234567890',
+    }),
+    status: { ok: true, stdout: '' },
+    fetch: { ok: true, stdout: '' },
+    'rev-list': (args) => ({ ok: true, stdout: String(args.at(-1)).includes('@{upstream}') ? '0\t0' : '0\t1' }),
+  });
+  const status = await sync.autoTick({
+    run: git.run,
+    verify: async () => ({ ok: true }),
+    backup: async () => ({ ok: false, message: 'disk full' }),
+  });
+  assert.equal(status.status, 'backup-failed');
+  assert.match(status.lastError, /disk full/);
+  assert.equal(git.calls.some((call) => call.startsWith('merge')), false);
+});
+
+test('a failing remote update is held without changing local files', async () => {
+  const remoteSha = 'badremote123456';
+  const git = fakeGit({
+    'rev-parse': (args) => ({
+      ok: true,
+      stdout: args.includes('--is-inside-work-tree') ? 'true' : args.includes('--abbrev-ref') ? 'main' : args[1] === `origin/main` ? remoteSha : 'head1234567890',
+    }),
+    status: { ok: true, stdout: '' },
+    fetch: { ok: true, stdout: '' },
+    'rev-list': (args) => ({ ok: true, stdout: String(args.at(-1)).includes('@{upstream}') ? '0\t0' : '0\t1' }),
+  });
+  const status = await sync.autoTick({
+    run: git.run,
+    verify: async () => ({ ok: false, fail: 2, failingTests: ['broken test'] }),
+    backup: async () => ({ ok: true }),
+  });
+  assert.equal(status.status, 'held');
+  assert.match(status.lastError, /failed testing/);
+  assert.equal(git.calls.some((call) => call.startsWith('merge')), false);
 });
 
 test('a change is committed only after it looks the same twice', async () => {
@@ -105,6 +206,20 @@ test('a change is committed only after it looks the same twice', async () => {
   assert.equal(second.status, 'pushed');
   assert.equal(git.calls.includes('add -u -- . :(exclude)data'), true);
   assert.equal(git.calls.some((call) => call.startsWith('push origin')), true);
+});
+
+test('content edits reset the auto-commit settle window even when git status is unchanged', async () => {
+  let diffCount = 0;
+  const git = fakeGit({
+    'rev-parse': { ok: true, stdout: 'true' },
+    status: { ok: true, stdout: ' M public/app.js' },
+    diff: () => ({ ok: true, stdout: ++diffCount === 1 ? 'first contents' : 'latest contents' }),
+  });
+  const first = await sync.checkAndSync({ run: git.run });
+  const second = await sync.checkAndSync({ run: git.run });
+  assert.equal(first.status, 'waiting');
+  assert.equal(second.status, 'waiting');
+  assert.equal(git.calls.some((call) => call.startsWith('commit')), false);
 });
 
 test('conflicts are reported and never committed', async () => {
