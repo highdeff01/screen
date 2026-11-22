@@ -88,6 +88,7 @@ import { addAnnotation, annotationsForRun, listAnnotations, pinFindings, removeA
 import { presentationFromDeepFocus, deepFocusMarkdown } from './presentations-deep.js';
 import { addFirewallRule, firewallCheck, firewallStatus, firewallTest, removeFirewallRule, resetFirewallRules, setFirewallMode } from './firewall.js';
 import { factoringStatus, pinStepIntents, planRefactoring, pushRefactorToBuilder, similarSolutions } from './step-factoring.js';
+import { normalizeThinkSettings } from './step-think.js';
 import { appendCloseout, recordCloseout } from './closeout.js';
 import { monitorsStatus } from './monitors.js';
 
@@ -4309,6 +4310,11 @@ route('PATCH', /^\/api\/settings$/, async (req, res) => {
   if (body.gatewayEnabled !== undefined || body.gatewayPort !== undefined) {
     if (s.gatewayEnabled) ensureGateway().catch((err) => console.warn(`[gateway] ${err.message}`));
     else stopGateway();
+  }
+  // Live step thinking: every key is normalized here too, so a hand-written
+  // request cannot lift the reject limits or ask for an unbounded loop.
+  if (body.stepThink !== undefined && body.stepThink && typeof body.stepThink === 'object') {
+    s.stepThink = normalizeThinkSettings({ ...(s.stepThink || {}), ...body.stepThink });
   }
   persist();
   logActivity('settings', 'Settings updated');

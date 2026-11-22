@@ -35,6 +35,7 @@ import { expectsScreenChange, windowChecksFor, resumePlan, corroboratesNoChange,
 // Per-run adapters supplied by tests so the screen policy can run without a UI.
 const runProbes = new Map();
 import { deliberateStep } from './deliberation.js';
+import { beginStepThink, recordThinkOutcome, stepThinkSettings, thinkBlocked, thinkRepairCandidates } from './step-think.js';
 import { diffSignatures, signatureHash, shouldAuditVisual, visualChangeMatters } from './visual.js';
 import { analyzeRun, writeRunNote, addSuggestion, suggestionsFor, planSteps, workflowGoal } from './planner.js';
 import { canRetry, recordRetryOutcome } from './retry-budget.js';
@@ -1558,7 +1559,7 @@ async function executeRun(runId) {
     return result;
   };
 
-  const attemptRepair = async (step, errorText) => {
+  const attemptRepair = async (step, errorText, think = null) => {
     const failure = { signature: repairSignature(step, errorText), category: categorizeFailure({ ...step, error: errorText }) };
     // An error dialog, installer window or modal that now has focus is a
     // hindrance, not the failed action's fault. Record it so the repair agent
@@ -1638,7 +1639,21 @@ async function executeRun(runId) {
         }
       }
     }
+    // Corrections prepared while the step was still running go first: they were
+    // sampled against the screen as it actually is, not reconstructed after the
+    // fact. They never replace the step; a dialog they answer still leaves the
+    // original action to prove itself.
+    const thinkCandidates = thinkRepairCandidates({ run, step, think, settings: stepThinkSettings() });
+    if (thinkCandidates.length) {
+      pushLog(
+        run,
+        'info',
+        `Step thinking prepared ${thinkCandidates.length} correction(s) for “${step.name}”: ${thinkCandidates.map((entry) => entry.think.why).join(' | ')}`,
+        step.id
+      );
+    }
     const candidates = [
+      ...thinkCandidates,
       ...recallRepairMemory(db(), { step, failure, workflowId: run.workflowId }),
       ...repairCandidates({ step, run, workflow, goal: workflowGoal(workflow, run), error: errorText }),
     ];
@@ -1674,6 +1689,9 @@ async function executeRun(runId) {
         });
       }
       pushLog(run, 'info', `Repaired “${step.name}” via ${candidate.method}.`, step.id);
+      if (candidate.method.startsWith('step-think:')) {
+        recordThinkOutcome(run, step, { method: candidate.method, ok: true });
+      }
       return { ok: true, result, method: candidate.method, failure };
     };
 
@@ -1681,6 +1699,13 @@ async function executeRun(runId) {
     for (const candidate of candidates.slice(0, 7)) {
       await waitWhileRunPaused(run);
       if (run.cancelRequested) return { ok: false, error: 'Repair chain cancelled by operator.', failure };
+      if (candidate.method.startsWith('step-think:')) {
+        const blocked = thinkBlocked(run, step, stepThinkSettings());
+        if (blocked) {
+          pushLog(run, 'warn', `Step thinking held back for “${step.name}”: ${blocked}.`, step.id);
+          continue;
+        }
+      }
       try {
         return await applyRepairCandidate(candidate);
       } catch (err) {
@@ -1690,6 +1715,12 @@ async function executeRun(runId) {
           { method: candidate.method, ok: false, at: now(), error: String(lastRepairError).slice(0, 240) },
         ];
         pushLog(run, 'warn', `Repair “${candidate.method}” failed: ${lastRepairError}`, step.id);
+        if (candidate.method.startsWith('step-think:')) {
+          const outcome = recordThinkOutcome(run, step, { method: candidate.method, ok: false, error: lastRepairError });
+          if (outcome.blocked) {
+            pushLog(run, 'warn', `Step thinking stopped for “${step.name}”: ${outcome.blocked}.`, step.id);
+          }
+        }
       }
     }
 
@@ -1906,6 +1937,26 @@ async function executeRun(runId) {
     recordLedger(run, step);
     persist();
     pushLog(run, 'info', `Step ${step.name} (${step.type})`, step.id);
+    // Thinking starts with the step, not after it fails: the loop reads the
+    // desktop while the action runs, samples its candidate continuations, and
+    // keeps the record on the step. It is read-only; only the repair chain acts.
+    if (!run.dryRun && !run.shadow) {
+      try {
+        const config = stepThinkSettings();
+        const canObserve = !probe || typeof probe.readThinkObservation === 'function';
+        if (config.enabled && canObserve) {
+          thinkLoop = beginStepThink(run, step, {
+            workflow,
+            probe,
+            settings: config,
+            ask: probe?.agentAsk || null,
+            onNote: (message) => pushLog(run, 'info', `Thinking: ${message}`, step.id),
+          });
+        }
+      } catch (err) {
+        pushLog(run, 'warn', `Step thinking did not start: ${err.message}`, step.id);
+      }
+    }
 
     let maxAttempts = run.policy?.onFailure === 'retry' ? Math.max(1, Number(run.policy.maxRetries || 0) + 1) : 1;
     let lastError = null;
@@ -1915,6 +1966,8 @@ async function executeRun(runId) {
     let repairResult = null;
     let skipped = false;
     let cancelled = false;
+    let thinkLoop = null;
+    let think = null;
 
     if (step.type === 'wait') {
       step.attempts = 1;
@@ -2118,10 +2171,11 @@ async function executeRun(runId) {
           );
         }
       }
+      if (thinkLoop) think = await thinkLoop.stop();
       if (run.cancelRequested && !succeeded) cancelled = true;
       if (!succeeded && !cancelled && !skipped && repairEnabled) {
         step.repairStartedAt = now();
-        repairResult = await attemptRepair(step, lastError);
+        repairResult = await attemptRepair(step, lastError, think);
         if (repairResult.ok) {
           succeeded = true;
           result = repairResult.result;
