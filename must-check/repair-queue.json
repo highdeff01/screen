@@ -1,19 +1,32 @@
 {
   "version": 1,
   "by": "sentinel",
-  "updatedAt": "2026-11-22T06:56:37.438Z",
-  "head": "3db594423d20",
+  "updatedAt": "2026-11-22T10:32:42.061Z",
+  "head": "83f18104744a",
   "lastRun": {
-    "at": "2026-11-22T06:56:37.437Z",
-    "ok": true,
-    "tests": 682,
-    "pass": 675,
-    "fail": 0,
+    "at": "2026-11-22T10:32:41.011Z",
+    "ok": false,
+    "tests": null,
+    "pass": null,
+    "fail": null,
     "isolated": true,
     "failingTests": []
   },
-  "open": 3,
+  "open": 4,
   "items": [
+    {
+      "id": "sent_mwrp79kjaf6983",
+      "at": "2026-11-22T10:32:41.011Z",
+      "status": "queued",
+      "attempts": 1,
+      "fail": null,
+      "pass": null,
+      "tests": [],
+      "details": [],
+      "plan": "",
+      "planError": "",
+      "report": "must-check/2026-11-22T10-32-41-suite.md"
+    },
     {
       "id": "sent_mwo9p7552f5ba7",
       "at": "2026-11-20T00:55:25.289Z",
