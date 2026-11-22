@@ -267,6 +267,14 @@ import {
   runnerToken,
   verifyRunnerToken,
 } from './runner-jobs.js';
+import {
+  addSetupCommand,
+  findSetupCommand,
+  listSetupCommands,
+  removeSetupCommand,
+  runSetupCommand,
+  setupSummary,
+} from './setup-commands.js';
 
 const PORT = Number(process.env.PORT) || 4317;
 // The desktop-control API stays loopback-only by default, especially on Windows.
@@ -509,6 +517,7 @@ function buildState() {
     },
     localModel: localModelStatus(),
     workflows: d.workflows.map(workflowView),    runnerJobs: listLinkJobs(6),
+    setupCommands: listSetupCommands(),
 
     runs: d.runs.slice(0, 80).map(summary),
     verificationLoop: loopStatus(),
@@ -2880,7 +2889,42 @@ route('POST', /^\/api\/runs\/([^/]+)\/propose$/, async (req, res, [id]) => {
   }
 });
 
-/* ---------------- Link-triggered jobs ---------------- */
+/* ---------------- Link-triggered jobs ---------------- *//* ---------------- Allowlisted setup commands ---------------- */
+// A fixed exe plus fixed arguments, run hidden with its output captured.
+// A runTool step can name an entry; it can never supply or change an argument.
+const SETUP_LIST_ROUTE = new RegExp('^/api/setup-commands$');
+const SETUP_ONE_ROUTE = new RegExp('^/api/setup-commands/([^/]+)$');
+const SETUP_RUN_ROUTE = new RegExp('^/api/setup-commands/([^/]+)/run$');
+
+route('GET', SETUP_LIST_ROUTE, async (req, res) => {
+  sendJson(res, 200, { ok: true, windows: IS_WINDOWS, commands: listSetupCommands() });
+});
+
+route('POST', SETUP_LIST_ROUTE, async (req, res) => {
+  const body = await readBody(req);
+  try {
+    const command = addSetupCommand(body);
+    sendJson(res, 200, { ok: true, command: { ...command, refusal: '' } });
+  } catch (err) {
+    fail(res, 400, err.message);
+  }
+});
+
+route('DELETE', SETUP_ONE_ROUTE, async (req, res, [id]) => {
+  const removed = removeSetupCommand(id);
+  if (!removed) return fail(res, 404, 'Setup command not found');
+  sendJson(res, 200, { ok: true });
+});
+
+route('POST', SETUP_RUN_ROUTE, async (req, res, [id]) => {
+  const entry = findSetupCommand(id);
+  if (!entry) return fail(res, 404, 'Setup command not found');
+  const result = await runSetupCommand(entry);
+  logActivity('setup', setupSummary(entry, result), { commandId: entry.id });
+  sendJson(res, 200, { ok: result.ok, result });
+});
+
+
 // The file in data/runner/inbox is the instruction; the link only names it.
 // Starting one needs data/runner/token, so a page in a browser cannot run a
 // queued workflow just by reaching the loopback port.

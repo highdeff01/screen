@@ -1939,6 +1939,13 @@ function renderRunDetail(run) {
         failedSteps.length ? 'Enable “Capture a screenshot when a step fails” in failure rules, or capture evidence now.' : ''
       }</p>`;
 
+  const logs = evidence.filter((e) => e.kind === 'log' && e.path);
+  const logsHtml = logs.length
+    ? `<div class="stack" style="gap:4px;margin-top:8px">${logs
+        .map((e) => `<div class="small mono">${esc(e.caption || 'Setup output')} · ${esc(e.path)}</div>`)
+        .join('')}</div>`
+    : '';
+
   return `
   <div class="run-detail">
     <button class="btn btn-sm btn-ghost runs-back" data-act="runs-back">← All test runs</button>
@@ -2021,6 +2028,7 @@ function renderRunDetail(run) {
                 )
                 .join('')}
               ${evidenceHtml}
+              ${logsHtml}
             </div>
           </div>`
         : ''

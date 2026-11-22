@@ -381,6 +381,8 @@ function seed() {
         updatedAt: ts,
       },
     ],
+    // Allowlisted setup commands: fixed exe + args, run hidden with output kept.
+    setupCommands: [],
     tools: [
       {
         id: TOOL_WINDOWS,

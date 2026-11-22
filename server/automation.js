@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { CAPTURES, DATA, NOTES, ROOT, TOOLS, db, now, persist, slug, uid, writeFileDurable } from './store.js';
 import { chat, parseJsonLoose } from './llm.js';
+import { findSetupCommand, runSetupCommand, setupSummary } from './setup-commands.js';
 import { executePortableStep, portableLiveScreenshot } from './portable.js';
 import { decidePreview, describeSurroundings } from './step-context.js';
 import { judgeMode, judgeTargetFor, mergeJudgement, recordJudgement, windowFacts } from './judgement.js';
@@ -3861,6 +3862,40 @@ try {
   }
 
   if (step.type === 'runTool') {
+    const setupRef = String(p.setupCommandId || p.setupCommand || '').trim();
+    if (setupRef) {
+      if (p.toolId || p.toolName) {
+        throw new Error('A runTool step names either a tool or an allowlisted setup command, not both.');
+      }
+      const entry = findSetupCommand(setupRef);
+      if (!entry) throw new Error(`Setup command is not allowlisted: ${setupRef}`);
+      if (entry.enabled === false) throw new Error(`Setup command "${entry.label}" is disabled.`);
+      if (!live) return { output: `Simulated setup command: ${entry.label}`, evidence: [] };
+      const result = await runSetupCommand(entry, { timeoutMs: step.timeoutMs });
+      const caption = `Setup output — ${entry.label}`;
+      if (!result.ok) {
+        // The log is evidence even when the command failed, so attach it
+        // before the step throws instead of losing it with the error.
+        if (ctx.run && Array.isArray(ctx.run.evidence) && result.logRel) {
+          const evidenceId = uid('evd');
+          ctx.run.evidence.push({
+            id: evidenceId,
+            kind: 'log',
+            caption,
+            path: result.logRel,
+            stepId: step.id,
+            createdAt: now(),
+          });
+          const runStep = (ctx.run.steps || []).find((item) => item.id === step.id);
+          if (runStep) runStep.evidenceIds.push(evidenceId);
+        }
+        throw new Error(`${setupSummary(entry, result)} Output: data/${result.logRel || '(log unavailable)'}`);
+      }
+      return {
+        output: setupSummary(entry, result),
+        evidence: result.logRel ? [{ kind: 'log', caption, path: result.logRel }] : [],
+      };
+    }
     const ref = String(p.toolId || p.toolName || '').trim();
     // Plans resolve names to ids before they run, but a workflow saved earlier
     // may still hold only the tool's name. Resolve either form so that step
