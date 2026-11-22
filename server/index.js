@@ -2880,10 +2880,15 @@ route('POST', /^\/api\/runs\/([^/]+)\/propose$/, async (req, res, [id]) => {
   }
 });
 
-/* ---------------- Runs ---------------- *//* ---------------- Link-triggered jobs ---------------- */
+/* ---------------- Link-triggered jobs ---------------- */
 // The file in data/runner/inbox is the instruction; the link only names it.
 // Starting one needs data/runner/token, so a page in a browser cannot run a
 // queued workflow just by reaching the loopback port.
+
+const JOB_ROUTE = new RegExp('^/api/runner/jobs$');
+const JOB_ONE_ROUTE = new RegExp('^/api/runner/jobs/([^/]+)$');
+const JOB_START_ROUTE = new RegExp('^/api/runner/jobs/([^/]+)/start$');
+const JOB_APPROVE_ROUTE = new RegExp('^/api/runner/jobs/([^/]+)/approve$');
 
 function presentedRunnerToken(req, url) {
   const header = String(req.headers?.['x-sightline-token'] || '');
@@ -2898,7 +2903,21 @@ async function startLinkJob(req, res, id, url) {
   if (!job) return fail(res, 404, 'Job not found');
   const decision = jobDecision(job, { autoApprove: db().settings.linkAutoApprove === true });
   if (!decision.ok) {
-    return fail(res, 409, decision.why, { jobId: job.id, needsApproval: Boolean(decision.needsApproval) });
+    // The tab that followed the link needs to know whether to wait for an
+    // operator or give up, so this refusal carries the flag itself.
+    recordAction({
+      kind: 'run',
+      action: 'link-job-refused',
+      error: decision.why,
+      detail: { jobId: job.id, workflowId: job.workflowId, needsApproval: Boolean(decision.needsApproval) },
+    });
+    return sendJson(res, 409, {
+      ok: false,
+      error: decision.why,
+      jobId: job.id,
+      needsApproval: Boolean(decision.needsApproval),
+      status: job.status,
+    });
   }
   const wf = decision.workflow;
   const dryRun = job.mode !== 'live';
@@ -2921,7 +2940,8 @@ async function startLinkJob(req, res, id, url) {
     runId: run.id,
     via: decision.auto ? 'link:auto' : 'link:approved',
   });
-  logActivity('run', `Link job started “${wf.name}”${decision.auto ? ' (auto-approved)' : ''}`, {
+  const suffix = decision.auto ? ' (auto-approved)' : '';
+  logActivity('run', 'Link job started "' + wf.name + '"' + suffix, {
     workflowId: wf.id,
     jobId: job.id,
     runId: run.id,
@@ -2929,7 +2949,7 @@ async function startLinkJob(req, res, id, url) {
   sendJson(res, 200, { ok: true, run: findRun(run.id), job: record, autoApproved: Boolean(decision.auto) });
 }
 
-route('GET', /^/api/runner/jobs$/, async (req, res) => {
+route('GET', JOB_ROUTE, async (req, res) => {
   sendJson(res, 200, {
     ok: true,
     source: runnerSourceId(),
@@ -2938,7 +2958,7 @@ route('GET', /^/api/runner/jobs$/, async (req, res) => {
   });
 });
 
-route('POST', /^/api/runner/jobs$/, async (req, res) => {
+route('POST', JOB_ROUTE, async (req, res) => {
   const body = await readBody(req);
   let job;
   try {
@@ -2946,29 +2966,35 @@ route('POST', /^/api/runner/jobs$/, async (req, res) => {
   } catch (err) {
     return fail(res, 400, err.message);
   }
-  logActivity('run', `Queued link job for “${job.workflowName}”`, { workflowId: job.workflowId, jobId: job.id });
+  logActivity('run', 'Queued link job for "' + job.workflowName + '"', {
+    workflowId: job.workflowId,
+    jobId: job.id,
+  });
   sendJson(res, 200, {
     ok: true,
     job: readLinkJob(job.id),
-    link: `http://127.0.0.1:${PORT}/api/runner/jobs/${job.id}/start?token=${runnerToken()}`,
+    link: 'http://127.0.0.1:' + PORT + '/api/runner/jobs/' + job.id + '/start?token=' + runnerToken(),
   });
 });
 
-route('GET', /^/api/runner/jobs/([^/]+)$/, async (req, res, [id]) => {
+route('GET', JOB_ONE_ROUTE, async (req, res, [id]) => {
   const job = readLinkJob(id);
   if (!job) return fail(res, 404, 'Job not found');
   sendJson(res, 200, { ok: true, job });
 });
 
-route('POST', /^/api/runner/jobs/([^/]+)/approve$/, async (req, res, [id]) => {
+route('POST', JOB_APPROVE_ROUTE, async (req, res, [id]) => {
   const out = approveJob(id);
   if (!out.ok) return fail(res, 400, out.why);
-  logActivity('run', `Approved link job ${id}`, { jobId: id, workflowId: out.job.workflowId });
+  logActivity('run', 'Approved link job ' + id, { jobId: id, workflowId: out.job.workflowId });
   sendJson(res, 200, { ok: true, job: out.job });
 });
 
-route('POST', /^/api/runner/jobs/([^/]+)/start$/, async (req, res, [id], url) => startLinkJob(req, res, id, url));
-route('GET', /^/api/runner/jobs/([^/]+)/start$/, async (req, res, [id], url) => startLinkJob(req, res, id, url));
+route('POST', JOB_START_ROUTE, async (req, res, [id], url) => startLinkJob(req, res, id, url));
+// A background tab can only issue GET, so the same token-guarded start answers one.
+route('GET', JOB_START_ROUTE, async (req, res, [id], url) => startLinkJob(req, res, id, url));
+
+/* ---------------- Runs ---------------- */
 
 
 route('POST', /^\/api\/workflows\/([^/]+)\/runs$/, async (req, res, [id]) => {
