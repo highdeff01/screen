@@ -256,6 +256,18 @@ import {
   verifyRunSilently,
 } from './engine.js';
 
+import {
+  approveJob,
+  jobDecision,
+  listJobs as listLinkJobs,
+  markJob as markLinkJob,
+  queueJob as queueLinkJob,
+  readJob as readLinkJob,
+  runnerSourceId,
+  runnerToken,
+  verifyRunnerToken,
+} from './runner-jobs.js';
+
 const PORT = Number(process.env.PORT) || 4317;
 // The desktop-control API stays loopback-only by default, especially on Windows.
 // This explicit Linux-only flag is for isolated sandbox previews, not remote control.
@@ -496,7 +508,8 @@ function buildState() {
       ...liveControl(),
     },
     localModel: localModelStatus(),
-    workflows: d.workflows.map(workflowView),
+    workflows: d.workflows.map(workflowView),    runnerJobs: listLinkJobs(6),
+
     runs: d.runs.slice(0, 80).map(summary),
     verificationLoop: loopStatus(),
     gitSync: gitSyncStatus(),
@@ -2867,7 +2880,97 @@ route('POST', /^\/api\/runs\/([^/]+)\/propose$/, async (req, res, [id]) => {
   }
 });
 
-/* ---------------- Runs ---------------- */
+/* ---------------- Runs ---------------- *//* ---------------- Link-triggered jobs ---------------- */
+// The file in data/runner/inbox is the instruction; the link only names it.
+// Starting one needs data/runner/token, so a page in a browser cannot run a
+// queued workflow just by reaching the loopback port.
+
+function presentedRunnerToken(req, url) {
+  const header = String(req.headers?.['x-sightline-token'] || '');
+  return header || String(url?.searchParams?.get('token') || '');
+}
+
+async function startLinkJob(req, res, id, url) {
+  if (!verifyRunnerToken(presentedRunnerToken(req, url))) {
+    return fail(res, 401, 'A local runner token is required.');
+  }
+  const job = readLinkJob(id);
+  if (!job) return fail(res, 404, 'Job not found');
+  const decision = jobDecision(job, { autoApprove: db().settings.linkAutoApprove === true });
+  if (!decision.ok) {
+    return fail(res, 409, decision.why, { jobId: job.id, needsApproval: Boolean(decision.needsApproval) });
+  }
+  const wf = decision.workflow;
+  const dryRun = job.mode !== 'live';
+  if (!dryRun) {
+    const control = liveControl();
+    const proof = control.available ? await probeLiveBackend() : { ok: false, detail: control.reason };
+    if (!control.available || !proof.ok) {
+      return fail(res, 409, proof.detail || liveRefusal(), { jobId: job.id, needsApproval: false });
+    }
+  }
+  let run;
+  try {
+    run = createRun(wf, { trigger: 'link', dryRun });
+  } catch (err) {
+    return fail(res, 400, err.message);
+  }
+  const record = markLinkJob(job.id, {
+    status: 'started',
+    startedAt: now(),
+    runId: run.id,
+    via: decision.auto ? 'link:auto' : 'link:approved',
+  });
+  logActivity('run', `Link job started “${wf.name}”${decision.auto ? ' (auto-approved)' : ''}`, {
+    workflowId: wf.id,
+    jobId: job.id,
+    runId: run.id,
+  });
+  sendJson(res, 200, { ok: true, run: findRun(run.id), job: record, autoApproved: Boolean(decision.auto) });
+}
+
+route('GET', /^/api/runner/jobs$/, async (req, res) => {
+  sendJson(res, 200, {
+    ok: true,
+    source: runnerSourceId(),
+    autoApprove: db().settings.linkAutoApprove === true,
+    jobs: listLinkJobs(20),
+  });
+});
+
+route('POST', /^/api/runner/jobs$/, async (req, res) => {
+  const body = await readBody(req);
+  let job;
+  try {
+    job = queueLinkJob({ workflowId: body.workflowId, mode: body.mode || 'simulate', goal: body.goal });
+  } catch (err) {
+    return fail(res, 400, err.message);
+  }
+  logActivity('run', `Queued link job for “${job.workflowName}”`, { workflowId: job.workflowId, jobId: job.id });
+  sendJson(res, 200, {
+    ok: true,
+    job: readLinkJob(job.id),
+    link: `http://127.0.0.1:${PORT}/api/runner/jobs/${job.id}/start?token=${runnerToken()}`,
+  });
+});
+
+route('GET', /^/api/runner/jobs/([^/]+)$/, async (req, res, [id]) => {
+  const job = readLinkJob(id);
+  if (!job) return fail(res, 404, 'Job not found');
+  sendJson(res, 200, { ok: true, job });
+});
+
+route('POST', /^/api/runner/jobs/([^/]+)/approve$/, async (req, res, [id]) => {
+  const out = approveJob(id);
+  if (!out.ok) return fail(res, 400, out.why);
+  logActivity('run', `Approved link job ${id}`, { jobId: id, workflowId: out.job.workflowId });
+  sendJson(res, 200, { ok: true, job: out.job });
+});
+
+route('POST', /^/api/runner/jobs/([^/]+)/start$/, async (req, res, [id], url) => startLinkJob(req, res, id, url));
+route('GET', /^/api/runner/jobs/([^/]+)/start$/, async (req, res, [id], url) => startLinkJob(req, res, id, url));
+
+
 route('POST', /^\/api\/workflows\/([^/]+)\/runs$/, async (req, res, [id]) => {
   const wf = db().workflows.find((w) => w.id === id);
   if (!wf) return fail(res, 404, 'Workflow not found');
@@ -4064,6 +4167,7 @@ route('PATCH', /^\/api\/settings$/, async (req, res) => {
   if (body.autoNotes !== undefined) s.autoNotes = Boolean(body.autoNotes);
   if (body.aiSuggestions !== undefined) s.aiSuggestions = Boolean(body.aiSuggestions);
   if (body.requireToolApproval !== undefined) s.requireToolApproval = Boolean(body.requireToolApproval);
+  if (body.linkAutoApprove !== undefined) s.linkAutoApprove = Boolean(body.linkAutoApprove);
   if (body.visionEnabled !== undefined) s.visionEnabled = Boolean(body.visionEnabled);
   if (body.replanModel !== undefined) s.replanModel = String(body.replanModel || '').trim();
   // Who decides a screen check: the model with the facts as a veto (gate), or

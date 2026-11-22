@@ -5098,6 +5098,9 @@ function settingsFields(s) {
     <label class="check" style="margin-bottom:6px"><input type="checkbox" data-scope="settings" data-key="requireToolApproval" ${
       s.requireToolApproval !== false ? 'checked' : ''
     } /> Require approval before any tool runs</label>
+    <label class="check" style="margin-bottom:6px"><input type="checkbox" data-scope="settings" data-key="linkAutoApprove" ${
+      s.linkAutoApprove ? 'checked' : ''
+    } /> Run saved workflows from a local runner link without asking (shell steps still ask)</label>
     <label class="check" style="margin-bottom:6px"><input type="checkbox" data-scope="settings" data-key="visionEnabled" ${
       s.visionEnabled ? 'checked' : ''
     } /> Send mission captures to a vision model</label>

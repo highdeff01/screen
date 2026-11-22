@@ -57,6 +57,10 @@ function seed() {
       autoNotes: true,
       aiSuggestions: true,
       requireToolApproval: true,
+      // Link-triggered jobs: instructions in data/runner/inbox, started only by
+      // a loopback request that carries data/runner/token.
+      linkAutoApprove: false,
+      runnerSourceId: '',
       agentTickMs: 5000,
       // Explicit opt-in: sync tracked working-tree changes outside data/.
       autoSync: false,
