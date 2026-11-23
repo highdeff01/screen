@@ -1,15 +1,15 @@
 {
   "version": 1,
   "by": "sentinel",
-  "updatedAt": "2026-11-23T05:06:14.560Z",
-  "head": "d58934cb21d9",
+  "updatedAt": "2026-11-23T07:18:58.446Z",
+  "head": "0bfa2b9f8e90",
   "lastRun": {
-    "at": "2026-11-23T05:06:14.560Z",
+    "at": "2026-11-23T07:18:58.446Z",
     "ok": true,
     "tests": 710,
     "pass": 703,
     "fail": 0,
-    "isolated": true,
+    "isolated": false,
     "failingTests": []
   },
   "open": 4,
