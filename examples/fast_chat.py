@@ -911,7 +911,10 @@ class Client:
                 body["messages"] = list(messages) + [{"role": "system", "content": attempt["suffix"]}]
             answered = 0
             try:
-                with self.session.post(self.url, json=body, stream=True, timeout=(10, read_timeout or TIMEOUT)) as response:
+                # A caller-supplied read timeout is a budget: 0 must not fall back
+                # to the 180 s answer timeout, so only None means "use TIMEOUT".
+                read = TIMEOUT if read_timeout is None else max(0.5, float(read_timeout))
+                with self.session.post(self.url, json=body, stream=True, timeout=(min(10.0, read), read)) as response:
                     if response.status_code >= 400:
                         # Keep the server's own words: "exceeds the available context
                         # size" is the only way callers can react sensibly.
@@ -980,6 +983,15 @@ class Client:
                 "1. where the heat comes from COVERED\n"
                 "2. why moving heat is efficient MISSING\n"
                 "3. how it performs in winter MISSING",
+            )
+            return
+        if "Write only the missing sentences" in systems or "Add only the missing content" in systems:
+            # The plan append/review prompts must answer with new sentences, or the
+            # demo's "before" arm stops after one append and undercounts its calls.
+            yield (
+                "content",
+                "The refrigerant loop gathers low-grade warmth from the outside air "
+                "and the compressor raises its temperature before it goes indoors.",
             )
             return
         seed = str(messages[-1].get("content", ""))[:40]
@@ -8203,6 +8215,7 @@ def main():
         # The checklist pass: the old full pass (two appends + review) is one
         # setting away, and plan_budget 0 means no ceiling.
         for name, fallback in (
+            ("plan_mode", "auto"),
             ("plan_appends", 0),
             ("plan_review", False),
             ("plan_budget", PLAN_BUDGET),
