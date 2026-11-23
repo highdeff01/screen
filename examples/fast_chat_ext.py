@@ -42,10 +42,11 @@ SETTINGS = {
     "model": "qwen3.5:2b",
     "fast_model": "qwen3.5:2b",
     "keep_alive": "30m",
-    "timeout": 180.0,
+    "timeout": 240.0,            # ceiling, not speed: stops long answers dying
     "concurrency_timeout": 45.0,
     # --- reply budget and sampling ---------------------------------------
-    "max_tokens": 400,
+    "max_tokens": 400,           # 700 ramble-degraded the 2B under load; raise
+                                 # again only on a healthy/faster endpoint
     "draft_tokens": 60,
     "good_enough": 4.5,          # candidate score that stops sampling
     "variants": 3,               # /vary candidates
@@ -99,6 +100,34 @@ SETTINGS = {
     "long_max_tokens": 1200,     # reply budget while long_form is on
     "expand_rounds": 3,          # /expand continuation calls
     "expand_target_words": 400,  # stop when the answer reaches this
+    # --- LAN bridge (fast_chat_lan.py): responsiveness and call rate -------
+    # environment variables still override all of these, e.g. LAN_SETTLE_MS=100
+    "lan_settle_ms": 200,        # pause that ends an utterance (auto-answer)
+    "lan_rec_settle_ms": 120,    # same, in rec/feed mode
+    "lan_warm_every": 60,        # warm ping rate while idle (seconds)
+    "lan_warm_idle": 20,         # idle time before pings start (seconds)
+    "lan_health_every": 180,     # uptime/health report rate (seconds)
+    "lan_background_live": True,  # aux runs CONCURRENTLY with your answer
+                                  # (the old 3-in-1 speed). The breaker pauses
+                                  # it automatically if the pipe gets slow.
+                                 # on a remote endpoint the server serializes
+                                 # calls, so aux during answers slows the stream
+    "lan_background_slots": 2,   # aux calls at once while the answer streams
+    "lan_background_grace_ms": 100,  # quiet time after your call before bg runs
+    "lan_reflect_max": 1,        # corrections per answer (0 = none, fastest)
+    "lan_review_tries": 3,       # parallel-review passes after each answer
+                                 # (fact check, better angle, conclusion)
+    "lan_self_every": 120,       # minimum seconds between self reviews
+    "lan_ttft_alert_ms": 5000,   # report first tokens slower than this
+    "lan_gap_alert_ms": 10000,   # report mid-answer stalls longer than this
+    "lan_live_ctx_budget": 1200, # context tokens for live turns: the server
+                                 # re-reads whatever is sent before the first
+                                 # token, so tighter context = faster TTFT on
+                                 # a remote endpoint (0 = use context_budget)
+    "lan_cache_prompt": True,    # Ollama KV-cache reuse across turns (faster
+    "lan_direct_line": True,     # the reroute: raw socket per lane, no web layer
+                                 # prefill). Set False if your endpoint is a
+                                 # proxy that mishandles this Ollama field.
 }
 
 # --------------------------------------------------------------------------- #

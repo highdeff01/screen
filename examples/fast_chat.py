@@ -113,20 +113,6 @@ TIMEOUT = setting("timeout", 180.0, float)
 # The concurrency experiment must never hang the console: a stalled request is
 # the result we are measuring, so it gets a short bound of its own.
 CONCURRENCY_TIMEOUT = setting("concurrency_timeout", 45.0, float)
-# One context size for every call that fits. Ollama unloads and reloads the
-# model when num_ctx changes, so a short note (2048) after an answer (4096)
-# made the next answer pay the reload: the 8914 ms first token in the log was
-# a note's reload, not the note. A 2B model's extra KV cache is cheap.
-NUM_CTX = max(2048, setting("num_ctx", 4096, int))
-# Notes, plans and critiques are short and nobody waits on them: they get a
-# short read timeout instead of the full answer timeout, so a stalled one
-# cannot hold a lane for three minutes.
-AUX_TIMEOUT = max(5.0, min(TIMEOUT, setting("aux_timeout", 45.0, float)))
-# [plan] The checklist pass runs after the answer, not before it, and it is a
-# luxury: one short assess call by default, and a wall-clock ceiling on the whole
-# pass even when the extra appends and the thinking review are switched back on.
-# 0 means no ceiling, which is the old behavior.
-PLAN_BUDGET = max(0.0, setting("plan_budget", 8.0, float))
 # A candidate scoring at or above this is clean enough to stop sampling. The
 # usual cost of /vary and of a repetition fixup is therefore ONE call.
 GOOD_ENOUGH = setting("good_enough", 4.5, float)
@@ -674,18 +660,13 @@ def chunk_text(text, size=1100, overlap=150):
 # --------------------------------------------------------------------------- #
 # [#11] lanes: interactive work never queues behind background work
 # --------------------------------------------------------------------------- #
-# How long interactive work waits for a running background call before it takes
-# the lane anyway. Bounded so an autonote or summary cannot delay an answer.
-DEFAULT_DRAIN = 0.25
-
-
 class Lanes:
     """Priority scheduling for one GPU.
 
     A single GPU cannot answer two requests faster than one, so raw parallelism
     buys nothing: what actually helps is that background work (a summary, a
     draft, a prefetch) must never sit in front of the answer you are waiting
-    for. Interactive calls wait for the background lane only up to `drain`, and
+    for. Interactive calls therefore wait for the background lane to drain, and
     background calls only start when nothing has been asked for a moment.
     """
 
@@ -706,43 +687,14 @@ class Lanes:
         self.cond.wait(remaining)
         return True
 
-    def acquire(self, priority="interactive", timeout=None, drain=DEFAULT_DRAIN):
-        """Take a lane.
-
-        `drain` bounds how long interactive work waits for background work: an
-        autonote or summary that is already generating must not sit in front of
-        the answer the user is waiting for. When the drain window closes the
-        interactive call takes the lane anyway; drain=None waits it out.
-        """
-        # Guard: a negative or non-numeric drain must not spin the wait loop or
-        # raise in the middle of a request, so it falls back to the default.
-        if drain is not None:
-            try:
-                drain = max(0.0, float(drain))
-            except (TypeError, ValueError):
-                drain = DEFAULT_DRAIN
+    def acquire(self, priority="interactive", timeout=None):
         deadline = None if timeout is None else time.time() + timeout
-        drain_by = None if drain is None else time.time() + drain
-        if deadline is not None and drain_by is not None:
-            # The drain window can never outlive the caller's own deadline.
-            drain_by = min(drain_by, deadline)
         with self.cond:
             if priority == "interactive":
                 self.waiting_interactive += 1
                 try:
-                    while self.active_interactive >= self.max_interactive or (
-                        self.active_background > 0 and (drain_by is None or time.time() < drain_by)
-                    ):
-                        if self.active_interactive >= self.max_interactive:
-                            if not self._wait(deadline):
-                                return False
-                            continue
-                        # Only background stands in the way: wait until the drain
-                        # window closes, bounded by the caller's own deadline.
-                        target = drain_by
-                        if deadline is not None:
-                            target = deadline if target is None else min(target, deadline)
-                        if not self._wait(target) and deadline is not None and time.time() >= deadline:
+                    while self.active_interactive >= self.max_interactive or self.active_background > 0:
+                        if not self._wait(deadline):
                             return False
                     self.active_interactive += 1
                     return True
@@ -796,9 +748,6 @@ class Client:
         self.url = url
         self.telemetry = telemetry
         self.demo = demo
-        # Model requests made by this client. --demo prints the count per turn so
-        # the plan pass can be measured instead of guessed at.
-        self.calls = 0
         self.sampling = dict(SAMPLING)
         self.lanes = Lanes()  # [#7][#11]
         self.shared = {}
@@ -825,7 +774,7 @@ class Client:
         body["think"] = bool(THINK if think is None else think)
         return body
 
-    def stream(self, messages, model=MODEL, max_tokens=MAX_TOKENS, sampling=None, on_token=None, kind="stream", on_thinking=None, guard=None, think=None, read_timeout=None, stop_when_answered=False):
+    def stream(self, messages, model=MODEL, max_tokens=MAX_TOKENS, sampling=None, on_token=None, kind="stream", on_thinking=None, guard=None, think=None, read_timeout=None):
         result = {
             "text": "",
             "ttft_ms": None,
@@ -838,7 +787,6 @@ class Client:
         }
         started = now_ms()
         last = started
-        self.calls += 1
         iterator = (
             self._demo_chunks(messages)
             if self.demo
@@ -861,11 +809,6 @@ class Client:
                 last = stamp
                 result["chunks"] += 1
                 result["text"] += piece
-                # A reasoning pass wants only the thinking channel. Once the answer
-                # text starts, the rest of this generation is discarded, so stop
-                # reading instead of paying for tokens nobody will see.
-                if stop_when_answered and result["thinking_chunks"]:
-                    break
                 if on_token:
                     on_token(piece, result)
                 if guard is not None and guard.feed(piece):
@@ -900,29 +843,23 @@ class Client:
             raise RuntimeError("requests is not installed; install it or use --demo")
         last_error = "request failed"
         attempts = [
-            {"think": think, "suffix": None},
+            {"think": True, "suffix": None},
             {"think": False, "suffix": "Answer with only the final answer. No reasoning."},
         ]
         for attempt in attempts:
-            # The second attempt used the caller's `think` too, so a reasoning
-            # pass that returned no answer retried with reasoning enabled.
-            body = self._body(messages, model, max_tokens, True, sampling, attempt["think"])
+            body = self._body(messages, model, max_tokens, True, sampling, think)
             if attempt["suffix"]:
                 body["messages"] = list(messages) + [{"role": "system", "content": attempt["suffix"]}]
             answered = 0
             try:
-                # A caller-supplied read timeout is a budget: 0 must not fall back
-                # to the 180 s answer timeout, so only None means "use TIMEOUT".
-                read = TIMEOUT if read_timeout is None else max(0.5, float(read_timeout))
-                with self.session.post(self.url, json=body, stream=True, timeout=(min(10.0, read), read)) as response:
+                with self.session.post(self.url, json=body, stream=True, timeout=(10, read_timeout or TIMEOUT)) as response:
                     if response.status_code >= 400:
                         # Keep the server's own words: "exceeds the available context
                         # size" is the only way callers can react sensibly.
                         detail = (response.text or "")[:300].replace("\n", " ").strip()
                         last_error = detail or ("HTTP %d" % response.status_code)
-                        # Re-sending the same body (plus one more message, which
-                        # made an over-long prompt longer) could never succeed:
-                        # Chat.ask is the one that shrinks the context.
+                        if response.status_code == 400 and not attempt["suffix"]:
+                            continue
                         raise RuntimeError(last_error)
                     response.raise_for_status()
                     for chunk in response.iter_lines(decode_unicode=True):
@@ -965,35 +902,12 @@ class Client:
                 raise
             except Exception as err:  # noqa: BLE001 - surfaced to the caller
                 last_error = str(err)
-                # A timeout is not fixed by sending the identical request again:
-                # that paid the full read timeout twice (2 x 180 s) and is what
-                # turned one slow answer into minutes. A transient 5xx still gets
-                # its one retry.
-                if attempt["suffix"] or is_timeout(err):
-                    raise RuntimeError(last_error)
+                if not attempt["suffix"]:
+                    continue
+                raise RuntimeError(last_error)
         raise RuntimeError(last_error)
 
     def _demo_chunks(self, messages):
-        systems = " ".join(
-            str(message.get("content", "")) for message in messages if message.get("role") == "system"
-        )
-        if "COVERED or MISSING" in systems:
-            yield (
-                "content",
-                "1. where the heat comes from COVERED\n"
-                "2. why moving heat is efficient MISSING\n"
-                "3. how it performs in winter MISSING",
-            )
-            return
-        if "Write only the missing sentences" in systems or "Add only the missing content" in systems:
-            # The plan append/review prompts must answer with new sentences, or the
-            # demo's "before" arm stops after one append and undercounts its calls.
-            yield (
-                "content",
-                "The refrigerant loop gathers low-grade warmth from the outside air "
-                "and the compressor raises its temperature before it goes indoors.",
-            )
-            return
         seed = str(messages[-1].get("content", ""))[:40]
         if "plan" in seed.lower() or "sub-question" in seed.lower():
             yield ("content", '{"questions": ["What is it made of?", "Where does it come from?", "Why does it matter?"]}')
@@ -1009,7 +923,7 @@ class Client:
             time.sleep(0.01)
             yield ("content", speech[index: index + 8])
 
-    def ask(self, messages, model=MODEL, max_tokens=MAX_TOKENS, sampling=None, on_token=None, kind="stream", on_thinking=None, guard=None, think=None, priority="interactive", stop_when_answered=False, read_timeout=None):
+    def ask(self, messages, model=MODEL, max_tokens=MAX_TOKENS, sampling=None, on_token=None, kind="stream", on_thinking=None, guard=None, think=None, priority="interactive"):
         if not self.lanes.acquire(priority, timeout=TIMEOUT):
             raise RuntimeError("another request never finished")
         try:
@@ -1023,13 +937,11 @@ class Client:
                 on_thinking=on_thinking,
                 guard=guard,
                 think=think,
-                stop_when_answered=stop_when_answered,
-                read_timeout=read_timeout,
             )
         finally:
             self.lanes.release(priority)
 
-    def complete(self, messages, model=MODEL, max_tokens=MAX_TOKENS, sampling=None, kind="aux", priority="background", read_timeout=None):
+    def complete(self, messages, model=MODEL, max_tokens=MAX_TOKENS, sampling=None, kind="aux", priority="background"):
         # [#12] Identical concurrent aux calls share one request. Research and
         # summary prompts repeat often enough for this to matter.
         key = hashlib.sha1(
@@ -1042,7 +954,7 @@ class Client:
                 event = threading.Event()
                 self.shared[key] = event
         if not owner:
-            event.wait(AUX_TIMEOUT)
+            event.wait(TIMEOUT)
             with self.shared_lock:
                 shared = self.shared_results.get(key, "")
             if self.telemetry:
@@ -1057,7 +969,6 @@ class Client:
                 sampling=sampling,
                 kind=kind,
                 priority=priority,
-                read_timeout=read_timeout if read_timeout is not None else (AUX_TIMEOUT if priority == "background" else None),
             )["text"].strip()
             return text
         finally:
@@ -1069,17 +980,9 @@ class Client:
             event.set()
 
 
-def is_timeout(err):
-    """Whether a request failure was a timeout, which a retry only doubles."""
-    return "timeout" in type(err).__name__.lower() or "timed out" in str(err).lower()
-
-
 def ctx_for(messages):
-    """Context size to request: one floor, then only grow when a prompt needs it."""
     approx = sum(len(m.get("content", "")) for m in messages) // 4 + 256
-    if approx <= NUM_CTX:
-        return NUM_CTX
-    for size in (8192, 16384):
+    for size in (2048, 4096, 8192, 16384):
         if approx <= size:
             return size
     return 16384
@@ -2957,620 +2860,6 @@ class Store:
         self.db.commit()
 
 
-
-# --------------------------------------------------------------------------- #
-# [constraints] the user's standing requirements, as a numbered checklist
-# --------------------------------------------------------------------------- #
-# A standing requirement ("from now on, under 60 words") is forgotten by turn ten
-# unless it is repeated: a small model follows the last thing it read, and a long
-# answer pushes the original ask out of the window. This register keeps the rule,
-# checks every answer against it, and re-sends the open rules as a numbered list
-# at the end of the system prompt on every turn.
-#
-# Not everything the user says is standing. "Briefly", "short" or a one-off "in 3
-# sentences" is a remark about the answer being written, and filing it as a
-# permanent cap made every later answer short too. So a requirement carries a
-# scope: "standing" when it is phrased that way (from now on / always / every
-# answer) or added with /constraints add, and "once" otherwise. A one-off is sent
-# beside its own question and then dropped; only standing rules reach the register.
-CONSTRAINT_NUMBERS = {
-    "a": 1, "an": 1, "one": 1, "single": 1, "two": 2, "three": 3, "four": 4,
-    "five": 5, "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
-    "twelve": 12, "couple": 2, "few": 3,
-}
-
-MAX_LENGTH = re.compile(
-    r"(?:under|below|less than|fewer than|at most|max|maximum|no more than|"
-    r"not more than|up to)\s+(?:of\s+)?(\d+|[a-z]+)\s+"
-    r"(words?|sentences?|lines?|bullets?|points?|items?)"
-)
-MIN_LENGTH = re.compile(
-    r"(?:over|more than|at least|minimum(?: of)?|min|no less than)\s+(\d+|[a-z]+)\s+"
-    r"(words?|sentences?|lines?|bullets?|points?|items?)"
-)
-IN_LENGTH = re.compile(r"\bin\s+(\d+|[a-z]+)\s+(words?|sentences?|lines?)")
-
-# Scope of what was stated. Only a promise of repetition makes a rule standing;
-# everything else ("briefly", "in 3 sentences") belongs to the turn that said it.
-STANDING = re.compile(
-    r"\bfrom now on\b|\bfrom here on(?:ward|wards)?\b|\bgoing forward\b|\balways\b|"
-    r"\bevery (?:answer|reply|response|time|turn)\b|"
-    r"\beach (?:answer|reply|response|time|turn)\b|"
-    r"\bin (?:all|any) (?:(?:future|your) )?(?:answers?|replies?|responses?)\b|"
-    r"\bfor (?:all|every) (?:(?:future|your) )?(?:answers?|replies?|responses?)\b|"
-    r"\b(?:as a )?(?:standing|permanent) (?:rule|instruction|requirement)\b|\bpermanently\b"
-)
-ONE_OFF = re.compile(
-    r"\bthis (?:time|once|turn|answer|reply|response|message|one)\b|"
-    r"\bjust (?:this|for) (?:time|once|now)\b|\bfor now\b|\bfor the moment\b|"
-    r"\bonly (?:this|for) (?:time|once)\b|\bright now\b|"
-    r"\bfor the rest of this (?:answer|reply|response)\b"
-)
-
-# (pattern, kind, label). Banned shapes come first so "no bullets" is not also
-# read as "use bullets"; the reasons are kind, tone, format and library.
-CONSTRAINT_RULES = (
-    (r"\b(?:no|without|avoid|don'?t use|do not use|never use)\s+(?:any\s+)?"
-     r"(?:bullet(?:ed)?\s+(?:list|points?)|bullets|lists?|numbered lists?)\b",
-     "no_list", "Do not use bullet points or numbered lists"),
-    (r"\b(?:no|never use|avoid)\s+(?:a\s+)?tables?\b", "no_table", "Do not use a table"),
-    (r"\b(?:only|just)\s+(?:the\s+)?(?:code|script)\b|\bcode only\b|"
-     r"\bno (?:prose|explanation|commentary)\b", "only_code", "Code only, no prose"),
-    (r"\b(?:no|without|avoid|don'?t use|do not use)\s+emojis?\b|\bemoji[- ]free\b",
-     "no_emoji", "No emoji"),
-    (r"\b(?:no|without|avoid)\s+(?:jargon|buzzwords?)\b|\bplain (?:english|language|words?)\b|"
-     r"\bsimple (?:words|language)\b|\blayman'?s terms\b", "no_jargon", "Plain English, no jargon"),
-    (r"\b(?:be|keep it|stay)\s+(?:blunt|direct|candid)\b|\bget to the point\b|"
-     r"\bno (?:fluff|filler|hedging|preamble|small talk)\b|\bto the point\b",
-     "blunt", "Be blunt: no filler, no preamble"),
-    (r"\b(?:use|using|with)\s+(?:only\s+)?(?:the\s+)?(?:python\s+)?(?:standard library|stdlib)\b|"
-     r"\bstdlib only\b|\bno (?:external|third[- ]party)\s+(?:libraries|packages|dependencies|modules?)\b|"
-     r"\bno (?:new )?dependencies\b|\bwithout (?:any )?dependencies\b",
-     "stdlib", "Use only the Python standard library"),
-    (r"\bnumbered (?:list|points?|steps?)\b", "numbered", "Use a numbered list"),
-    (r"\bbullet(?:ed)?(?: list| points?|s)\b|\bas a list\b|\bin a list\b", "list", "Use bullet points"),
-    (r"\b(?:as a|in a|markdown)\s+table\b|\btable format\b", "table", "Use a table"),
-    (r"\b(?:reply|respond|answer|return|output|give me)\b[^.\n]{0,20}"
-     r"\b(?:as|in|with)?\s*(?:valid\s+)?json\b|\bjson only\b", "json", "Reply in JSON"),
-    (r"\binclude (?:unit )?tests?\b|\bwith tests\b", "tests", "Include tests"),
-    (r"\b(?:be|keep it|in a)\s+formal\b|\bformally\b|\bprofessional tone\b", "note", "Formal tone"),
-    (r"\b(?:be|keep it|in a)\s+casual\b|\bcasual tone\b", "note", "Casual tone"),
-    (r"\b(?:use|using|with|via)\s+(?:the\s+)?(numpy|pandas|requests|tkinter|flask|fastapi|"
-     r"django|sqlite3|matplotlib|pillow|selenium|playwright|httpx|aiohttp|pyside6)\b", "library", ""),
-)
-
-EMOJI = re.compile("[\U0001F000-\U0001FAFF\u2600-\u27BF\u2B00-\u2BFF\uFE0F]")
-# "no filler" means no throat-clearing, not no contrast: only the opening and
-# the stock phrases are checked, so a normal answer never trips it.
-PREAMBLE = (
-    "sure,", "sure!", "certainly", "of course", "great question", "good question",
-    "that's a great", "that's a good", "i'd be happy to", "let's dive", "let us dive",
-    "it's worth noting", "it is worth noting", "needless to say", "as an ai",
-)
-BUZZWORDS = (
-    "paradigm", "leverage", "synergy", "holistic", "seamless", "best-in-class",
-    "actionable", "circle back", "low-hanging fruit", "move the needle", "utilize",
-)
-
-
-def constraint_number(token):
-    token = str(token or "").strip().lower()
-    if token.isdigit():
-        return int(token)
-    return CONSTRAINT_NUMBERS.get(token)
-
-
-def _length_rule(unit, value, bound):
-    """Map "60 words" to a checkable rule. Units that cannot be counted are dropped."""
-    unit = unit.rstrip("s").lower()
-    if unit == "word":
-        return ("max_words" if bound == "max" else "min_words", value)
-    if unit == "sentence":
-        return (("max_sentences" if bound == "max" else None), value)
-    if unit == "line":
-        return (("max_lines" if bound == "max" else None), value)
-    if unit in ("bullet", "point", "item"):
-        return ("max_bullets" if bound == "max" else "min_bullets", value)
-    return (None, value)
-
-
-def constraint_label(kind, value):
-    if kind == "max_words":
-        return "At most %d words" % value
-    if kind == "min_words":
-        return "At least %d words" % value
-    if kind == "max_sentences":
-        return "At most %d sentences" % value
-    if kind == "max_lines":
-        return "At most %d lines" % value
-    if kind == "max_bullets":
-        return "At most %d bullet points" % value
-    if kind == "min_bullets":
-        return "At least %d bullet points" % value
-    if kind == "library":
-        return "Use %s" % value
-    return ""
-
-
-def detect_constraints(text, scope=None):
-    """The requirements in one user message, each with the scope it was stated in.
-
-    Scope is what stops a passing remark from becoming a standing rule. "briefly"
-    or "in 3 sentences" shaped the answer it was said in, so it comes back as
-    scope "once": it is sent with that turn's question and then forgotten. Only
-    wording that promises repetition ("from now on", "always", "every answer")
-    is scope "standing" and reaches the register; /constraints add passes the
-    scope in itself.
-
-    Pattern-based on purpose: it costs nothing and must not add a call to every
-    turn. Anything it misses can be added by hand with /constraints add.
-    """
-    low = re.sub(r"\s+", " ", str(text or "").lower())
-    # Sentence by sentence, because "From now on keep it under 70 words. This
-    # time, 300 words." states both scopes and one scope per message has to get
-    # one of them wrong. ", but" starts a clause that may switch scope on its own.
-    sentences = [
-        part.strip()
-        for part in re.split(r"(?<=[.!?;])\s+|,\s+but\s+", low)
-        if part.strip()
-    ]
-    sentences = sentences or [low]
-    # A standing phrase anywhere also covers the unmarked requirements beside it:
-    # "from now on keep it under 70 words, and use bullets" states two rules.
-    message_scope = "standing" if any(STANDING.search(part) for part in sentences) else "once"
-    found, seen = [], set()
-
-    def keep(kind, value=None, label=None, sentence=""):
-        if not kind:
-            return
-        key = (kind, str(value) if value is not None else kind)
-        if key in seen:
-            return
-        shown = label or constraint_label(kind, value)
-        if not shown:
-            return
-        if scope:
-            item_scope = scope
-        elif ONE_OFF.search(sentence):
-            item_scope = "once"
-        elif STANDING.search(sentence):
-            item_scope = "standing"
-        else:
-            item_scope = message_scope
-        seen.add(key)
-        found.append({"kind": kind, "value": value, "text": shown, "scope": item_scope})
-
-    for sentence in sentences:
-        for match in MAX_LENGTH.finditer(sentence):
-            keep(
-                *_length_rule(match.group(2), constraint_number(match.group(1)), "max"),
-                sentence=sentence,
-            )
-        for match in MIN_LENGTH.finditer(sentence):
-            keep(
-                *_length_rule(match.group(2), constraint_number(match.group(1)), "min"),
-                sentence=sentence,
-            )
-        for match in IN_LENGTH.finditer(sentence):
-            # "in three sentences" is a ceiling on length; "in 40 words" too
-            keep(
-                *_length_rule(match.group(2), constraint_number(match.group(1)), "max"),
-                sentence=sentence,
-            )
-        if re.search(r"\b(?:just|only|exactly|a single)\s+(?:one\s+)?sentence\b", sentence):
-            keep("max_sentences", 1, sentence=sentence)
-        if re.search(
-            r"\b(?:brief(?:ly)?|concise(?:ly)?|terse|keep it short|in a nutshell|tl;?dr)\b",
-            sentence,
-        ):
-            keep("max_words", 60, sentence=sentence)
-        if re.search(
-            r"\b(?:detailed|in depth|in-depth|thorough(?:ly)?|comprehensive|exhaustive|as much detail)\b",
-            sentence,
-        ):
-            keep("min_words", 150, sentence=sentence)
-        for pattern, kind, label in CONSTRAINT_RULES:
-            match = re.search(pattern, sentence)
-            if not match:
-                continue
-            if kind == "library":
-                keep("library", match.group(1), "Use %s" % match.group(1), sentence=sentence)
-            else:
-                keep(kind, None, label, sentence=sentence)
-    return found
-
-
-def answer_words(text):
-    return len(re.findall(r"[A-Za-z0-9']+", str(text or "")))
-
-
-def answer_lines(text):
-    return [line.strip() for line in str(text or "").splitlines() if line.strip()]
-
-
-def answer_sentences(text):
-    parts = re.split(r"(?<=[.!?])\s+|\n+", str(text or ""))
-    return [part for part in parts if part.strip()]
-
-
-def bullet_lines(text):
-    """Lines that read as list items: a bullet, or a number followed by . or )"""
-    return [
-        line for line in answer_lines(text)
-        if re.match(r"^(?:[-*\u2022\u2013]|\d+[.)])\s+\S", line)
-    ]
-
-
-def strip_fences(text):
-    return "\n".join(
-        line for line in str(text or "").splitlines() if not line.strip().startswith("```")
-    )
-
-
-def non_stdlib_imports(text):
-    modules = set(getattr(sys, "stdlib_module_names", ()) or ())
-    found = []
-    for match in re.finditer(r"^\s*(?:import|from)\s+([A-Za-z_][\w.]*)", str(text or ""), re.M):
-        top = match.group(1).split(".")[0]
-        if modules and top not in modules:
-            found.append(top)
-    return found
-
-
-def constraint_holds(item, answer):
-    """True or False when the rule can be measured, None when it is a matter of tone.
-
-    Only measurable rules are scored, so a compliance figure never counts a guess
-    about "formal tone" as either a pass or a failure.
-    """
-    kind = str(item.get("kind") or "")
-    value = item.get("value")
-    text = str(answer or "")
-    low = text.lower()
-    try:
-        if kind == "max_words":
-            return answer_words(text) <= int(value)
-        if kind == "min_words":
-            return answer_words(text) >= int(value)
-        if kind == "max_sentences":
-            return len(answer_sentences(text)) <= int(value)
-        if kind == "max_lines":
-            return len(answer_lines(text)) <= int(value)
-        if kind == "max_bullets":
-            return len(bullet_lines(text)) <= int(value)
-        if kind == "min_bullets":
-            return len(bullet_lines(text)) >= int(value)
-    except (TypeError, ValueError):
-        return None
-    if kind in ("list", "numbered"):
-        # a reader accepts either shape for "use a list"
-        return len(bullet_lines(text)) >= 2
-    if kind == "no_list":
-        return not bullet_lines(text)
-    if kind == "no_table":
-        return not any(line.count("|") >= 2 for line in answer_lines(text))
-    if kind == "table":
-        return any(line.count("|") >= 2 for line in answer_lines(text))
-    if kind == "json":
-        try:
-            json.loads(strip_fences(text).strip())
-            return True
-        except (ValueError, TypeError):
-            return False
-    if kind == "no_emoji":
-        return not EMOJI.search(text)
-    if kind == "no_jargon":
-        return not any(word in low for word in BUZZWORDS)
-    if kind == "blunt":
-        opening = answer_lines(text)[0].lower() if answer_lines(text) else ""
-        return not any(low.startswith(phrase) or opening.startswith(phrase) for phrase in PREAMBLE)
-    if kind == "library":
-        return str(value).lower() in low
-    if kind == "stdlib":
-        return not non_stdlib_imports(text)
-    if kind == "only_code":
-        return "```" in text and answer_words(strip_fences(text)) < 25
-    if kind == "tests":
-        return any(marker in low for marker in ("assert ", "def test_", "unittest", "pytest"))
-    return None
-
-
-def constraint_report(items, answer):
-    """Every rule against one answer, plus the measurable score."""
-    rows = [(item, constraint_holds(item, answer)) for item in items]
-    checked = sum(1 for _, ok in rows if ok is not None)
-    held = sum(1 for _, ok in rows if ok is True)
-    return {
-        "rows": rows,
-        "checked": checked,
-        "held": held,
-        "rate": (held / float(checked)) if checked else None,
-    }
-
-
-class Constraints:
-    """The user's standing requirements, kept across turns and re-sent every turn.
-
-    Only scope "standing" rules are filed here: a one-off remark is sent with its
-    own turn and never seen again, so it cannot silently cap later answers.
-    """
-
-    LENGTH_KINDS = ("max_words", "min_words", "max_sentences", "max_lines", "max_bullets", "min_bullets")
-
-    def __init__(self, path, limit=12):
-        self.path = Path(path)
-        self.limit = limit
-        self.items = []
-        self.load()
-
-    def load(self):
-        try:
-            data = json.loads(self.path.read_text(encoding="utf-8"))
-            items = data.get("items") or []
-        except (OSError, json.JSONDecodeError, AttributeError):
-            items = []
-        self.items = [item for item in items if isinstance(item, dict) and item.get("text")][-self.limit:]
-
-    def save(self):
-        try:
-            self.path.write_text(
-                json.dumps({"items": self.items}, ensure_ascii=False), encoding="utf-8"
-            )
-        except OSError as err:
-            print("constraints save failed:", err)
-
-    def add(self, item, turn=0):
-        """Store one rule. True when the register changed.
-
-        A restated length replaces the earlier number instead of sitting beside it:
-        "under 60 words" followed by "actually under 30" must not leave both open.
-        """
-        kind = str(item.get("kind") or "")
-        value = item.get("value")
-        text = str(item.get("text") or "").strip()
-        if not kind or not text:
-            return False
-        entry = {"kind": kind, "value": value, "text": text, "turn": turn}
-        for index, existing in enumerate(self.items):
-            if existing.get("kind") != kind:
-                continue
-            same_value = str(existing.get("value")) == str(value)
-            if same_value and existing.get("text") == text:
-                return False
-            if same_value or kind in self.LENGTH_KINDS or kind == "library":
-                self.items[index] = entry
-                self.save()
-                return True
-        self.items.append(entry)
-        if len(self.items) > self.limit:
-            self.items = self.items[-self.limit:]
-        self.save()
-        return True
-
-    def drop(self, number):
-        try:
-            index = int(number) - 1
-        except (TypeError, ValueError):
-            index = -1
-        if 0 <= index < len(self.items):
-            removed = self.items.pop(index)
-            self.save()
-            print("[dropped %d. %s]" % (index + 1, removed["text"]))
-            return True
-        print("usage: /constraints drop <number>   (numbers come from /constraints)")
-        return False
-
-    def clear(self):
-        self.items = []
-        self.save()
-
-    def reminder(self):
-        """The same list, short, for the message the model reads last."""
-        if not self.items:
-            return ""
-        lines = ["Standing requirements that still apply to this answer:"]
-        for index, item in enumerate(self.items, 1):
-            lines.append("%d. %s." % (index, item["text"].rstrip(".")))
-        return "\n".join(lines)
-
-    def checklist(self):
-        if not self.items:
-            return ""
-        lines = [
-            "The user stated these requirements and they still apply to this reply. "
-            "The numbers are fixed, so the user can change one by number:",
-        ]
-        for index, item in enumerate(self.items, 1):
-            lines.append("%d. %s." % (index, item["text"].rstrip(".")))
-        return "\n".join(lines)
-
-
-def constraint_summary(rows):
-    """Turn rows from one arm -> overall, early/late and per-rule compliance."""
-    checked = sum(row["report"]["checked"] for row in rows)
-    held = sum(row["report"]["held"] for row in rows)
-
-    def slice_rate(pred):
-        picked = [row for row in rows if pred(row["turn"])]
-        total = sum(row["report"]["checked"] for row in picked)
-        good = sum(row["report"]["held"] for row in picked)
-        return (good / float(total)) if total else None
-
-    rules = {}
-    for row in rows:
-        for item, ok in row["report"]["rows"]:
-            if ok is None:
-                continue
-            tally = rules.setdefault(item["text"], [0, 0])
-            tally[0] += 1
-            tally[1] += 1 if ok else 0
-    words = [row["words"] for row in rows] or [0]
-    secs = [row["secs"] for row in rows] or [0.0]
-    longest = max(row["turn"] for row in rows) if rows else 0
-    return {
-        "turns": len(rows),
-        "checked": checked,
-        "held": held,
-        "rate": (held / float(checked)) if checked else None,
-        "early": slice_rate(lambda turn: turn <= 10),
-        "late": slice_rate(lambda turn: turn > max(10, longest - 10)),
-        "rules": {name: (tally[1] / float(tally[0])) if tally[0] else None
-                  for name, tally in rules.items()},
-        "words": sum(words) / float(len(words)),
-        "secs": sum(secs) / float(len(secs)),
-    }
-
-
-# 30 questions, fixed, so both arms of the bench answer exactly the same thing.
-CONSTRAINT_BENCH_PROMPTS = (
-    "What makes a mechanical keyboard feel different from a membrane one?",
-    "How does a heat pump move heat instead of making it?",
-    "Why does a cast iron pan need seasoning?",
-    "How does a car's catalytic converter reduce pollution?",
-    "What causes thunder after a lightning strike?",
-    "How does sourdough starter raise bread without added yeast?",
-    "What is the difference between a stock and a broth?",
-    "How does noise cancelling work in headphones?",
-    "Why do steel ships float?",
-    "How does a refrigerator keep food cold?",
-    "What makes an espresso shot taste sour or bitter?",
-    "How does a solar panel turn light into electricity?",
-    "What is the difference between cement and concrete?",
-    "Why does bread go stale, and does the fridge help?",
-    "How does a moving bicycle stay upright?",
-    "What does a GPU do that a CPU does not?",
-    "How do vaccines train the immune system?",
-    "Why does salt melt ice on a road?",
-    "How does a GPS receiver know where it is?",
-    "What makes a diamond hard but brittle?",
-    "How does a wood stove heat a room differently from a radiator?",
-    "Why do some metals rust and others do not?",
-    "How does a camera autofocus on a moving subject?",
-    "What is the difference between a virus and a bacterium?",
-    "Why does a bicycle pump warm up when inflating a tyre?",
-    "Why does coffee taste different when brewed cold?",
-    "How does a hard drive store data magnetically?",
-    "What makes a bridge strong enough for trucks?",
-    "How does the body cool itself in hot weather?",
-    "What is the difference between AC and DC current?",
-)
-
-# Stated in the first six turns; all six stay in force for the rest of the run.
-# These conflict with what a long-form answer does on its own, which is the
-# point: a free rule (no emoji) cannot show whether a checklist works.
-CONSTRAINT_BENCH_RULES = (
-    "From now on keep every answer under 70 words.",
-    "Also use bullet points in every answer from now on.",
-    "Also keep every answer to at most 4 sentences.",
-    "Also write every answer in plain English, no jargon.",
-    "Also be blunt in every answer: no filler, no preamble.",
-    "Also never use a table in any answer.",
-)
-
-
-# --------------------------------------------------------------------------- #
-# [plan] a per-turn checklist, ticked off as the answer covers it
-# --------------------------------------------------------------------------- #
-# A long answer drifts: the model writes the first three things that come to mind
-# and stops, so the fourth part of the question is silently missing. This layer
-# asks for the checklist as soon as the answer is on screen - the model marks
-# each step COVERED or MISSING itself - and appends only what is missing: notes
-# first (free), then at most a fixed number of model passes, then one thinking
-# review - and none of that past plan_budget. By default only the assess call runs.
-# It never delays the answer: Lanes makes an interactive call wait for any
-# running background call to drain, so a checklist call placed before the stream
-# would queue the answer behind it. Nothing is stored and there is no command: the
-# list belongs to one turn, which is why it cannot become another standing rule.
-PLAN_LINE = re.compile(r"^\s*(?:[-*\u2022]|\d+[.)])\s+(.+\S)\s*$", re.M)
-PLAN_STOPWORDS = frozenset(
-    """a an the and or but if then than that this these those of in on at to for from with
-    without into over under about as is are was were be been being it its their there here
-    what which who how why when where do does did can could should would will you your we our
-    they them he she his her not no nor so such very just also more most less least other
-    another same own only too each every any all some few many much both either neither""".split()
-)
-PLAN_SYSTEM = (
-    "List the things a complete answer must cover. One per line, numbered, at most 5 lines, "
-    "each ending with COVERED or MISSING for the answer you were given. No introduction, "
-    "no explanation, no closing line."
-)
-# Unambiguous on purpose: "how it is done" must not read as a finished step.
-PLAN_MARKS = (
-    ("not covered", False),
-    ("missing", False),
-    ("absent", False),
-    ("todo", False),
-    ("covered", True),
-)
-
-
-def plan_marks(text, limit=6):
-    """The checklist, each step with the model's own COVERED/MISSING mark.
-
-    Returns [(step, True/False/None)]: None means the line carried no mark, and the
-    caller scores that step locally instead of guessing.
-    """
-    rows, seen = [], set()
-    for match in PLAN_LINE.finditer(str(text or "")):
-        step = match.group(1).strip(" .:;-*[]()")
-        done = None
-        low = step.lower()
-        for word, flag in PLAN_MARKS:
-            if word in low:
-                done = flag
-                step = re.sub(
-                    r"[\[(]?\s*" + re.escape(word) + r"\s*[\])]?", "", step, flags=re.I
-                )
-                break
-        step = step.strip(" .:;-*[]()")
-        if len(step.split()) < 2:
-            continue
-        key = re.sub(r"[^a-z0-9 ]+", " ", step.lower()).strip()
-        if key in seen:
-            continue
-        seen.add(key)
-        rows.append((step[:120], done))
-    return rows[:limit]
-
-
-def plan_steps(text, limit=6):
-    """Just the steps, without the marks."""
-    return [step for step, _ok in plan_marks(text, limit)]
-
-
-def step_words(step):
-    """The words of a step that a lookup can actually look for."""
-    return [
-        word for word in re.findall(r"[a-z0-9']{3,}", str(step or "").lower())
-        if word not in PLAN_STOPWORDS
-    ]
-
-
-def step_covered(step, answer, share=0.6):
-    """True when the answer already says something about this step.
-
-    Local and deterministic: scoring a checklist with a model call per step would
-    cost more than the answer it is checking. Words match on a six-letter stem, so
-    "heat" and "heating" count together.
-    """
-    words = step_words(step)
-    if not words:
-        return True
-    low = str(answer or "").lower()
-    hits = sum(1 for word in words if word[:6] in low)
-    return hits >= max(1, int(math.ceil(len(words) * share)))
-
-
-def plan_summary(rows):
-    missing = [step for step, ok in rows if not ok]
-    return {"rows": rows, "done": len(rows) - len(missing), "total": len(rows), "missing": missing}
-
-
-def plan_report(steps, answer):
-    """The same summary, scored locally against one answer."""
-    return plan_summary([(step, step_covered(step, answer)) for step in steps])
-
-
 class Chat:
     def __init__(self, client, cache, notes, telemetry, use_draft=DEFAULT_DRAFT):
         self.client = client
@@ -3630,29 +2919,6 @@ class Chat:
         # fallback and the parallel worker count. All settings come from
         # fast_chat_ext.SETTINGS via setting(), so there is one place to edit.
         self.ext = EXT if (EXT is not None and getattr(EXT, "ENABLED", False)) else None
-        # /constraints: a requirement stated once is re-sent as a numbered
-        # checklist on every turn, so turn twenty still knows about turn one.
-        self.constraints = Constraints(Path(STATE) / "chat_constraints.json")
-        self.constraint_inject = as_bool("constraints", True)
-        # Measured: the system prompt alone was ignored once the session had
-        # history, so the same list is repeated next to the question too.
-        self.constraint_recency = as_bool("constraint_recency", True)
-        self.last_constraint_report = {}
-        # The rules this turn stated without promising they would last. They are
-        # sent with this question and replaced on the next turn, never stored.
-        self.turn_constraints = []
-        # [plan] per-turn checklist: asked in the background, ticked off locally,
-        # appended to but never stored, so there is nothing to switch on or clear.
-        # "auto" keeps the call off the one-line questions that have nothing to tick.
-        self.plan_mode = str(setting("plan_mode", "auto")).lower()
-        # Cheap by default: the assess call and nothing else. Two appends plus a
-        # thinking review made four extra model calls on every 14+ word prompt;
-        # set plan_appends: 2 and plan_review: true to get that pass back.
-        self.plan_appends = max(0, setting("plan_appends", 0, int))
-        self.plan_review = as_bool("plan_review", False)
-        self.plan_think = as_bool("plan_think", True)
-        self.plan_budget = PLAN_BUDGET
-        self.last_plan = {}
         self.load_state()
 
     # -- durable conversation state --------------------------------------- #
@@ -3719,11 +2985,6 @@ class Chat:
             system += "\n\nUse this context when it is relevant; ignore it otherwise:\n" + context
         if extra_system:
             system += "\n\n" + extra_system
-        # Last in the system prompt: on a small model the most recent instruction
-        # is the one that survives a long answer.
-        checklist = self.constraints.checklist() if self.constraint_inject else ""
-        if checklist:
-            system += "\n\n" + checklist
         messages = [{"role": "system", "content": system}]
         # A change of subject gets NO verbatim turns: feeding the previous answer
         # made the model clone its wording. Explicit now, so /ab and /research do
@@ -3737,18 +2998,6 @@ class Chat:
             )
         )
         messages.append({"role": "user", "content": prompt})
-        # The checklist was in a system prompt that is now two hundred words back;
-        # the model's own last answer is much closer, so the same numbered list is
-        # repeated here, after the question. Same numbers, no extra call.
-        if self.constraint_inject and self.constraint_recency:
-            reminder = self.constraints.reminder()
-            if reminder:
-                messages[-1]["content"] = prompt + "\n\n" + reminder
-        # Sent whatever the checklist setting says: this is not the register, it is
-        # the user's instruction for this one answer, and it is gone next turn.
-        one_off = self.one_off_reminder()
-        if one_off:
-            messages[-1]["content"] = messages[-1]["content"] + "\n\n" + one_off
         return messages
 
     # -- answering --------------------------------------------------------- #
@@ -3756,16 +3005,13 @@ class Chat:
         raw = prompt.strip()
         if not raw:
             return ""
-        self.last_plan = {}
-        # Before the answer, not after: a requirement in this turn applies to the
-        # reply being written now and to every reply after it.
-        self.capture_constraints(raw)
         intent = classify_intent(raw, self.last_prompt, self.last_answer)
         self.last_intent = intent
         # No follow-up expansion when the subject changed: it only made the
         # question long enough to trigger the reasoning pass for free.
         prompt = raw if intent == "new" else self.expand(raw)
         memory_note = self.memory_instruction(intent, prompt)
+        context = self.context_for(prompt)
         # Cache on the question alone. Folding the retrieved context into the key
         # missed every repeat, because answering adds a note that changes it.
         cache_key = prompt
@@ -3785,8 +3031,6 @@ class Chat:
             self.telemetry.record(kind="answer", model="cache", ms=0.0, ttft_ms=0.0, cache_score=round(score, 3))
             self.remember(raw, answer)
             return answer
-        # Assembled only after the cache misses: a hit returns before this work.
-        context = self.context_for(prompt)
         if stale is None:
             stale = self.cache.recent(cache_key)
         if stale:
@@ -3889,15 +3133,10 @@ class Chat:
         if not text:
             print("(empty response - try /think on to see the reasoning)")
             return ""
-        extended = False
         if not self.fast_mode:
             # Two stages after the first answer: add what was missing, then
             # rewrite it as many times as /layers asks for.
-            before_extend = text
             text = self.extend_if_repetitive(prompt, text, context, intent)
-            # The repetition fixup already added new material. Asking for a
-            # different angle now would replace it and cost another full call.
-            extended = text != before_extend
             if self.layers > 1:
                 text = self.refine(raw, text, context, self.layers)
         # A long-form answer, or a list the user asked for, is not a rambling failure.
@@ -3924,7 +3163,7 @@ class Chat:
             text = tidy_answer(text, setting("tidy_chars", 900, int))
             print("[answer was %s - trimmed %d -> %d chars]" % (problem, before, len(text)))
         # Same question, same answer: ask for a different one instead of repeating it.
-        if not extended and len(text.split()) >= 15 and near_duplicate(text, self.last_answer):
+        if len(text.split()) >= 15 and near_duplicate(text, self.last_answer):
             print("[that repeats the last answer - asking for a different angle]")
             alt = self.different_answer(prompt, context, text)
             if alt:
@@ -3965,10 +3204,6 @@ class Chat:
                 break
             added += len(more)
             text = text.rstrip() + " " + more
-        # [plan] After the answer, never in front of it: the checklist call and
-        # every gap it fills are appended to an answer the user can already read.
-        if self.wants_plan(raw) and text and not has_code_block(text):
-            text = self.plan_turn(raw, text)
         if len(text) > PREPLY_THRESHOLD:
             self.stash(text, raw[:60])
         reward = score_answer(text, raw, context, sentences_of(self.last_answer) if self.last_answer else [])
@@ -4396,7 +3631,6 @@ class Chat:
                 on_thinking=lambda piece, _r: pieces.append(piece),
                 kind="reasoning",
                 think=True,
-                stop_when_answered=True,
             )
         except Exception as err:  # noqa: BLE001
             print("[reasoning pass failed: %s]" % err)
@@ -4540,29 +3774,27 @@ class Chat:
             return ""
         return alt
 
-    def append_answer(self, prompt, text, on_token=None, system=None, max_tokens=None, read_timeout=None):
+    def append_answer(self, prompt, text, on_token=None):
         """Ask for only the missing tail of an answer that stopped mid-sentence.
 
         Streamed, so the tail appears token by token instead of the turn pausing
-        in silence for a second request. The plan layer reuses it with its own
-        system prompt and token cap to add one gap at a time.
+        in silence for a second request.
         """
         try:
             result = self.client.ask(
                 [
                     {
                         "role": "system",
-                        "content": system or (
+                        "content": (
                             "Continue this answer from exactly where it stops. Output only the "
                             "new sentences: no repetition, no summary of what came before."
                         ),
                     },
                     {"role": "user", "content": "Question: %s\n\nAnswer so far:\n%s" % (prompt, text[-1200:])},
                 ],
-                max_tokens=max_tokens or setting("append_tokens", 160, int),
+                max_tokens=setting("append_tokens", 160, int),
                 sampling={"temperature": 0.3, "repeat_penalty": 1.15},
                 on_token=on_token,
-                read_timeout=read_timeout,
                 kind="append",
             )
         except Exception:  # noqa: BLE001
@@ -4571,491 +3803,6 @@ class Chat:
         if not more or novelty(more, sentences_of(text)) < 0.5:
             return ""
         return more
-
-    # -- [plan] a checklist for this turn, not a standing rule --------------- #
-    def wants_plan(self, prompt):
-        """Whether this turn is worth a checklist at all.
-
-        "auto" plans only the asks that want several things covered: a one-line
-        factual question has nothing to tick off, and a call there is pure cost.
-        """
-        if self.plan_mode in ("off", "0", "false", "no", "never"):
-            return False
-        if self.fast_mode:
-            return False
-        if self.plan_mode in ("on", "always", "1", "true", "yes"):
-            return True
-        low = str(prompt or "").lower()
-        multi = re.search(
-            r"\b(?:and also|as well as|pros and cons|step[- ]by[- ]step|compare|contrast|"
-            r"everything|all of|cover|both)\b",
-            low,
-        )
-        return low.count("?") >= 2 or bool(multi) or len(str(prompt).split()) >= 14
-
-    def plan_assess(self, prompt, answer, read_timeout=None):
-        """One short call: the checklist, each step already marked by the model.
-
-        After the answer, not before: Lanes makes an interactive call wait for a
-        running background call to drain, so a plan call started first would delay
-        the answer it exists to check.
-        """
-        body = (
-            "Question: %s\n\nAnswer so far:\n%s\n\n"
-            "List at most 5 things a complete answer to the question must cover, numbered, "
-            "each followed by COVERED or MISSING for the answer above."
-            % (str(prompt)[:500], str(answer)[-1600:])
-        )
-        try:
-            text = self.client.complete(
-                [
-                    {"role": "system", "content": PLAN_SYSTEM},
-                    {"role": "user", "content": body},
-                ],
-                max_tokens=setting("plan_tokens", 120, int),
-                sampling={"temperature": 0.2, "repeat_penalty": 1.1},
-                read_timeout=read_timeout,
-                kind="plan",
-            )
-        except Exception:  # noqa: BLE001
-            return []
-        rows = plan_marks(text if isinstance(text, str) else "")
-        # The model's marks are the ones the user asked for; a line it left unmarked
-        # is scored locally rather than counted as missed.
-        return [(step, ok if ok is not None else step_covered(step, answer)) for step, ok in rows]
-
-    def notes_fill(self, missing):
-        """Paragraphs already in the notes that answer a missing step.
-
-        Free: no model call, and only used when two of the step's own words appear
-        in the note, so an unrelated note cannot be pasted into the answer.
-        """
-        if not missing:
-            return ""
-        picked, seen = [], set()
-        for step in missing:
-            words = set(step_words(step))
-            if len(words) < 2:
-                continue
-            for note in self.notes.search(step, limit=2):
-                body = str(note.get("text") or "").strip()
-                if not body or body[:80] in seen:
-                    continue
-                low = (body + " " + str(note.get("title") or "")).lower()
-                if sum(1 for word in words if word[:6] in low) < 2:
-                    continue
-                seen.add(body[:80])
-                picked.append(body)
-        return " ".join(picked)[:400].strip()
-
-    def missing_answer(self, prompt, text, missing, read_timeout=None):
-        """One capped call that adds only the steps the answer has not covered."""
-        writer = Writer()
-        writer.start("AI (+plan): ")
-
-        def on_chunk(piece, _result):
-            writer.write(piece)
-
-        more = self.append_answer(
-            "Add the missing parts only: %s" % "; ".join(missing),
-            text,
-            on_token=on_chunk,
-            system=(
-                "Add only the missing content to this answer. Output only new sentences: "
-                "no repetition of the answer, no summary of what came before."
-            ),
-            max_tokens=setting("plan_step_tokens", 150, int),
-            read_timeout=read_timeout,
-        )
-        writer.end()
-        return more
-
-    def review_missing(self, prompt, text, missing, read_timeout=None):
-        """One thinking review: re-read the answer and the list, add what is absent."""
-        writer = Writer()
-        writer.start("AI (+review): ")
-
-        def on_chunk(piece, _result):
-            writer.write(piece)
-
-        instruction = (
-            "A reader is about to get this answer. These parts of the question are not "
-            "covered yet:\n%s\n\nWrite only the new sentences that cover them. No repetition, "
-            "no preamble, no summary.\n\nQuestion: %s\n\nAnswer:\n%s"
-            % ("\n".join("- " + step for step in missing), str(prompt)[:400], str(text)[-1600:])
-        )
-        try:
-            result = self.client.ask(
-                [
-                    {"role": "system", "content": "Write only the missing sentences."},
-                    {"role": "user", "content": instruction},
-                ],
-                max_tokens=setting("plan_review_tokens", 180, int),
-                sampling={"temperature": 0.35},
-                on_token=on_chunk,
-                think=True if self.plan_think else None,
-                read_timeout=read_timeout,
-                kind="plan-review",
-            )
-            writer.end()
-        except Exception:  # noqa: BLE001
-            writer.end()
-            return ""
-        more = str(result["text"] or "").strip()
-        if not more or novelty(more, sentences_of(text)) < 0.5:
-            return ""
-        return more
-
-    def plan_turn(self, prompt, text):
-        """Tick the answer off against the checklist and append what is missing.
-
-        Bounded twice on purpose: notes first (free), then at most plan_appends
-        model passes and one review - and nothing at all once plan_budget seconds
-        have gone by. One assess call is the default; the extra passes are opt-in,
-        because the checklist is a luxury after the answer, not a second answer.
-        Returns the answer, extended in place and already on screen.
-        """
-        began = time.time()
-        deadline = began + self.plan_budget if self.plan_budget > 0 else None
-
-        def left():
-            """Seconds left in the budget, or None when it has no ceiling."""
-            return None if deadline is None else max(0.0, deadline - time.time())
-
-        calls = 1
-        rows = self.plan_assess(prompt, text, read_timeout=left())
-        if not rows:
-            self.last_plan = {
-                "steps": [],
-                "done": 0,
-                "total": 0,
-                "appends": 0,
-                "reviewed": 0,
-                "notes": False,
-                "calls": calls,
-                "stopped": "",
-                "secs": round(time.time() - began, 2),
-            }
-            return text
-        report = plan_summary(rows)
-        appended = reviewed = 0
-        stopped = ""
-        filled = self.notes_fill(report["missing"])
-        if filled:
-            text = text.rstrip() + "\n\n" + filled
-            print("AI (+from notes): %s" % filled)
-            report = plan_report([step for step, _ok in report["rows"]], text)
-        while (
-            report["missing"]
-            and appended < self.plan_appends
-            and len(text) < setting("long_limit", 6000, int)
-        ):
-            room = left()
-            if room is not None and room <= 0.0:
-                stopped = "budget"
-                break
-            appended += 1
-            calls += 1
-            more = self.missing_answer(prompt, text, report["missing"], read_timeout=room)
-            if not more:
-                break
-            text = text.rstrip() + " " + more
-            report = plan_report([step for step, _ok in report["rows"]], text)
-        if self.plan_review and report["missing"]:
-            room = left()
-            if room is None or room > 0.0:
-                reviewed = 1
-                calls += 1
-                more = self.review_missing(prompt, text, report["missing"], read_timeout=room)
-                if more:
-                    text = text.rstrip() + " " + more
-                    report = plan_report([step for step, _ok in report["rows"]], text)
-            else:
-                stopped = "budget"
-        self.last_plan = {
-            "steps": [{"step": step, "done": ok} for step, ok in report["rows"]],
-            "done": report["done"],
-            "total": report["total"],
-            "appends": appended,
-            "reviewed": reviewed,
-            "notes": bool(filled),
-            "calls": calls,
-            "stopped": stopped,
-            "secs": round(time.time() - began, 2),
-        }
-        print(
-            "[plan %d/%d covered after %d append(s)%s%s | %d model call(s) | %.1fs extra]"
-            % (
-                report["done"],
-                report["total"],
-                appended,
-                " + review" if reviewed else "",
-                " (budget reached)" if stopped == "budget" else "",
-                calls,
-                self.last_plan["secs"],
-            )
-        )
-        self.telemetry.record(
-            kind="plan",
-            model=MODEL,
-            ms=round(self.last_plan["secs"] * 1000, 1),
-            chars=len(text),
-            calls=calls,
-            cache_score=(
-                round(report["done"] / float(report["total"]), 3) if report["total"] else None
-            ),
-        )
-        return text
-
-    def capture_constraints(self, text):
-        """File this turn's standing rules; keep the rest for this turn only.
-
-        Detection always runs, even with the checklist switched off: turning the
-        checklist off means "stop sending it", and the register is also the ruler
-        the bench scores both arms with.
-
-        Returns the rules stored. A one-off ("briefly", "in 3 sentences") is not
-        stored at all: it lands in self.turn_constraints, is sent with this turn's
-        question, and is replaced on the next turn.
-        """
-        found = detect_constraints(text)
-        self.turn_constraints = [item for item in found if item.get("scope") == "once"]
-        added = []
-        for item in found:
-            if item.get("scope") != "standing":
-                continue
-            if self.constraints.add(item, turn=self.turn_number()):
-                added.append(item)
-                print("[constraint %d stored: %s]" % (len(self.constraints.items), item["text"]))
-        for item in self.turn_constraints:
-            print(
-                "[this turn only, not stored: %s - /constraints add keeps it]" % item["text"]
-            )
-        return added
-
-    def one_off_reminder(self):
-        """This turn's one-off rules, in the same numbered shape as the checklist."""
-        if not self.turn_constraints:
-            return ""
-        lines = ["For this answer only (not a standing rule):"]
-        for index, item in enumerate(self.turn_constraints, 1):
-            lines.append("%d. %s." % (index, item["text"].rstrip(".")))
-        return "\n".join(lines)
-
-    def show_constraints(self):
-        items = self.constraints.items
-        once = self.turn_constraints
-        state = (
-            "off" if not self.constraint_inject else
-            ("on: system prompt + beside the question" if self.constraint_recency
-             else "on: system prompt only")
-        )
-        if not items and not once:
-            print(
-                "[no standing requirements (checklist %s) - state one for good, "
-                'e.g. "from now on keep it under 60 words", or /constraints add ...]' % state
-            )
-            return
-        print(
-            "[%d standing requirement(s) - stored, re-sent every turn | checklist %s]"
-            % (len(items), state)
-        )
-        report = (
-            constraint_report(items, self.last_answer) if (items and self.last_answer) else None
-        )
-        for index, item in enumerate(items, 1):
-            mark = ""
-            if report:
-                ok = report["rows"][index - 1][1]
-                mark = "  -" if ok is None else ("  ok" if ok else "  BROKEN")
-            print("  %2d. %-62s %s" % (index, item["text"], mark))
-        if report and report["checked"]:
-            print("  [last answer: %d/%d checks held]" % (report["held"], report["checked"]))
-            print("  /constraints check re-tests it; /fix rewrites it")
-        if once:
-            # Not in the register and not numbered: it came from the wording of the
-            # last turn, went out with that one question, and is already gone.
-            print("  [last turn only - sent beside that question, not stored]")
-            for item in once:
-                print("    - %s" % item["text"])
-            print("  /constraints add <rule> stores one of these for good")
-
-    def constraint_check(self, text=None):
-        answer = self.last_answer if text is None else text
-        if not answer:
-            print("[nothing to check yet]")
-            return {}
-        report = constraint_report(self.constraints.items, answer)
-        if report["checked"]:
-            print("[%d/%d checks held]" % (report["held"], report["checked"]))
-        else:
-            print("[no machine-checkable requirement in the register]")
-        for item, ok in report["rows"]:
-            if ok is False:
-                print("  broke: %s" % item["text"])
-            elif ok is None:
-                print("  not measurable, sent anyway: %s" % item["text"])
-        self.last_constraint_report = report
-        self.telemetry.record(
-            kind="constraints", model=MODEL, chars=len(answer),
-            cache_score=round(report["rate"], 3) if report["rate"] is not None else None,
-        )
-        return report
-
-    def constraints_command(self, argument=""):
-        parts = str(argument or "").strip().split(None, 1)
-        action = parts[0].lower() if parts else ""
-        rest = parts[1].strip() if len(parts) > 1 else ""
-        if action in ("clear", "reset"):
-            count = len(self.constraints.items)
-            self.constraints.clear()
-            print("[constraints cleared: %d dropped]" % count)
-        elif action == "off":
-            self.constraint_inject = False
-            print("[checklist off - the register is kept but no longer sent]")
-        elif action == "on":
-            self.constraint_inject = True
-            print("[checklist on - %d requirement(s) sent every turn]" % len(self.constraints.items))
-        elif action == "recency":
-            self.constraint_recency = rest.lower() not in ("off", "0", "false", "no")
-            print(
-                "[checklist repeated beside the question: %s]"
-                % ("on" if self.constraint_recency else "off")
-            )
-        elif action == "add":
-            if not rest:
-                print("usage: /constraints add <requirement>")
-                return
-            # Explicit: whatever was typed here is meant to last, even when the
-            # wording alone ("briefly") would have read as a one-off.
-            items = detect_constraints(rest, scope="standing") or [
-                {"kind": "note", "value": None, "text": rest}
-            ]
-            for item in items:
-                if self.constraints.add(item, turn=self.turn_number()):
-                    print("[constraint %d stored: %s]" % (len(self.constraints.items), item["text"]))
-        elif action in ("drop", "remove"):
-            self.constraints.drop(rest)
-        elif action == "check":
-            self.constraint_check()
-        elif action == "bench":
-            self.constraint_bench(constraint_number(rest) or 30)
-        else:
-            self.show_constraints()
-
-    def bench_session(self):
-        """A Chat on a throwaway state folder: the bench must not touch the real one."""
-        folder = Path(tempfile.mkdtemp(prefix="fastchat-constraints-"))
-        saved = globals()["STATE"]
-        globals()["STATE"] = str(folder)
-        try:
-            made = Chat(
-                self.client,
-                AnswerCache(folder / "cache.json"),
-                Notes(folder / "notes.json"),
-                Telemetry(folder / "telemetry.jsonl"),
-                use_draft=False,
-            )
-        finally:
-            globals()["STATE"] = saved
-        return made
-
-    def bench_arm(self, prompts, arm="checklist"):
-        rows = []
-        for index, prompt in enumerate(prompts, 1):
-            line = prompt
-            if index <= len(CONSTRAINT_BENCH_RULES):
-                # Stated in the user turn, so both arms hear it. The only difference
-                # between the arms is whether it is still on the checklist later.
-                line = CONSTRAINT_BENCH_RULES[index - 1] + " " + prompt
-                self.capture_constraints(line)
-            context = self.context_for(line)
-            started = time.time()
-            try:
-                result = self.client.ask(
-                    self.messages_for(line, context, long=True),
-                    max_tokens=setting("constraint_bench_tokens", 220, int),
-                    sampling=dict(SAMPLING),
-                    kind="constraint-bench",
-                )
-                text = str(result["text"] or "").strip()
-            except Exception as err:  # noqa: BLE001
-                print("  %-9s turn %2d failed: %s" % (arm, index, err))
-                continue
-            secs = time.time() - started
-            self.memory.add(line, text)
-            report = constraint_report(self.constraints.items, text)
-            rows.append(
-                {"turn": index, "report": report, "words": answer_words(text), "secs": secs}
-            )
-            print(
-                "  %-9s turn %2d  %d/%d held  %3d words  %4.1fs"
-                % (arm, index, report["held"], report["checked"], answer_words(text), secs)
-            )
-        return rows
-
-    def constraint_bench(self, turns=30, prompts=None):
-        """Run the same turns three ways: no checklist, system prompt only, and
-        system prompt plus the list repeated beside the question."""
-        turns = max(6, min(30, int(turns or 30)))
-        prompts = list(prompts or CONSTRAINT_BENCH_PROMPTS)[:turns]
-        stated = min(len(CONSTRAINT_BENCH_RULES), turns)
-        print(
-            "[constraint bench: %d turns per arm | turns 1-%d state a requirement, "
-            "the rest are plain questions]" % (turns, stated)
-        )
-        arms = (("plain", False, False), ("system", True, False), ("both", True, True))
-        runs = {}
-        for name, inject, recency in arms:
-            session = self.bench_session()
-            session.long_mode = True
-            session.think_mode = "off"
-            session.autonote = False
-            # The register is always filled, so all three arms are scored against
-            # the same rules; only what reaches the model differs.
-            session.constraints.clear()
-            session.constraint_inject = inject
-            session.constraint_recency = recency
-            runs[name] = session.bench_arm(prompts, name)
-        summary = {name: constraint_summary(rows) for name, rows in runs.items()}
-
-        def pct(value):
-            return "  n/a " if value is None else "%5.1f%%" % (value * 100)
-
-        print("\n[constraint bench: %d turns per arm, same questions, same prompt path]"
-              % summary["plain"]["turns"])
-        for name, _inject, _recency in arms:
-            row = summary[name]
-            print(
-                "  %-6s %s of %d checks held | turns 1-10 %s | last ten %s | "
-                "%3.0f words, %.1fs per answer"
-                % (name, pct(row["rate"]), row["checked"], pct(row["early"]),
-                   pct(row["late"]), row["words"], row["secs"])
-            )
-        base = summary["plain"]
-        for name in ("system", "both"):
-            if base["rate"] is None or summary[name]["rate"] is None:
-                continue
-            late = None
-            if base["late"] is not None and summary[name]["late"] is not None:
-                late = (summary[name]["late"] - base["late"]) * 100
-            print(
-                "  %-6s vs plain: %+.1f points overall, %s in the last ten turns"
-                % (name, (summary[name]["rate"] - base["rate"]) * 100,
-                   "n/a" if late is None else "%+.1f points" % late)
-            )
-        print("  per rule (plain / system / both):")
-        for rule in summary["both"]["rules"]:
-            print(
-                "    %-44s %s / %s / %s"
-                % (rule[:44], pct(base["rules"].get(rule)),
-                   pct(summary["system"]["rules"].get(rule)),
-                   pct(summary["both"]["rules"].get(rule)))
-            )
-        self.telemetry.record(
-            kind="constraint-bench", model=MODEL, chars=int(summary["both"]["words"] * 6)
-        )
-        return summary
 
     def measure_variation(self, argument=""):
         """Ask one question n times and report how different the answers are.
@@ -6775,77 +5522,11 @@ class Chat:
 # --------------------------------------------------------------------------- #
 # demo / bench / repl
 # --------------------------------------------------------------------------- #
-def counted_turn(chat, prompt):
-    """One turn, with the model calls it actually made printed underneath."""
-    chat.flush_background()
-    began = chat.client.calls
-    print("\nYou:", prompt)
-    chat.ask(prompt)
-    print("[model calls this turn: %d]" % (chat.client.calls - began))
-
-
-def plan_cost_demo(telemetry):
-    """The same multi-part ask under the old plan defaults and the new ones.
-
-    Two arms on separate state folders and caches, so the only difference is the
-    plan settings. Prints the call count of the turn and how many of those calls
-    the plan pass made: that is what the checklist costs before and after.
-    """
-    global STATE
-    prompt = (
-        "explain how a heat pump moves heat instead of making it and why that is "
-        "efficient in winter"
-    )
-    arms = (("before", 2, True, 0.0), ("after", 0, False, PLAN_BUDGET))
-    print("\n=== plan pass: one 17-word ask, old defaults vs new ===")
-    print("You:", prompt)
-    saved = STATE
-    try:
-        for name, appends, review, budget in arms:
-            folder = Path(saved) / ("plan-" + name)
-            folder.mkdir(parents=True, exist_ok=True)
-            STATE = str(folder)
-            arm_telemetry = Telemetry(folder / "telemetry.jsonl")
-            client = Client(telemetry=arm_telemetry, demo=True)
-            arm = Chat(
-                client,
-                AnswerCache(folder / "cache.json"),
-                Notes(folder / "notes.json"),
-                arm_telemetry,
-                use_draft=False,
-            )
-            arm.autonote = False
-            arm.plan_appends = appends
-            arm.plan_review = review
-            arm.plan_budget = budget
-            arm.ask(prompt)
-            plan = arm.last_plan or {}
-            print(
-                "[%s: plan_appends=%d plan_review=%s plan_budget=%s -> %d model call(s), "
-                "%d in the plan pass | %d/%d steps covered%s]"
-                % (
-                    name,
-                    appends,
-                    "on" if review else "off",
-                    ("%.0fs" % budget) if budget else "none",
-                    client.calls,
-                    int(plan.get("calls") or 0),
-                    plan.get("done", 0),
-                    plan.get("total", 0),
-                    " | budget reached" if plan.get("stopped") == "budget" else "",
-                )
-            )
-    finally:
-        STATE = saved
-
-
 def run_demo(chat, telemetry):
     print("=== offline demo (no network) ===")
-    # Background notes are extra calls nobody waits for; the demo counts the
-    # foreground calls of each turn.
-    chat.autonote = False
     for prompt in ("what is a ruby", "what is a ruby", "give an example"):
-        counted_turn(chat, prompt)
+        print("\nYou:", prompt)
+        chat.ask(prompt)
     print("\nYou: /research what is a diamond")
     chat.research("what is a diamond")
     doc = Path(STATE) / "demo-doc.txt"
@@ -6856,8 +5537,8 @@ def run_demo(chat, telemetry):
     )
     print("\nYou: /doc %s" % doc)
     chat.ingest(str(doc))
-    counted_turn(chat, "what does the document say about rubies")
-    plan_cost_demo(telemetry)
+    print("\nYou: what does the document say about rubies")
+    chat.ask("what does the document say about rubies")
     print_stats(telemetry.path)
 
 
@@ -6890,8 +5571,6 @@ HELP = """commands
   /research <q>       plan -> gather -> synthesize, saves notes and next steps
   /vary <q>           same question, new seed and higher temperature
   /variation [n] <q>  ask n times (default 7) and report how different the answers are
-  /constraints        standing requirements, re-sent every turn; one-off wording lasts one turn
-  /constraints bench 30 turns x 3 placements of the checklist, then compare
   /batch a || b       measure two calls at once against one combined call
   /test-loop          force a repetition and show the guard + replacement
   /review <path>      review a source file, worst problems first
@@ -6995,8 +5674,6 @@ def run_repl(chat, telemetry):
                 chat.vary(line[5:].strip())
             elif low.startswith("/variation"):
                 chat.measure_variation(line[len("/variation"):].strip())
-            elif low.startswith("/constraints"):
-                chat.constraints_command(line[len("/constraints"):].strip())
             elif low in ("/good", "/bad"):
                 chat.rate_answer(1.0 if low == "/good" else -1.0)
             elif low == "/code":
@@ -7324,138 +6001,6 @@ def run_selftest():
         check("wants_code ignores a normal question", wants_code("what is a diamond"), False)
         check("wants_code treats code and script alike", wants_code("fix this code"), True)
         check("wants_code ignores a decorator question", wants_code("what is a python decorator"), False)
-        check(
-            "constraint: word cap spotted",
-            [(item["kind"], item["value"]) for item in detect_constraints("keep it under 60 words")],
-            [("max_words", 60)],
-        )
-        check(
-            "constraint: a bare request is one-off",
-            [item["scope"] for item in detect_constraints("keep it under 60 words")],
-            ["once"],
-        )
-        check(
-            "constraint: briefly is one-off",
-            [(item["kind"], item["value"], item["scope"])
-             for item in detect_constraints("briefly explain why rubies are red")],
-            [("max_words", 60, "once")],
-        )
-        check(
-            "constraint: from now on is standing",
-            [(item["kind"], item["value"], item["scope"])
-             for item in detect_constraints("from now on answer in 2 sentences")],
-            [("max_sentences", 2, "standing")],
-        )
-        check(
-            "constraint: every answer is standing",
-            [item["scope"] for item in detect_constraints("keep every answer under 80 words")],
-            ["standing"],
-        )
-        check(
-            "constraint: a contrasting clause keeps its own scope",
-            sorted((item["kind"], item["scope"]) for item in detect_constraints(
-                "From now on be brief, but this time in 5 sentences.")),
-            [("max_sentences", "once"), ("max_words", "standing")],
-        )
-        check(
-            "constraint: add makes anything standing",
-            [item["scope"] for item in detect_constraints("briefly", scope="standing")],
-            ["standing"],
-        )
-        check(
-            "constraint: a question states none",
-            detect_constraints("what is a ruby and why is it red"),
-            [],
-        )
-        check(
-            "constraint: sentence cap spotted",
-            [(item["kind"], item["value"]) for item in detect_constraints("answer in three sentences")],
-            [("max_sentences", 3)],
-        )
-        check(
-            "constraint: format, tone and library spotted",
-            sorted(item["kind"] for item in detect_constraints(
-                "use bullet points, no emoji, and use only the python standard library")),
-            ["list", "no_emoji", "stdlib"],
-        )
-        check("constraint: a plain question states none", detect_constraints("what is a diamond"), [])
-        check(
-            "constraint: a long answer breaks a word cap",
-            constraint_holds({"kind": "max_words", "value": 60}, "word " * 70),
-            False,
-        )
-        check(
-            "constraint: a short answer keeps it",
-            constraint_holds({"kind": "max_words", "value": 60}, "Corundum is aluminium oxide."),
-            True,
-        )
-        check("constraint: bullets are seen", constraint_holds({"kind": "list"}, "- red\n- hard\n"), True)
-        check("constraint: prose is not a list", constraint_holds({"kind": "list"}, "A ruby is red."), False)
-        check("constraint: a tone rule is not scored", constraint_holds({"kind": "note"}, "anything"), None)
-        check(
-            "plan: numbered steps are parsed",
-            plan_steps("1. how heat moves\n2. why it is efficient"),
-            ["how heat moves", "why it is efficient"],
-        )
-        check(
-            "plan: marks are read, not kept in the step",
-            plan_marks("1. how heat moves COVERED\n2. why it is efficient MISSING"),
-            [("how heat moves", True), ("why it is efficient", False)],
-        )
-        check(
-            "plan: an unmarked step is left for the local check",
-            [ok for _step, ok in plan_marks("1. how heat moves")],
-            [None],
-        )
-        check("plan: the words are camel-proof", plan_marks("1. how it is done")[0][1], None)
-        check(
-            "plan: a preamble line is not a step",
-            plan_steps("Here are the steps:\n- how heat moves"),
-            ["how heat moves"],
-        )
-        check("plan: steps dedupe", plan_steps("1. how heat moves\n2. How heat moves."), ["how heat moves"])
-        check(
-            "plan: steps are capped",
-            len(plan_steps("\n".join("%d. step %d here" % (i, i) for i in range(1, 10)))),
-            6,
-        )
-        check(
-            "plan: a covered step is seen",
-            step_covered("how heat moves", "A pump moves heat with a compressor."),
-            True,
-        )
-        check(
-            "plan: an absent step is seen",
-            step_covered("why it is efficient", "A pump moves heat with a compressor."),
-            False,
-        )
-        check("plan: a step with no content words counts as covered", step_covered("the how", "x"), True)
-        check(
-            "plan: the report counts what is done",
-            plan_report(["how heat moves", "why it is efficient"], "It moves heat.")["done"],
-            1,
-        )
-        register = Constraints(temp / "constraints.json")
-        register.add({"kind": "max_words", "value": 60, "text": "At most 60 words"}, turn=1)
-        register.add({"kind": "max_words", "value": 60, "text": "At most 60 words"}, turn=2)
-        check("constraint: a restated rule is stored once", len(register.items), 1)
-        register.add({"kind": "max_words", "value": 30, "text": "At most 30 words"}, turn=3)
-        check("constraint: a new number replaces the old one", register.items[0]["value"], 30)
-        check("constraint: the checklist is numbered", register.checklist().splitlines()[1], "1. At most 30 words.")
-        check(
-            "constraint: the checklist survives a reload",
-            len(Constraints(temp / "constraints.json").items),
-            1,
-        )
-        register.add({"kind": "no_emoji", "text": "No emoji"}, turn=4)
-        register.add({"kind": "no_table", "text": "Do not use a table"}, turn=5)
-        register.drop("1")
-        check(
-            "constraint: numbers close after a drop",
-            register.checklist().splitlines()[1],
-            "1. No emoji.",
-        )
-        check("constraint: the drop is persisted", len(Constraints(temp / "constraints.json").items), 2)
         check("wants_code ignores explain-a-script", wants_code("explain how this script works"), False)
         check("wants_code sees an edit request", wants_code("improve on the app"), True)
         check("wants_code sees a calc edit", wants_code("improve on the calc"), True)
@@ -7727,230 +6272,6 @@ def run_selftest():
             recovered = quiet(chat_e.ask, "what is a cat")
             check("context overflow is retried", overflow.asks, 3)
             check("context overflow still answers", recovered, "Short answer.")
-            briefed = build(StubClient(replies=["word " * 70]), "constraints")
-            briefed.constraints.add({"kind": "max_words", "value": 60, "text": "At most 60 words"})
-            sent = briefed.messages_for("what is a cat", "", window_tokens=0)
-            check("checklist reaches the system prompt", "At most 60 words" in sent[0]["content"], True)
-            briefed.constraint_inject = False
-            without = briefed.messages_for("what is a cat", "", window_tokens=0)
-            check("checklist can be switched off", "At most 60 words" in without[0]["content"], False)
-            briefed.constraint_inject = True
-            beside = briefed.messages_for("what is a cat", "", window_tokens=0)
-            check(
-                "the checklist is repeated beside the question",
-                "At most 60 words" in beside[-1]["content"],
-                True,
-            )
-            briefed.constraint_recency = False
-            system_only = briefed.messages_for("what is a cat", "", window_tokens=0)
-            check(
-                "the repetition can be switched off",
-                "At most 60 words" in system_only[-1]["content"],
-                False,
-            )
-            briefed.constraint_recency = True
-            check(
-                "checklist flags a broken length",
-                constraint_report(briefed.constraints.items, "word " * 70)["held"],
-                0,
-            )
-            check(
-                "checklist passes a short answer",
-                constraint_report(briefed.constraints.items, "Corundum is aluminium oxide.")["held"],
-                1,
-            )
-            heard = build(StubClient(replies=["ok"]), "constraints2")
-            quiet(heard.capture_constraints, "from now on keep every answer under 40 words")
-            check(
-                "a standing requirement is stored",
-                [(item["kind"], item["value"]) for item in heard.constraints.items],
-                [("max_words", 40)],
-            )
-            quiet(heard.capture_constraints, "briefly: what is a ruby")
-            check(
-                "a one-off remark is not stored",
-                (len(heard.constraints.items), [item["kind"] for item in heard.turn_constraints]),
-                (1, ["max_words"]),
-            )
-            one_off_sent = heard.messages_for("what is a ruby", "", window_tokens=0)
-            check(
-                "the one-off rides with this question",
-                "For this answer only" in one_off_sent[-1]["content"],
-                True,
-            )
-            check(
-                "the one-off stays out of the system prompt",
-                "For this answer only" in one_off_sent[0]["content"],
-                False,
-            )
-            check(
-                "the standing rule is still in the system prompt",
-                "At most 40 words" in one_off_sent[0]["content"],
-                True,
-            )
-            quiet(heard.capture_constraints, "what is a diamond")
-            next_turn = heard.messages_for("what is a diamond", "", window_tokens=0)
-            check(
-                "the one-off is gone on the next turn",
-                "For this answer only" in next_turn[-1]["content"],
-                False,
-            )
-            quiet(
-                heard.capture_constraints,
-                "From now on answer in 2 sentences, but this time in 300 words.",
-            )
-            check(
-                "one message can hold both scopes",
-                (
-                    [(item["kind"], item["value"]) for item in heard.constraints.items],
-                    [(item["kind"], item["value"]) for item in heard.turn_constraints],
-                ),
-                ([("max_words", 40), ("max_sentences", 2)], [("max_words", 300)]),
-            )
-            listing = io.StringIO()
-            with contextlib.redirect_stdout(listing):
-                heard.show_constraints()
-            shown = listing.getvalue()
-            check(
-                "the listing shows the two scopes apart",
-                ("standing requirement" in shown, "last turn only" in shown, "300" in shown),
-                (True, True, True),
-            )
-            quiet(heard.constraints_command, "add briefly")
-            check(
-                "/constraints add stores a one-off for good",
-                ([(item["kind"], item["value"]) for item in heard.constraints.items],
-                 [item["kind"] for item in heard.turn_constraints]),
-                ([("max_words", 60), ("max_sentences", 2)], ["max_words"]),
-            )
-
-            class PlanStub:
-                """A checklist on demand, then one answer per call."""
-
-                def __init__(self, checklist="", tails=()):
-                    self.checklist = checklist
-                    self.tails = list(tails)
-                    self.asks = 0
-
-                def complete(self, messages, **kw):
-                    return self.checklist
-
-                def ask(self, messages, on_token=None, on_thinking=None, **kw):
-                    self.asks += 1
-                    reply = self.tails.pop(0) if self.tails else "Done."
-                    if on_token:
-                        on_token(reply, None)
-                    return {
-                        "text": reply,
-                        "model": "stub",
-                        "total_ms": 1.0,
-                        "ttft_ms": 1.0,
-                        "tps": 1.0,
-                    }
-
-            gate = build(PlanStub(""), "plan0")
-            gate.fast_mode = False
-            check("plan: auto skips a one-line question", gate.wants_plan("what is a diamond"), False)
-            check(
-                "plan: auto plans a multi-part ask",
-                gate.wants_plan("compare a heat pump and a furnace, and explain why each wins"),
-                True,
-            )
-            gate.plan_mode = "off"
-            check("plan: off never plans", gate.wants_plan("compare a and b, and explain why"), False)
-            gate.plan_mode = "on"
-            check("plan: on always plans", gate.wants_plan("what is a diamond"), True)
-
-            plan_stub = PlanStub(
-                "1. how heat moves COVERED\n2. why it is efficient MISSING",
-                ["It is efficient because it moves heat instead of making it."],
-            )
-            planner = build(plan_stub, "plan1")
-            planner.fast_mode = False
-            planner.plan_appends = 2
-            planner.plan_budget = 0.0
-            short = "A heat pump moves heat with a compressor."
-            joined = quiet(planner.plan_turn, "how does a heat pump work", short)
-            check("plan: the missing step is appended", "efficient" in joined, True)
-            check(
-                "plan: the checklist is ticked off",
-                (planner.last_plan["done"], planner.last_plan["total"]),
-                (2, 2),
-            )
-            check("plan: it stops once every step is covered", plan_stub.asks, 1)
-
-            quiet_stub = PlanStub("1. how heat moves COVERED\n2. why it is efficient COVERED")
-            complete = build(quiet_stub, "plan2")
-            complete.fast_mode = False
-            done_text = "A heat pump moves heat. It is efficient because it moves heat, not makes it."
-            kept = quiet(complete.plan_turn, "how does a heat pump work", done_text)
-            check("plan: a complete answer is left alone", kept, done_text)
-            check("plan: no call for a complete answer", quiet_stub.asks, 0)
-            check("plan: nothing is stored across turns", complete.last_plan["total"], 2)
-
-            runner_stub = PlanStub(
-                "1. how heat moves COVERED\n2. why it is efficient MISSING",
-                [
-                    "A heat pump moves heat with a compressor.",
-                    "It is efficient because it moves heat instead of making it.",
-                ],
-            )
-            runner = build(runner_stub, "plan3")
-            runner.fast_mode = False
-            runner.plan_mode = "on"
-            runner.plan_appends = 2
-            runner.plan_review = True
-            runner.plan_budget = 0.0
-            runner.think_mode = "off"
-            runner.autonote = False
-            produced = quiet(runner.ask, "how does a heat pump work and why is it efficient")
-            check("plan: the answer grows inside one ask", "efficient" in produced, True)
-            check(
-                "plan: the turn ticks its own checklist",
-                (runner.last_plan["done"], runner.last_plan["total"]),
-                (2, 2),
-            )
-            runner.plan_mode = "auto"
-            quiet(runner.ask, "what is a diamond")
-            check("plan: the next turn starts with no list", runner.last_plan, {})
-
-            default_stub = PlanStub("1. how heat moves COVERED\n2. why it is efficient MISSING")
-            cheap = build(default_stub, "plan4")
-            cheap.fast_mode = False
-            brief = "A heat pump moves heat with a compressor."
-            unchanged = quiet(cheap.plan_turn, "how does a heat pump work", brief)
-            check("plan: one assess call by default", cheap.last_plan.get("calls"), 1)
-            check("plan: no append by default", cheap.last_plan.get("appends"), 0)
-            check("plan: no review by default", cheap.last_plan.get("reviewed"), 0)
-            check("plan: the answer is left alone by default", unchanged, brief)
-            check("plan: the default settings are the cheap ones", (cheap.plan_appends, cheap.plan_review), (0, False))
-
-            slow_stub = PlanStub(
-                "1. how heat moves COVERED\n2. why it is efficient MISSING",
-                ["It is efficient because it moves heat.", "It works in winter too."],
-            )
-
-            def slow_complete(messages, **kw):
-                time.sleep(0.05)
-                return slow_stub.checklist
-
-            slow_stub.complete = slow_complete
-            tight = build(slow_stub, "plan5")
-            tight.fast_mode = False
-            tight.plan_appends = 2
-            tight.plan_review = True
-            tight.plan_budget = 0.02
-            quiet(tight.plan_turn, "how does a heat pump work", brief)
-            check(
-                "plan: the budget stops the extra passes",
-                (
-                    tight.last_plan.get("calls"),
-                    tight.last_plan.get("appends"),
-                    tight.last_plan.get("reviewed"),
-                    tight.last_plan.get("stopped"),
-                ),
-                (1, 0, 0, "budget"),
-            )
 
             slept = []
 
@@ -7986,173 +6307,6 @@ def run_selftest():
         check("store indexed", store.count(), 3)
         check("store keyword hit", len(store.search("chromium")), 1)
         check("store tolerates punctuation", isinstance(store.search("chromium?! (red)"), list), True)
-
-        # -- lane drain: background work may not hold the next answer -------- #
-        lanes = Lanes()
-        holding = threading.Event()
-        let_go = threading.Event()
-
-        def hold_lane():
-            lanes.acquire("background")
-            holding.set()
-            let_go.wait(5)
-            lanes.release("background")
-
-        holder = threading.Thread(target=hold_lane, daemon=True)
-        holder.start()
-        holding.wait(5)
-        started = time.perf_counter()
-        took_lane = lanes.acquire("interactive", drain=0.1, timeout=2)
-        waited = time.perf_counter() - started
-        check("drain takes the lane anyway", took_lane, True)
-        check("drain bounds the wait", waited < 0.6, True)
-        check("drain leaves background running", lanes.active_background, 1)
-        lanes.release("interactive")
-        let_go.set()
-        holder.join(5)
-
-        lanes = Lanes()
-        holding = threading.Event()
-        let_go = threading.Event()
-
-        def hold_lane_again():
-            lanes.acquire("background")
-            holding.set()
-            let_go.wait(5)
-            lanes.release("background")
-
-        holder = threading.Thread(target=hold_lane_again, daemon=True)
-        holder.start()
-        holding.wait(5)
-        timer = threading.Timer(0.15, let_go.set)
-        timer.start()
-        started = time.perf_counter()
-        took_lane = lanes.acquire("interactive", drain=None)
-        waited = time.perf_counter() - started
-        check("drain=None waits for background", (took_lane, lanes.active_background), (True, 0))
-        check("drain=None waits out the call", waited > 0.1, True)
-        lanes.release("interactive")
-        timer.cancel()
-        holder.join(5)
-
-        lanes = Lanes()
-        check("a negative drain does not spin", lanes.acquire("interactive", drain=-5), True)
-        lanes.release("interactive")
-        check("a junk drain falls back", lanes.acquire("interactive", drain="junk"), True)
-        lanes.release("interactive")
-        lanes.acquire("interactive")
-        check("two interactive calls never overlap", lanes.acquire("interactive", timeout=0.05), False)
-        lanes.release("interactive")
-
-        # -- a reasoning pass must not pay for the answer it discards -------- #
-        counts = {"content": 0}
-
-        def thinking_then_answer(messages, model, max_tokens, sampling, think=None, read_timeout=None):
-            for _ in range(3):
-                yield ("thinking", "weighing ")
-            for _ in range(20):
-                counts["content"] += 1
-                yield ("content", "answer ")
-
-        wired = Client(telemetry=None)
-        wired._http_chunks = thinking_then_answer
-        asked = [{"role": "user", "content": "why is the sky blue"}]
-        whole = wired.ask(asked, think=True)
-        check("a reasoning call reads the whole answer", counts["content"], 20)
-        counts["content"] = 0
-        cut = wired.ask(asked, think=True, stop_when_answered=True)
-        check("a reasoning call stops at the first answer token", counts["content"], 1)
-        check("the thinking channel is still returned", cut["thinking_chars"], 27)
-        check("the discarded answer is not collected", len(cut["text"]) < len(whole["text"]), True)
-
-        plain_only = {"n": 0}
-
-        def answer_only(messages, model, max_tokens, sampling, think=None, read_timeout=None):
-            for _ in range(5):
-                plain_only["n"] += 1
-                yield ("content", "text ")
-
-        unwired = Client(telemetry=None)
-        unwired._http_chunks = answer_only
-        kept = unwired.ask(asked, think=True, stop_when_answered=True)
-        check("no thinking keeps the whole answer", (plain_only["n"], len(kept["text"])), (5, 25))
-
-        # -- one repetition fixup per turn, not two --------------------------- #
-        kinds = []
-        repeated = StubClient(replies=["A cat is a small domesticated mammal."])
-        inner_complete = repeated.complete
-
-        def record_complete(messages, **kw):
-            kinds.append(kw.get("kind"))
-            return inner_complete(messages, **kw)
-
-        repeated.complete = record_complete
-        repeat_chat = build(repeated, "repeatfix")
-        repeat_chat.fast_mode = False
-        quiet(repeat_chat.ask, "what is a cat")
-        kinds.clear()
-        # A different question with the same answer: the model repeated itself,
-        # so the repetition fixup runs (an exact repeat takes the "repeat" path,
-        # where extend_if_repetitive deliberately does nothing).
-        quiet(repeat_chat.ask, "tell me about cats")
-        check("a repeated answer is extended", "extend" in kinds, True)
-        check("the extension replaces the variant call", "variant" in kinds, False)
-
-        # -- a cache hit does not assemble context ---------------------------- #
-        cached = build(StubClient(replies=["A cat is a small domesticated mammal."]), "cachehit")
-        assembled = []
-        base_context_for = cached.context_for
-        cached.context_for = lambda prompt: assembled.append(prompt) or base_context_for(prompt)
-        # turn_number() reads the memory, not history: the cooldown is counted
-        # in stored turns, so the cache entry has to be ten turns old.
-        cached.memory.turns = [
-            {"n": number, "user": "q%d" % number, "answer": "a%d" % number} for number in range(1, 11)
-        ]
-        cached.memory.indexed = 10
-        cached.cache.put("what is a cat", "A cached answer about cats.", "stub", turn=0)
-        hit = quiet(cached.ask, "what is a cat")
-        check("a cache hit returns the stored answer", hit, "A cached answer about cats.")
-        check("a cache hit skips context assembly", assembled, [])
-        # -- one num_ctx for every call that fits ------------------------------ #
-        # A changing num_ctx reloads the model on the server (8.9 s first token),
-        # so a note and the answer after it must ask for the same size.
-        small = ctx_for([{"role": "user", "content": "cat"}])
-        medium = ctx_for([{"role": "user", "content": "cat " * 600}])
-        check("a small call and a medium call share one num_ctx", (small, medium), (NUM_CTX, NUM_CTX))
-        check("num_ctx still grows past the floor", ctx_for([{"role": "user", "content": "x" * 200000}]), 16384)
-        # -- a stalled request is not re-sent ---------------------------------- #
-        stalls = {"n": 0}
-
-        class Stall:
-            status_code = 200
-            text = ""
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *_exc):
-                return False
-
-            def raise_for_status(self):
-                return None
-
-            def iter_lines(self, decode_unicode=True):
-                raise TimeoutError("read timed out")
-
-        class StallSession:
-            def post(self, *_a, **_kw):
-                stalls["n"] += 1
-                return Stall()
-
-        stalled = Client(demo=False)
-        stalled.session = StallSession()
-        try:
-            stalled.stream([{"role": "user", "content": "hi"}])
-            failed = ""
-        except RuntimeError as err:
-            failed = str(err)
-        check("a timed-out request fails instead of being re-sent", (stalls["n"], "timed out" in failed), (1, True))
-
         if EXT is not None:
             class Stub:
                 pass
@@ -8191,10 +6345,6 @@ def main():
     parser.add_argument("--parallel", action="store_true", help="read several images at once (slower on this endpoint)")
     parser.add_argument("--settings", action="store_true", help="print the resolved settings and exit")
     parser.add_argument("--selftest", action="store_true", help="run network-free checks and exit")
-    parser.add_argument(
-        "--constraint-bench", type=int, default=0, metavar="N",
-        help="N turns x 3 checklist placements, then compare compliance",
-    )
     args = parser.parse_args()
 
     if args.selftest:
@@ -8213,15 +6363,6 @@ def main():
             "expand_rounds", "expand_target_words", "vision_max_side",
         ):
             print("  %-18s %s" % (name, setting(name, "(default)")))
-        # The checklist pass: the old full pass (two appends + review) is one
-        # setting away, and plan_budget 0 means no ceiling.
-        for name, fallback in (
-            ("plan_mode", "auto"),
-            ("plan_appends", 0),
-            ("plan_review", False),
-            ("plan_budget", PLAN_BUDGET),
-        ):
-            print("  %-18s %s" % (name, setting(name, fallback)))
         print("extension:", "loaded" if (EXT is not None and EXT.ENABLED) else "absent or disabled")
         return
 
@@ -8250,9 +6391,7 @@ def main():
     if not args.demo and requests is None:
         print("requests is not installed: pip install requests  (or use --demo)")
 
-    if args.constraint_bench:
-        chat.constraint_bench(args.constraint_bench)
-    elif args.bench:
+    if args.bench:
         run_bench(client, args.bench)
     elif args.demo:
         run_demo(chat, telemetry)
