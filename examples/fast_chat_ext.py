@@ -124,7 +124,17 @@ SETTINGS = {
                                  # re-reads whatever is sent before the first
                                  # token, so tighter context = faster TTFT on
                                  # a remote endpoint (0 = use context_budget)
-    "lan_cache_prompt": True,    # Ollama KV-cache reuse across turns (faster
+    "lan_cache_prompt": True,
+    "lan_fuzzy_cache": False,    # exact-question cache hits only (the
+                                 # diamond-cache incident: fuzzy replay
+                                 # served one garbage answer for everything)    # Ollama KV-cache reuse across turns (faster
+    "lan_aux_deadline_ms": 6000,  # an aux/continuation call still running after
+                                 # this yields and the answer goes on without it
+                                 # (law 2: aux never delays an answer)
+    "lan_bg_patience_ms": 4000,  # a turn parked this long behind background
+                                 # calls reclaims their slots so the answer
+                                 # goes out (one stalled aux call otherwise
+                                 # freezes the home for the 240 s ceiling)
     "lan_direct_line": True,     # the reroute: raw socket per lane, no web layer
                                  # prefill). Set False if your endpoint is a
                                  # proxy that mishandles this Ollama field.

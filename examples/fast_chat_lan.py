@@ -2437,6 +2437,92 @@ class DirectLine:
 # --------------------------------------------------------------------------- #
 # the hub
 # --------------------------------------------------------------------------- #
+class LaneGuard:
+    """Law 2 enforced: a stalled aux call must never hold the answer.
+
+    The engine's gate parks a turn while background calls hold their slots, and
+    the turn's own continuation pass runs at background priority. One stalled
+    aux request (the endpoint's 240 s ceiling during an eviction spike) then
+    freezes every answer while the console prints nothing. Two guards, both
+    here in the bridge - fast_chat.py is not modified:
+
+      aux deadline   complete() returns "" after lan_aux_deadline_ms, so the
+                     turn goes on without the optional layer
+      slot reclaim   if a turn waits on the lane behind background calls for
+                     longer than lan_bg_patience_ms, those slots are reclaimed
+                     so the answer goes out
+
+    The stalled call keeps its daemon thread and still finishes; the engine's
+    release() clamps at zero, so reclaiming cannot underflow the counters.
+    """
+
+    def __init__(self, hub):
+        self.hub = hub
+        self.deadline = max(1.0, int(core.setting("lan_aux_deadline_ms", 6000, int)) / 1000.0)
+        self.patience = max(1.0, int(core.setting("lan_bg_patience_ms", 4000, int)) / 1000.0)
+        self.started = False
+
+    def install(self, client):
+        original = client.complete
+        guard = self
+
+        def complete(messages, *args, **kwargs):
+            box = {}
+
+            def run():
+                try:
+                    box["text"] = original(messages, *args, **kwargs)
+                except Exception as err:  # noqa: BLE001 - re-raised in the caller
+                    box["error"] = err
+
+            thread = threading.Thread(target=run, daemon=True)
+            thread.start()
+            thread.join(guard.deadline)
+            if thread.is_alive():
+                kind = str(kwargs.get("kind", "aux"))
+                print("[%s] aux deadline: the %s call passed %.0fs - the answer goes on without it"
+                      % (stamp(), kind, guard.deadline))
+                guard.hub.broadcast(ch="ai-note", type="lane",
+                                    text="%s still running after %.0fs - answer continues without it"
+                                         % (kind, guard.deadline))
+                return ""
+            if "error" in box:
+                raise box["error"]
+            return box.get("text", "")
+
+        client.complete = complete
+
+    def start(self):
+        if self.started:
+            return
+        self.started = True
+        threading.Thread(target=self._loop, daemon=True).start()
+
+    def _loop(self):
+        lanes = self.hub.chat.client.lanes
+        waiting_since = 0.0
+        while True:
+            time.sleep(0.2)
+            if not (lanes.waiting_interactive > 0 and lanes.active_background > 0):
+                waiting_since = 0.0
+                continue
+            if not waiting_since:
+                waiting_since = time.time()
+                continue
+            if time.time() - waiting_since < self.patience:
+                continue
+            waited = time.time() - waiting_since
+            with lanes.cond:
+                reclaimed = lanes.active_background
+                lanes.active_background = 0
+                lanes.cond.notify_all()
+            waiting_since = 0.0
+            print("[%s] lane guard: a turn waited %.1fs behind %d stalled background call(s) - "
+                  "slots reclaimed so the answer goes out" % (stamp(), waited, reclaimed))
+            self.hub.broadcast(ch="ai-note", type="lane",
+                               text="answer lane freed: reclaimed %d stalled background slot(s)" % reclaimed)
+
+
 class Hub:
     """One Chat engine, many links, never stops listening."""
 
@@ -2467,6 +2553,7 @@ class Hub:
         self.gap_alert = max(2000, int(core.setting("lan_gap_alert_ms", 15000, int)))
         self.health = Health(self)
         self.recorder = Recorder(self)
+        self._cache_guard()
         self._context_diet()
         # the reroute: one inherent socket per lane replaces the pooled web
         # session under the engine's own lanes/guard/telemetry
@@ -2476,6 +2563,8 @@ class Hub:
         self.warm = KeepWarm(self)
         self.keeper = MountKeeper(self)
         self.health.setup(self.chat.client)
+        self.lane_guard = LaneGuard(self)
+        self.lane_guard.install(self.chat.client)
         # live-thinking layer
         self.prefetch = {}
         self.rec_settle = max(80, int(core.setting("lan_rec_settle_ms", 120, int)))
@@ -2552,6 +2641,7 @@ class Hub:
         print("  call log: %s" % self.recorder.path)
         threading.Thread(target=self.warm.load_once, daemon=True).start()
         self.warm.start()
+        self.lane_guard.start()
         # loop console: ':loop host port' opens the AI loop, ':loop status'
         # shows the race, ':finalize question' merges the loop's findings
         def console():
@@ -2932,6 +3022,23 @@ class Hub:
         self.broadcast(ch="status", phase="done", text=answer[:80])
         self.pending_draft = None
         return answer
+
+    def _cache_guard(self):
+        """Session evidence: one garbage answer ('A diamond is an opaque
+        mineral... cats jumping over bridges') got fuzzily replayed for
+        'what is danger', 'what is a gem', even 'hi' - the engine's fuzzy
+        cache (score >= 0.86) is too generous with rambly prompts and long
+        answers. The bridge keeps EXACT question matches only; fuzzy replay
+        is opt-in. The model now answers every differently-worded question
+        at ~0.4-1 s anyway, so the cache's job is just exact repeats."""
+        if core.setting("lan_fuzzy_cache", False, bool):
+            return
+        try:
+            self.chat.cache.fuzzy = 1.01  # never satisfied: exact hits only
+            print("[%s] cache: exact-question hits only (fuzzy replay off - "
+                  "see LOG_2, the diamond-cache incident)" % stamp())
+        except Exception:  # noqa: BLE001
+            pass
 
     def _context_diet(self):
         """Role separation for the model's memory: the loop's record lanes
