@@ -3651,7 +3651,7 @@ class Chat:
         self.plan_appends = max(0, setting("plan_appends", 0, int))
         self.plan_review = as_bool("plan_review", False)
         self.plan_think = as_bool("plan_think", True)
-        self.plan_budget = max(0.0, setting("plan_budget", PLAN_BUDGET, float))
+        self.plan_budget = PLAN_BUDGET
         self.last_plan = {}
         self.load_state()
 
@@ -3968,7 +3968,7 @@ class Chat:
         # [plan] After the answer, never in front of it: the checklist call and
         # every gap it fills are appended to an answer the user can already read.
         if self.wants_plan(raw) and text and not has_code_block(text):
-            text = self.plan_turn(raw, text, context)
+            text = self.plan_turn(raw, text)
         if len(text) > PREPLY_THRESHOLD:
             self.stash(text, raw[:60])
         reward = score_answer(text, raw, context, sentences_of(self.last_answer) if self.last_answer else [])
@@ -4593,7 +4593,7 @@ class Chat:
         )
         return low.count("?") >= 2 or bool(multi) or len(str(prompt).split()) >= 14
 
-    def plan_assess(self, prompt, context, answer, read_timeout=None):
+    def plan_assess(self, prompt, answer, read_timeout=None):
         """One short call: the checklist, each step already marked by the model.
 
         After the answer, not before: Lanes makes an interactive call wait for a
@@ -4706,7 +4706,7 @@ class Chat:
             return ""
         return more
 
-    def plan_turn(self, prompt, text, context=""):
+    def plan_turn(self, prompt, text):
         """Tick the answer off against the checklist and append what is missing.
 
         Bounded twice on purpose: notes first (free), then at most plan_appends
@@ -4723,7 +4723,7 @@ class Chat:
             return None if deadline is None else max(0.0, deadline - time.time())
 
         calls = 1
-        rows = self.plan_assess(prompt, context, text, read_timeout=left())
+        rows = self.plan_assess(prompt, text, read_timeout=left())
         if not rows:
             self.last_plan = {
                 "steps": [],
@@ -6805,12 +6805,13 @@ def plan_cost_demo(telemetry):
             folder = Path(saved) / ("plan-" + name)
             folder.mkdir(parents=True, exist_ok=True)
             STATE = str(folder)
-            client = Client(telemetry=Telemetry(folder / "telemetry.jsonl"), demo=True)
+            arm_telemetry = Telemetry(folder / "telemetry.jsonl")
+            client = Client(telemetry=arm_telemetry, demo=True)
             arm = Chat(
                 client,
                 AnswerCache(folder / "cache.json"),
                 Notes(folder / "notes.json"),
-                Telemetry(folder / "telemetry.jsonl"),
+                arm_telemetry,
                 use_draft=False,
             )
             arm.autonote = False
