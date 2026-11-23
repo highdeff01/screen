@@ -2438,89 +2438,57 @@ class DirectLine:
 # the hub
 # --------------------------------------------------------------------------- #
 class LaneGuard:
-    """Law 2 enforced: a stalled aux call must never hold the answer.
+    """A lane gate that cannot park the answer forever.
 
-    The engine's gate parks a turn while background calls hold their slots, and
-    the turn's own continuation pass runs at background priority. One stalled
-    aux request (the endpoint's 240 s ceiling during an eviction spike) then
-    freezes every answer while the console prints nothing. Two guards, both
-    here in the bridge - fast_chat.py is not modified:
+    The engine's lanes make an interactive call wait while background calls
+    hold their slots, and they wait with no deadline at all (fast_chat.py:697).
+    One aux request stalled on the endpoint - the 240 s ceiling, an eviction
+    spike - then parks every answer silently: turn_lock stays held, typed input
+    is requeued, nothing is printed. The turn's own continuation pass runs at
+    background priority, so it lands in the same wait.
 
-      aux deadline   complete() returns "" after lan_aux_deadline_ms, so the
-                     turn goes on without the optional layer
-      slot reclaim   if a turn waits on the lane behind background calls for
-                     longer than lan_bg_patience_ms, those slots are reclaimed
-                     so the answer goes out
+    The whole fix is one bound on that wait. After lan_lane_patience_ms the
+    caller proceeds counted even though the gate still reports busy: an extra
+    request on the pipe costs a little latency, a frozen answer costs the
+    conversation. Nothing is cancelled and no thread is added - the stalled
+    request still finishes on its own, it just no longer holds anyone else.
 
-    The stalled call keeps its daemon thread and still finishes; the engine's
-    release() clamps at zero, so reclaiming cannot underflow the counters.
+    Counters stay balanced: proceeding increments the counter the gate would
+    have incremented, and the engine's own release() decrements it in its
+    finally block. fast_chat.py is not modified.
     """
 
     def __init__(self, hub):
         self.hub = hub
-        self.deadline = max(1.0, int(core.setting("lan_aux_deadline_ms", 6000, int)) / 1000.0)
-        self.patience = max(1.0, int(core.setting("lan_bg_patience_ms", 4000, int)) / 1000.0)
-        self.started = False
+        self.patience = max(0.5, int(core.setting("lan_lane_patience_ms", 4000, int)) / 1000.0)
+        self.last_report = 0.0  # one line per burst, not one per call
 
-    def install(self, client):
-        original = client.complete
+    def install(self):
+        lanes = self.hub.chat.client.lanes
+        original = lanes.acquire
         guard = self
 
-        def complete(messages, *args, **kwargs):
-            box = {}
-
-            def run():
-                try:
-                    box["text"] = original(messages, *args, **kwargs)
-                except Exception as err:  # noqa: BLE001 - re-raised in the caller
-                    box["error"] = err
-
-            thread = threading.Thread(target=run, daemon=True)
-            thread.start()
-            thread.join(guard.deadline)
-            if thread.is_alive():
-                kind = str(kwargs.get("kind", "aux"))
-                print("[%s] aux deadline: the %s call passed %.0fs - the answer goes on without it"
-                      % (stamp(), kind, guard.deadline))
-                guard.hub.broadcast(ch="ai-note", type="lane",
-                                    text="%s still running after %.0fs - answer continues without it"
-                                         % (kind, guard.deadline))
-                return ""
-            if "error" in box:
-                raise box["error"]
-            return box.get("text", "")
-
-        client.complete = complete
-
-    def start(self):
-        if self.started:
-            return
-        self.started = True
-        threading.Thread(target=self._loop, daemon=True).start()
-
-    def _loop(self):
-        lanes = self.hub.chat.client.lanes
-        waiting_since = 0.0
-        while True:
-            time.sleep(0.2)
-            if not (lanes.waiting_interactive > 0 and lanes.active_background > 0):
-                waiting_since = 0.0
-                continue
-            if not waiting_since:
-                waiting_since = time.time()
-                continue
-            if time.time() - waiting_since < self.patience:
-                continue
-            waited = time.time() - waiting_since
+        def acquire(priority="interactive", timeout=None):
+            limit = guard.patience if timeout is None else min(float(timeout), guard.patience)
+            if original(priority, timeout=limit):
+                return True
+            # the gate is jammed behind work that is not finishing: go anyway,
+            # counted exactly as the gate would have counted us
             with lanes.cond:
-                reclaimed = lanes.active_background
-                lanes.active_background = 0
-                lanes.cond.notify_all()
-            waiting_since = 0.0
-            print("[%s] lane guard: a turn waited %.1fs behind %d stalled background call(s) - "
-                  "slots reclaimed so the answer goes out" % (stamp(), waited, reclaimed))
-            self.hub.broadcast(ch="ai-note", type="lane",
-                               text="answer lane freed: reclaimed %d stalled background slot(s)" % reclaimed)
+                if priority == "interactive":
+                    lanes.active_interactive += 1
+                else:
+                    lanes.active_background += 1
+            now = time.time()
+            if now - guard.last_report > 5.0:
+                guard.last_report = now
+                line = ("lane guard: a %s call waited %.1fs behind work that is not "
+                        "finishing - proceeding instead of queueing behind it" % (priority, limit))
+                print("[%s] %s" % (stamp(), line))
+                guard.hub.broadcast(ch="ai-note", type="lane", text=line)
+            return True
+
+        lanes.acquire = acquire
 
 
 class Hub:
@@ -2564,7 +2532,7 @@ class Hub:
         self.keeper = MountKeeper(self)
         self.health.setup(self.chat.client)
         self.lane_guard = LaneGuard(self)
-        self.lane_guard.install(self.chat.client)
+        self.lane_guard.install()
         # live-thinking layer
         self.prefetch = {}
         self.rec_settle = max(80, int(core.setting("lan_rec_settle_ms", 120, int)))
@@ -2641,7 +2609,6 @@ class Hub:
         print("  call log: %s" % self.recorder.path)
         threading.Thread(target=self.warm.load_once, daemon=True).start()
         self.warm.start()
-        self.lane_guard.start()
         # loop console: ':loop host port' opens the AI loop, ':loop status'
         # shows the race, ':finalize question' merges the loop's findings
         def console():
