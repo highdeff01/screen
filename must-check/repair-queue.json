@@ -1,19 +1,43 @@
 {
   "version": 1,
   "by": "sentinel",
-  "updatedAt": "2026-11-25T22:18:22.692Z",
-  "head": "48d74e34076c",
+  "updatedAt": "2026-11-25T22:43:10.305Z",
+  "head": "05e9c751e9fd",
   "lastRun": {
-    "at": "2026-11-25T22:18:22.691Z",
-    "ok": true,
+    "at": "2026-11-25T22:43:10.172Z",
+    "ok": false,
     "tests": 757,
-    "pass": 750,
-    "fail": 0,
+    "pass": 749,
+    "fail": 1,
     "isolated": true,
-    "failingTests": []
+    "failingTests": [
+      "verified backend permits saved and explicit live modes (11687.0838ms)"
+    ]
   },
-  "open": 7,
+  "open": 8,
   "items": [
+    {
+      "id": "sent_mwwpm8d8b95078",
+      "at": "2026-11-25T22:43:10.172Z",
+      "status": "queued",
+      "attempts": 1,
+      "fail": 1,
+      "pass": 749,
+      "tests": [
+        "verified backend permits saved and explicit live modes (11687.0838ms)"
+      ],
+      "details": [
+        {
+          "name": "verified backend permits saved and explicit live modes",
+          "file": "",
+          "line": null,
+          "message": ""
+        }
+      ],
+      "plan": "",
+      "planError": "",
+      "report": "must-check/2026-11-25T22-43-10-verified-backend-permits-saved-and-expli.md"
+    },
     {
       "id": "sent_mwwnjw9v70d3c9",
       "at": "2026-11-25T21:45:21.955Z",
