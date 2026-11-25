@@ -1,13 +1,13 @@
 {
   "version": 1,
   "by": "sentinel",
-  "updatedAt": "2026-11-23T15:38:29.851Z",
-  "head": "2b24820a0125",
+  "updatedAt": "2026-11-25T02:25:16.609Z",
+  "head": "20658d9d1664",
   "lastRun": {
-    "at": "2026-11-23T15:38:29.851Z",
+    "at": "2026-11-25T02:25:16.609Z",
     "ok": true,
-    "tests": 710,
-    "pass": 703,
+    "tests": 715,
+    "pass": 708,
     "fail": 0,
     "isolated": true,
     "failingTests": []
