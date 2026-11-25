@@ -64,6 +64,11 @@ test('an implied action is only kept when the step runner can execute it', () =>
   assert.equal(click.params.name, 'Work');
   assert.equal(click.origin, 'page-read');
 
+  // A model that puts the control's label in the action name still names a target;
+  // a whole sentence is not a control.
+  assert.equal(pageRead.normalizeImpliedStep({ type: 'click', name: 'Search', params: {} }).params.name, 'Search');
+  assert.equal(pageRead.normalizeImpliedStep({ type: 'click', name: 'Click the search box and submit it', params: {} }), null);
+
   const focus = pageRead.normalizeImpliedStep({ type: 'focusWindow', name: 'Focus Notepad', params: { title: 'Untitled - Notepad' } });
   assert.equal(focus.params.title, 'Untitled - Notepad');
   assert.equal(pageRead.duplicatesStep(focus, { type: 'focusWindow', params: { title: 'Untitled - Notepad' } }), true);

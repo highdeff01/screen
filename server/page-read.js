@@ -106,7 +106,8 @@ export function pageReadPrompt({ goal = '', stepName = '', nextNames = [], varia
     'nextAction is the single action a person would take here to move the goal forward. Report one even when the plan ' +
     'did not name it: choosing a browser profile, dismissing a consent prompt, clicking a search field, pressing Enter, ' +
     'picking the matching result, and starting the video when the goal implies playing one are all valid next actions. ' +
-    'params must match the type: click {name} or {x,y}; key {keys}; type {text}; focusWindow {title|process}; ' +
+    'params must match the type: click {name} or {x,y} (put the control\'s own label in params.name); key {keys}; ' +
+    'type {text}; focusWindow {title|process}; ' +
     'openUrl {url}; wait {ms}. Set nextAction=null when the goal is visibly done, when the screen shows nothing that ' +
     'belongs to the goal, or when the needed step is already contained in the plan. ' +
     'goalLooksMet is true only when the visible screen already shows the outcome the goal describes.';
@@ -164,7 +165,11 @@ export function normalizeImpliedStep(raw, { id = '' } = {}) {
   const name = str(raw.name, 120) || `${type} from the screen`;
   const clean = {};
   if (type === 'click' || type === 'clickElement') {
-    const target = str(params.name || params.label || params.control || '', 120);
+    // Models often put the control's label in the action name instead of params;
+    // a short label is still a target, a sentence is not.
+    const words = str(raw.name, 120).split(' ').filter(Boolean);
+    const fallback = words.length && words.length <= 4 ? words.join(' ') : '';
+    const target = str(params.name || params.label || params.control || fallback, 120);
     const x = Number(params.x);
     const y = Number(params.y);
     if (target) clean.name = target;
