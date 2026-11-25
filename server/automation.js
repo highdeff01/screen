@@ -61,6 +61,32 @@ public class SightlineInput {
   [DllImport("user32.dll")] public static extern int GetWindowTextLength(IntPtr hWnd);
   [DllImport("user32.dll")] public static extern uint GetDpiForWindow(IntPtr hWnd);
   [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
+  [StructLayout(LayoutKind.Sequential)]
+  public struct KEYBDINPUT { public ushort wVk; public ushort wScan; public uint dwFlags; public uint time; public IntPtr dwExtraInfo; }
+  [StructLayout(LayoutKind.Explicit, Size = 32)]
+  public struct INPUTUNION { [FieldOffset(0)] public KEYBDINPUT ki; }
+  [StructLayout(LayoutKind.Sequential)]
+  public struct INPUT { public uint type; public INPUTUNION u; }
+  [DllImport("user32.dll", SetLastError=true)] public static extern uint SendInput(uint nInputs, INPUT[] pInputs, int cbSize);
+  // Literal text is injected as Unicode characters instead of SendKeys
+  // keystrokes. SendKeys drops characters when the target app is busy (typing
+  // “Alpha bravo charlie” arrived as “Alpha ravo crlie” in Notepad) and loses
+  // the shift after Enter (a capital arrived lowercase), so the text a step
+  // recorded was not the text that reached the app.
+  public static void TypeUnicode(string text) {
+    foreach (char ch in text) {
+      INPUT down = new INPUT();
+      down.type = 1;
+      down.u.ki.wScan = ch;
+      down.u.ki.dwFlags = 0x0004;
+      INPUT up = new INPUT();
+      up.type = 1;
+      up.u.ki.wScan = ch;
+      up.u.ki.dwFlags = 0x0006;
+      INPUT[] batch = new INPUT[] { down, up };
+      SendInput((uint)batch.Length, batch, Marshal.SizeOf(typeof(INPUT)));
+    }
+  }
 }
 "@
 `;
@@ -99,19 +125,33 @@ export function runPowerShell(script, timeoutMs = 20000) {
 const SENDKEY_PHRASES =
   /(\{ENTER\}|\{TAB\}|\{ESC\}|\{BACKSPACE\}|\{BKSP\}|\{DELETE\}|\{DEL\}|\{INSERT\}|\{INS\}|\{HOME\}|\{END\}|\{PGUP\}|\{PGDN\}|\{UP\}|\{DOWN\}|\{LEFT\}|\{RIGHT\}|\{PRTSC\}|\{CAPSLOCK\}|\{F[1-9]\}|\{F1[0-2]\}|\{\s*enter\s*\}|\{\s*tab\s*\}|\{\s*esc\s*\})/gi;
 
-export function sendKeysText(text) {
-  const raw = String(text)
+/**
+ * The text of a type step split into what it is: literal prose, which is typed
+ * as characters, and the intentional {ENTER}/{TAB}/{ESC} phrases, which are key
+ * presses. Keeping them apart is what lets the literal half skip SendKeys.
+ */
+export function typingSegments(text) {
+  const raw = String(text ?? '')
     .replace(/\r\n/g, '\n')
     .replace(/\n/g, '{ENTER}')
     .replace(/\t/g, '{TAB}');
-  // Pass intentional key phrases through; escape everything else so prose
-  // containing braces, carets or percent signs stays literal prose.
-  const escaped = raw
-    .split(SENDKEY_PHRASES)
-    .map((chunk, index) => {
-      if (index % 2 === 1) return chunk.toUpperCase().replace(/\s+/g, '');
-      return chunk.replace(/[+^%~(){}\[\]]/g, (c) => `{${c}}`);
-    })
+  const segments = [];
+  raw.split(SENDKEY_PHRASES).forEach((chunk, index) => {
+    if (!chunk) return;
+    if (index % 2 === 1) segments.push({ kind: 'keys', value: chunk.toUpperCase().replace(/\s+/g, '') });
+    else segments.push({ kind: 'text', value: chunk });
+  });
+  return segments;
+}
+
+export function sendKeysText(text) {
+  // Kept for callers that still want one SendKeys expression: pass intentional
+  // key phrases through; escape everything else so prose containing braces,
+  // carets or percent signs stays literal prose.
+  const escaped = typingSegments(text)
+    .map((segment) =>
+      segment.kind === 'keys' ? segment.value : segment.value.replace(/[+^%~(){}\[\]]/g, (c) => `{${c}}`)
+    )
     .join('');
   return Buffer.from(escaped, 'utf8').toString('base64');
 }
@@ -864,10 +904,16 @@ ${p.x != null && p.y != null ? `[SightlineInput]::SetCursorPos(${num(p.x)}, ${nu
 Write-Output 'scrolled'`;
     }
     case 'type': {
-      const b64 = sendKeysText(str(p.text));
+      const sends = typingSegments(str(p.text))
+        .map((segment) => {
+          if (segment.kind === 'keys') return `[System.Windows.Forms.SendKeys]::SendWait(${psQuote(segment.value)})`;
+          const b64 = Buffer.from(segment.value, 'utf8').toString('base64');
+          return `[SightlineInput]::TypeUnicode([System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('${b64}')))
+Start-Sleep -Milliseconds 20`;
+        })
+        .join('\r\n');
       return `${pre}${foregroundGuard(p, 'type')}
-$text = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('${b64}'))
-[System.Windows.Forms.SendKeys]::SendWait($text)
+${sends}
 Write-Output 'typed'`;
     }
     case 'key': {

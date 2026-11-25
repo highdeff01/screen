@@ -55,13 +55,31 @@ test('shortcut scripts guard the foreground and send a normalized Windows chord'
   assert.match(script, /\[System\.Windows\.Forms\.SendKeys\]::SendWait\('\^\+t'\)/);
 });
 
-test('typed text is encoded before PowerShell SendKeys receives it', () => {
+test('typed text reaches the app as characters, not as a SendKeys burst', () => {
   const text = 'Literal {text} with café and $HOME';
   const script = automation.buildScript({ type: 'type', name: 'Type a note', params: { text, foreground: 'Notepad' } });
-  assert.match(script, /FromBase64String/);
-  assert.match(script, /\[System\.Windows\.Forms\.SendKeys\]::SendWait\(\$text\)/);
-  assert.ok(script.includes(automation.sendKeysText(text)));
+  // SendKeys lost characters and the shift when the app was busy, so the prose
+  // half is injected as Unicode and only real key phrases still use SendKeys.
+  assert.match(script, /\[SightlineInput\]::TypeUnicode\(/);
+  assert.equal(/\[System\.Windows\.Forms\.SendKeys\]::SendWait\(\$text\)/.test(script), false);
+  assert.ok(script.includes(Buffer.from(text, 'utf8').toString('base64')));
   assert.equal(script.includes(text), false);
+});
+
+test('a type step splits prose from the key phrases it means to press', () => {
+  const segments = automation.typingSegments('Sightline screen agent{ENTER}Automated typing check.');
+  assert.deepEqual(segments, [
+    { kind: 'text', value: 'Sightline screen agent' },
+    { kind: 'keys', value: '{ENTER}' },
+    { kind: 'text', value: 'Automated typing check.' },
+  ]);
+  assert.deepEqual(automation.typingSegments('a\nb'), [
+    { kind: 'text', value: 'a' },
+    { kind: 'keys', value: '{ENTER}' },
+    { kind: 'text', value: 'b' },
+  ]);
+  const script = automation.buildScript({ type: 'type', name: 'Type', params: { text: 'a\nb' } });
+  assert.match(script, /SendWait\('\{ENTER\}'\)/);
 });
 
 test('window actions use guarded native Win32 window controls', () => {
