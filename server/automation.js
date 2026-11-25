@@ -4423,7 +4423,12 @@ try {
       `${expectedApp ? `\nExpected app/process: ${expectedApp}` : ''}` +
       `\nActive foreground window: "${foreground.title || '(unknown)'}" (process: ${foreground.process || 'unknown'}). ` +
       `${target.scoped ? `The image is cropped to ${target.hwnd ? `the run's own window (hwnd ${target.hwnd})` : `“${target.title || target.process}”`}, not the whole desktop. ` : ''}` +
-      `If the expected app is named and this foreground window is a different program, fail even when another window behind it looks correct.`;
+      (target.hwnd
+        ? // The frame IS the run's window, so a title that changed is the document's
+          // own name (typing into an untitled document makes its first line the
+          // title), not a different program: the process is what names the app.
+          `This frame is the run's own window, and a document renames itself as it is edited: typing into an untitled document makes its first line the title. Judge the app by its process (${foreground.process || target.process || 'unknown'}), not by the window title, and never fail a correct frame because the title differs.`
+        : `If the expected app is named and this foreground window is a different program, fail even when another window behind it looks correct.`);
     const mode = judgeMode(db().settings);
     const cachedVerdict = readVerdict(question, shot.signature);
     let reply = null;
