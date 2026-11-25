@@ -229,12 +229,15 @@ export function screenReviewCheck(step, { variables = {} } = {}) {
 }
 
 function mismatchFrom(message) {
-  const text = String(message || '')
-    .split(' · ')[0]
-    .replace(/^Screen check failed[^:]*:\s*/i, '')
-    .replace(/\s*\[\S+\]\s*$/, '')
-    .trim();
-  return text.slice(0, 400);
+  // The check reports “Screen check failed (vision %) | <what is wrong>: <why>
+  // · window facts … [path]”. The review keeps what is wrong, not the log tail.
+  let text = String(message || '').trim();
+  if (text.includes('|')) text = text.slice(text.indexOf('|') + 1);
+  else text = text.replace(/^Screen check[^:]*:\s*/i, '');
+  text = text.split(' · ')[0];
+  const colon = text.indexOf(': ');
+  if (colon > 0) text = text.slice(0, colon);
+  return text.replace(/\s*\[\S+\]\s*$/, '').trim().slice(0, 400);
 }
 
 /**

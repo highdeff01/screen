@@ -92,6 +92,53 @@ test('an instruction that names no buildable step is refused with a reason', () 
   assert.equal(plan.changes.length, 0);
 });
 
+test('the automatic check asks the frame the step’s own question', () => {
+  const typed = screenReview.screenReviewCheck({ type: 'type', name: 'Input “hi”', params: { text: 'hi', foreground: 'Notepad' } });
+  assert.match(typed.question, /“hi”/);
+  assert.equal(typed.expectedText, 'hi', 'the free window read is told what must be there');
+  assert.equal(typed.caption, 'Screen check — Input “hi”');
+
+  const fromVar = screenReview.screenReviewCheck(
+    { type: 'type', name: 'Input', params: { textVar: 'answer' } },
+    { variables: { answer: 'forty two' } }
+  );
+  assert.equal(fromVar.expectedText, 'forty two');
+
+  const clicked = screenReview.screenReviewCheck({ type: 'clickElement', name: 'Click Save', params: { name: 'Save' } });
+  assert.match(clicked.question, /“Save”/);
+  assert.equal(clicked.expectedText, '');
+
+  const closed = screenReview.screenReviewCheck({ type: 'closeWindow', name: 'Close', params: { title: 'Untitled - Notepad' } });
+  assert.equal(closed.absentText, 'Untitled - Notepad');
+});
+
+test('one reading becomes a pass, a mismatch or an honest unverified', () => {
+  assert.deepEqual(screenReview.reviewOutcome({ output: 'Screen verified: the text is visible' }), {
+    status: 'pass',
+    verdict: 'pass',
+    detail: 'Screen verified: the text is visible',
+    mismatch: '',
+  });
+  const bad = screenReview.reviewOutcome({
+    error:
+      'Screen check failed (vision 40%) | the text “hi” is not visible: the document is empty · window facts: fail — the foreground window is “Calculator” [data/shots/a.png]',
+  });
+  assert.equal(bad.status, 'mismatch');
+  assert.equal(bad.mismatch, 'the text “hi” is not visible', 'the review keeps what is wrong, not the log tail');
+  const unreadable = screenReview.reviewOutcome({ skipped: true, output: 'the vision model was unreachable' });
+  assert.equal(unreadable.status, 'skipped');
+  assert.equal(unreadable.verdict, 'unverified');
+});
+
+test('screen review retries and confidence are clamped', () => {
+  const settings = screenReview.normalizeScreenReviewSettings({ retries: 99, retryDelayMs: -5, minConfidence: 5 });
+  assert.equal(settings.retries, 3);
+  assert.equal(settings.retryDelayMs, 0);
+  assert.equal(settings.minConfidence, 1);
+  assert.equal(screenReview.screenReviewAttempts(settings), 4);
+  assert.equal(screenReview.screenReviewAttempts({ retries: 0 }), 1);
+});
+
 test('screen review policy is clamped and only covers actions by default', () => {
   const settings = screenReview.normalizeScreenReviewSettings({ maxPerRun: 9999, mode: 'nonsense' });
   assert.equal(settings.maxPerRun, 200);
