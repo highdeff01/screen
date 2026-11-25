@@ -1941,6 +1941,22 @@ function renderRecoveryPack(pack) {
   </div>`;
 }
 
+/**
+ * The closeout box reads the screen review off the stored closeout. A run that
+ * closed out before that field existed still carries the mismatch itself, so
+ * fall back to the run rather than showing nothing.
+ */
+function closeoutScreenFallback(run) {
+  const mismatches = Array.isArray(run.screenMismatches) ? run.screenMismatches : [];
+  const last = mismatches.slice(-1)[0] || null;
+  if (!last && !run.screenReviewUnresolved && !Number(run.screenReviewMismatches || 0)) return null;
+  return {
+    unresolved: Boolean(run.screenReviewUnresolved),
+    step: last?.stepName || last?.stepId || '',
+    detail: String(last?.mismatch || last?.detail || '').slice(0, 220),
+  };
+}
+
 function renderRunDetail(run) {
   const full = run.steps ? run : null;
   if (!full) {
@@ -2014,7 +2030,7 @@ function renderRunDetail(run) {
           ${(full.carriedSteps || []).length ? `<div class="hint-box" style="margin-top:8px;border-color:rgba(74,222,128,.25)"><strong>Passed through ${full.carriedSteps.length} completed step(s)</strong><div class="small dim" style="margin-top:3px">${full.carriedSteps.slice(0, 6).map((step) => esc(step.name || step.type || 'step')).join(' · ')}</div></div>` : ''}
           ${(full.recheckTasks || []).filter((task) => task.status === 'open').length ? `<div class="hint-box" style="margin-top:8px;border-color:rgba(251,191,36,.35)"><strong>Tasks assigned by the recheck</strong>${(full.recheckTasks || []).filter((task) => task.status === 'open').slice(-4).map((task) => `<div class="small" style="margin-top:3px"><b>${esc(task.name || task.type || 'step')}</b> · ${esc(task.reason || '')} <span class="dim">(${esc(task.assignedTo || 'operator')})</span></div>`).join('')}</div>` : ''}
           ${full.followup ? `<div class="hint-box" style="margin-top:8px;border-color:${full.followup.ok ? 'rgba(74,222,128,.3)' : 'rgba(251,191,36,.35)'}"><strong>Follow-up check · ${full.followup.ok ? 'passed' : 'needs review'}</strong><div class="small" style="margin-top:4px">${esc(full.followup.summary)}</div>${(full.followup.verificationFailed || []).length ? `<div class="small" style="color:var(--bad);margin-top:3px">Failed checks: ${esc((full.followup.verificationFailed || []).join(', '))}</div>` : ''}</div>` : ''}
-          ${(() => { const co = full.closeout; if (!co || !co.action) return ''; const stepsText = (co.followUpSteps || []).map((step) => `${step.type}: ${esc(step.name || '')}`).join(' · '); const button = co.appended ? '<div class="small" style="color:var(--ok);margin-top:4px">Steps already appended to the workflow.</div>' : (co.followUpSteps || []).length ? `<button class="btn btn-sm" data-act="closeout-append" data-id="${esc(run.id)}" style="margin-top:6px">Append to workflow</button>` : ''; return `<div class="hint-box" style="margin-top:8px;border-color:rgba(56,189,248,.35)"><strong>Predicted follow-up · ${esc(co.action)}</strong><div class="small" style="margin-top:4px">${esc((co.reasons || []).join('; '))}</div>${co.screenReview ? `<div class="small" style="margin-top:4px;color:var(--bad,#fb7185)"><b>Screen check ${co.screenReview.unresolved ? 'unresolved' : 'did not match'}</b> after “${esc(co.screenReview.step || 'a step')}”: ${esc(co.screenReview.detail || 'the frame did not show the result')}${co.screenReview.unresolved ? ' — every step reported success, so this run is not a pass until the frame is checked.' : ''}</div>` : ''}${stepsText ? `<div class="small dim" style="margin-top:4px">Proposed: ${stepsText}</div>` : ''}${button}</div>`; })()}
+          ${(() => { const co = full.closeout; if (!co || !co.action) return ''; const screen = co.screenReview || closeoutScreenFallback(full); const stepsText = (co.followUpSteps || []).map((step) => `${step.type}: ${esc(step.name || '')}`).join(' · '); const button = co.appended ? '<div class="small" style="color:var(--ok);margin-top:4px">Steps already appended to the workflow.</div>' : (co.followUpSteps || []).length ? `<button class="btn btn-sm" data-act="closeout-append" data-id="${esc(run.id)}" style="margin-top:6px">Append to workflow</button>` : ''; return `<div class="hint-box" style="margin-top:8px;border-color:rgba(56,189,248,.35)"><strong>Predicted follow-up · ${esc(co.action)}</strong><div class="small" style="margin-top:4px">${esc((co.reasons || []).join('; '))}</div>${screen ? `<div class="small" style="margin-top:4px;color:var(--bad,#fb7185)"><b>Screen check ${screen.unresolved ? 'unresolved' : 'did not match'}</b> after “${esc(screen.step || 'a step')}”: ${esc(screen.detail || 'the frame did not show the result')}${screen.unresolved ? ' — every step reported success, so this run is not a pass until the frame is checked.' : ''}</div>` : ''}${stepsText ? `<div class="small dim" style="margin-top:4px">Proposed: ${stepsText}</div>` : ''}${button}</div>`; })()}
           ${(full.agentReplans || []).length ? `<div class="hint-box" style="margin-top:8px;border-color:rgba(129,140,248,.35)"><strong>AI repair agent</strong>${full.agentReplans.map((replan) => `<div class="small" style="margin-top:6px"><b>${esc(replan.step)}</b> · ${esc(replan.method)}${replan.confidence != null ? ` · ${Math.round(Number(replan.confidence) * 100)}% confidence` : ''}${replan.diagnosis ? `<div class="dim" style="margin-top:2px">${esc(replan.diagnosis)}</div>` : ''}<div class="dim" style="margin-top:2px">${replan.replacesStep ? 'replaced the failed step' : 'ran prerequisites, then retried'}${(replan.steps || []).length ? ` · ${esc((replan.steps || []).join(' → '))}` : ''}${(replan.remaining || []).length ? ` · rewrote ${replan.remaining.length} remaining step(s)` : ''}</div></div>`).join('')}</div>` : ''}
           ${full.replannedAfterFailure ? `<div class="hint-box" style="margin-top:8px"><strong>AI replanned the remainder</strong><div class="small" style="margin-top:4px">${esc((full.supersededSteps || []).length)} failed action step(s) were superseded; later steps were rebuilt from the current screen.</div></div>` : ''}
         </div>

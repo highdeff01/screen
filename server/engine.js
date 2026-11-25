@@ -26,7 +26,7 @@ import { enqueue } from './pipeline.js';
 import { firewallCheck } from './firewall.js';
 import { addNote } from './handoff.js';
 import { noteStepOutcome, pinStepIntents, similarSolutions, spotIntent } from './step-factoring.js';
-import { recordCloseout } from './closeout.js';
+import { closeoutFor, recordCloseout } from './closeout.js';
 import { checkStepMonitor } from './monitors.js';
 import { beginRunObservation, endRunObservation } from './app-observer.js';
 import { liveControl, probeLiveBackend, isPlatformRefusal } from './platform.js';
@@ -280,7 +280,7 @@ export function summary(run) {
     })),
     followup: run.followup || null,
     followupFailed: Boolean(run.followupFailed),
-    closeout: run.closeout || null,
+    closeout: closeoutFor(run),
     recovered: Boolean(run.recovered),
     patternTags: run.patternTags || [],
     agentRole: run.agentRole || 'operator',

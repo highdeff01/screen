@@ -89,7 +89,7 @@ import { presentationFromDeepFocus, deepFocusMarkdown } from './presentations-de
 import { addFirewallRule, firewallCheck, firewallStatus, firewallTest, removeFirewallRule, resetFirewallRules, setFirewallMode } from './firewall.js';
 import { factoringStatus, pinStepIntents, planRefactoring, pushRefactorToBuilder, similarSolutions } from './step-factoring.js';
 import { normalizeThinkSettings } from './step-think.js';
-import { appendCloseout, recordCloseout } from './closeout.js';
+import { appendCloseout, closeoutFor, recordCloseout } from './closeout.js';
 import { monitorsStatus } from './monitors.js';
 
 /**
@@ -1546,7 +1546,7 @@ route('GET', /^\/api\/closeout\/([^/]+)$/, async (req, res, [id]) => {
   try {
     const run = findRun(id);
     if (!run) throw new Error('Run not found');
-    sendJson(res, 200, { ok: true, closeout: run.closeout || recordCloseout(run) });
+    sendJson(res, 200, { ok: true, closeout: closeoutFor(run) || recordCloseout(run) });
   } catch (err) {
     fail(res, err.message === 'Run not found' ? 404 : 400, err.message);
   }
@@ -3212,6 +3212,9 @@ route('POST', /^\/api\/runs\/([^/]+)\/run-live$/, async (req, res, [id]) => {
 route('GET', /^\/api\/runs\/([^/]+)$/, async (req, res, [id]) => {
   const run = findRun(id);
   if (!run) return fail(res, 404, 'Run not found');
+  // A stored closeout may predate the screen review: fill it in from the run so
+  // the closeout box shows the mismatch on every run, not only new ones.
+  closeoutFor(run);
   sendJson(res, 200, { ok: true, run, recoveryPack: run.recoveryPackId ? findRecoveryPack(run.recoveryPackId) : null });
 });
 

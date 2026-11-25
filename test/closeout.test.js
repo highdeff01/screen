@@ -158,6 +158,47 @@ test('an unresolved screen mismatch is named before the window advice', () => {
   assert.equal(recorded.screenReview.unresolved, true, 'the closeout on the run carries the mismatch');
 });
 
+test('a stored closeout that predates the screen review picks up a later mismatch', () => {
+  const run = probeRun();
+  closeout.recordCloseout(run);
+  assert.equal(run.closeout.screenReview, undefined, 'the stored closeout was written before the field existed');
+  const confidenceBefore = run.closeout.confidence;
+
+  run.screenReviewUnresolved = true;
+  run.screenMismatches = [
+    {
+      stepId: 's_type',
+      stepName: 'Type the note',
+      at: new Date().toISOString(),
+      attempts: 2,
+      mismatch: 'the note is not in the window',
+    },
+  ];
+  store.persist();
+
+  const view = closeout.closeoutFor(run);
+  assert.equal(view.screenReview.unresolved, true);
+  assert.equal(view.screenReview.step, 'Type the note');
+  assert.match(view.screenReview.detail, /not in the window/);
+  assert.match(view.reasons[0], /automatic screen check did not match after “Type the note”/);
+  assert.ok(view.confidence < confidenceBefore, 'the stored confidence drops while the frame disagrees');
+  assert.equal(run.closeout.screenReview.unresolved, true, 'the stored closeout is filled in');
+
+  const again = closeout.closeoutFor(run);
+  assert.equal(again.confidence, view.confidence, 'it is filled in once, not on every read');
+  assert.equal(again.reasons.filter((reason) => /automatic screen check/.test(reason)).length, 1);
+});
+
+test('a stored closeout with no mismatch is left exactly as recorded', () => {
+  const run = probeRun();
+  closeout.recordCloseout(run);
+  const stored = { ...run.closeout };
+  const view = closeout.closeoutFor(run);
+  assert.deepEqual(view, stored);
+  assert.equal(view.screenReview, undefined);
+  assert.equal(closeout.closeoutFor({ lastWindow: null }), null, 'no closeout at all stays none');
+});
+
 test('a run with no window gets a quiet leave', () => {
   const run = probeRun();
   run.lastWindow = null;

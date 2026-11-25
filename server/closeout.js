@@ -117,6 +117,31 @@ function screenState(run) {
   };
 }
 
+/**
+ * The closeout a view should show. A prediction recorded before the screen
+ * review existed carries no screenReview, so a mismatch recorded on the run
+ * since then would stay invisible in the closeout box. Fill it in from the run
+ * itself — once, so the confidence is not lowered on every read.
+ */
+export function closeoutFor(run) {
+  const stored = run?.closeout;
+  if (!stored) return null;
+  if (stored.screenReview) return stored;
+  const screen = screenState(run);
+  if (!screen.mismatches) return stored;
+  const filled = { ...stored, screenReview: screen };
+  if (screen.unresolved) {
+    filled.reasons = [
+      `an automatic screen check did not match after “${screen.step || 'a step'}” and is still unresolved`,
+      ...(stored.reasons || []),
+    ];
+    filled.confidence = Math.round(Math.max(0, Number(stored.confidence || 0) - 0.2) * 100) / 100;
+  }
+  run.closeout = filled;
+  persist();
+  return run.closeout;
+}
+
 export function predictCloseout(run, options = {}) {
   const prediction = planCloseout(run, options);
   const screen = screenState(run);
@@ -203,7 +228,7 @@ function countRunWindows(run) {
 /** Evaluate at run end, remember on the run, and surface what needs approval. */
 export function recordCloseout(run) {
   if (!run || !['passed', 'needs_review'].includes(run.status)) return null;
-  if (run.closeout) return run.closeout;
+  if (run.closeout) return closeoutFor(run);
   try {
     const workflow = db().workflows.find((entry) => entry.id === run.workflowId) || null;
     const prediction = predictCloseout(run, { workflow });
