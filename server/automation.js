@@ -125,10 +125,18 @@ export function runPowerShell(script, timeoutMs = 20000) {
 const SENDKEY_PHRASES =
   /(\{ENTER\}|\{TAB\}|\{ESC\}|\{BACKSPACE\}|\{BKSP\}|\{DELETE\}|\{DEL\}|\{INSERT\}|\{INS\}|\{HOME\}|\{END\}|\{PGUP\}|\{PGDN\}|\{UP\}|\{DOWN\}|\{LEFT\}|\{RIGHT\}|\{PRTSC\}|\{CAPSLOCK\}|\{F[1-9]\}|\{F1[0-2]\}|\{\s*enter\s*\}|\{\s*tab\s*\}|\{\s*esc\s*\})/gi;
 
+// A line break or a tab is a character the app can receive directly, so it
+// never needs a SendKeys key press in the middle of a step.
+const TYPED_AS_CHARACTER = { '{ENTER}': '\r', '{TAB}': '\t' };
+
 /**
- * The text of a type step split into what it is: literal prose, which is typed
- * as characters, and the intentional {ENTER}/{TAB}/{ESC} phrases, which are key
- * presses. Keeping them apart is what lets the literal half skip SendKeys.
+ * The text of a type step split into what it is: literal characters, which are
+ * typed as characters, and the key presses that have no character of their own
+ * ({ESC}, arrows, function keys), which still go through SendKeys.
+ *
+ * A SendKeys press in the middle of the text corrupted everything injected
+ * after it — “Delta echo foxtrot.” arrived as one dot per letter — so the line
+ * breaks travel as characters inside the same typed run.
  */
 export function typingSegments(text) {
   const raw = String(text ?? '')
@@ -136,22 +144,40 @@ export function typingSegments(text) {
     .replace(/\n/g, '{ENTER}')
     .replace(/\t/g, '{TAB}');
   const segments = [];
+  const addText = (value) => {
+    if (!value) return;
+    const last = segments[segments.length - 1];
+    if (last && last.kind === 'text') last.value += value;
+    else segments.push({ kind: 'text', value });
+  };
   raw.split(SENDKEY_PHRASES).forEach((chunk, index) => {
     if (!chunk) return;
-    if (index % 2 === 1) segments.push({ kind: 'keys', value: chunk.toUpperCase().replace(/\s+/g, '') });
-    else segments.push({ kind: 'text', value: chunk });
+    if (index % 2 === 0) {
+      addText(chunk);
+      return;
+    }
+    const token = chunk.toUpperCase().replace(/\s+/g, '');
+    const typed = TYPED_AS_CHARACTER[token];
+    if (typed !== undefined) addText(typed);
+    else segments.push({ kind: 'keys', value: token });
   });
   return segments;
 }
 
+/** One SendKeys expression for the whole text, for callers that want that. */
 export function sendKeysText(text) {
-  // Kept for callers that still want one SendKeys expression: pass intentional
-  // key phrases through; escape everything else so prose containing braces,
-  // carets or percent signs stays literal prose.
-  const escaped = typingSegments(text)
-    .map((segment) =>
-      segment.kind === 'keys' ? segment.value : segment.value.replace(/[+^%~(){}\[\]]/g, (c) => `{${c}}`)
-    )
+  const raw = String(text)
+    .replace(/\r\n/g, '\n')
+    .replace(/\n/g, '{ENTER}')
+    .replace(/\t/g, '{TAB}');
+  // Pass intentional key phrases through; escape everything else so prose
+  // containing braces, carets or percent signs stays literal prose.
+  const escaped = raw
+    .split(SENDKEY_PHRASES)
+    .map((chunk, index) => {
+      if (index % 2 === 1) return chunk.toUpperCase().replace(/\s+/g, '');
+      return chunk.replace(/[+^%~(){}\[\]]/g, (c) => `{${c}}`);
+    })
     .join('');
   return Buffer.from(escaped, 'utf8').toString('base64');
 }

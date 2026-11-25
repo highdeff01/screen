@@ -66,20 +66,21 @@ test('typed text reaches the app as characters, not as a SendKeys burst', () => 
   assert.equal(script.includes(text), false);
 });
 
-test('a type step splits prose from the key phrases it means to press', () => {
-  const segments = automation.typingSegments('Sightline screen agent{ENTER}Automated typing check.');
-  assert.deepEqual(segments, [
-    { kind: 'text', value: 'Sightline screen agent' },
-    { kind: 'keys', value: '{ENTER}' },
-    { kind: 'text', value: 'Automated typing check.' },
+test('a type step types line breaks as characters instead of pressing keys', () => {
+  // A SendKeys press mid-text corrupted the characters typed after it, so a
+  // newline travels as a carriage return inside the same typed run.
+  assert.deepEqual(automation.typingSegments('Sightline screen agent{ENTER}Automated typing check.'), [
+    { kind: 'text', value: 'Sightline screen agent\rAutomated typing check.' },
   ]);
-  assert.deepEqual(automation.typingSegments('a\nb'), [
+  assert.deepEqual(automation.typingSegments('a\nb'), [{ kind: 'text', value: 'a\rb' }]);
+  assert.deepEqual(automation.typingSegments('a{ESC}b'), [
     { kind: 'text', value: 'a' },
-    { kind: 'keys', value: '{ENTER}' },
+    { kind: 'keys', value: '{ESC}' },
     { kind: 'text', value: 'b' },
   ]);
   const script = automation.buildScript({ type: 'type', name: 'Type', params: { text: 'a\nb' } });
-  assert.match(script, /SendWait\('\{ENTER\}'\)/);
+  assert.equal(/SendKeys\]\.SendWait\('\{ENTER\}'\)/.test(script), false);
+  assert.match(script, /\[SightlineInput\]::TypeUnicode\(/);
 });
 
 test('window actions use guarded native Win32 window controls', () => {
