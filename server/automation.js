@@ -4420,6 +4420,9 @@ try {
             return {
               output: `Screen check could not run (${reply.error}); continuing because onError=warn.`,
               evidence: [{ kind: 'screenshot', caption: `${caption} (unverified)`, ...shot }],
+              // Unread is not a pass: the step is reported as skipped, not as
+              // verified, so the run card never claims a check that never ran.
+              skipped: true,
             };
           }
           const error = new Error(`Screen check could not read the screenshot: ${reply.error}`);
@@ -4466,6 +4469,24 @@ try {
       detail: judge.detail,
     });
     const factsNote = `window facts: ${facts.status}${facts.status === 'unknown' ? '' : ` — ${facts.detail}`}`;
+    // A model that is offline while the free facts are inconclusive is not a
+    // judge saying "this is not it": there is no reading to disagree with. It is
+    // reported as unreadable so a caller can record it as unverified instead of
+    // failing the step on the evidence gap.
+    if (!judge.pass && vision.offline && facts.status !== 'fail') {
+      const message = `Screen check could not read the screen: ${vision.observed || 'the vision model was unreachable'}`;
+      if (str(p.onError, 'fail') === 'warn') {
+        return {
+          output: `${message}; continuing because onError=warn.`,
+          evidence: [{ kind: 'screenshot', caption: `${caption} (unverified)`, ...shot }],
+          skipped: true,
+        };
+      }
+      const error = new Error(`${message} · ${factsNote} [${shot.path}]`);
+      error.evidence = [{ kind: 'screenshot', caption: `${caption} (unreadable)`, ...shot }];
+      error.unreadable = true;
+      throw error;
+    }
     if (!judge.pass) {
       const reason = judge.decidedBy === 'facts' && facts.status === 'fail' ? facts.detail : vision.observed || 'no usable observation';
       const error = new Error(
@@ -4616,6 +4637,7 @@ try {
         return {
           output: `Playback check could not run (${reply.error}); continuing because onError=warn.`,
           evidence,
+          skipped: true,
         };
       }
       const error = new Error(`Playback check could not compare frames: ${reply.error}`);

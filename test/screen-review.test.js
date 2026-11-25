@@ -175,6 +175,35 @@ test('a mismatch that survives the retry flags the step and sends the run to rev
   assert.equal(summary.screenReviews[0].status, 'mismatch');
 });
 
+test('a check that could not read the frame is unverified, not a contradiction', async () => {
+  const d = resetDb();
+  const wf = workflow('wf_screen_review_offline');
+  d.workflows = [wf];
+  const probe = stubProbe(() => {
+    throw Object.assign(
+      new Error(
+        'Screen check could not read the screen: the vision model was unreachable (network) · window facts: unknown [data/shots/offline.png]'
+      ),
+      { unreadable: true, evidence: [{ kind: 'screenshot', path: 'data/shots/offline.png' }] }
+    );
+  });
+
+  const run = engine.createRun(wf, { dryRun: false, probe, repair: false, aiReplan: false });
+  const done = await settle(run.id);
+
+  assert.equal(probe.reviews.length, 1, 'nothing contradicted the step, so there is no retry');
+  assert.equal(done.screenReviews[0].status, 'skipped');
+  assert.equal(done.screenReviews[0].verdict, 'unverified');
+  assert.equal(done.screenReviews[0].mismatch, '');
+  assert.equal(done.screenReviewFailed, undefined);
+  assert.equal(done.status, 'passed', 'an offline model never fails a run');
+  assert.ok(done.evidence.some((item) => item.path === 'data/shots/offline.png'), 'the unread frame is still kept');
+
+  const summary = engine.summary(done);
+  assert.equal(summary.screenReviewSkipped, 1, 'an unread frame is not reported as a check');
+  assert.equal(summary.screenReviewMismatches, 0);
+});
+
 test('an unreadable frame is recorded as unverified, never as a failure', async () => {
   const d = resetDb();
   const wf = workflow('wf_screen_review_unreadable');

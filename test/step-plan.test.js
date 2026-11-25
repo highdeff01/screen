@@ -128,6 +128,22 @@ test('one reading becomes a pass, a mismatch or an honest unverified', () => {
   const unreadable = screenReview.reviewOutcome({ skipped: true, output: 'the vision model was unreachable' });
   assert.equal(unreadable.status, 'skipped');
   assert.equal(unreadable.verdict, 'unverified');
+  // A check that reported it could not read the frame is not a mismatch, even
+  // when it arrives as an error instead of a skipped result.
+  const offline = screenReview.reviewOutcome({
+    error: Object.assign(new Error('Screen check could not read the screen: the vision model was unreachable'), {
+      unreadable: true,
+    }),
+  });
+  assert.equal(offline.status, 'skipped');
+  assert.equal(offline.verdict, 'unverified');
+  assert.equal(offline.mismatch, '');
+  assert.match(offline.detail, /vision model was unreachable/);
+  // The same message without the flag is a real contradiction.
+  assert.equal(
+    screenReview.reviewOutcome({ error: new Error('Screen check could not read the screen: the vision model was unreachable') }).status,
+    'mismatch'
+  );
 });
 
 test('screen review retries and confidence are clamped', () => {

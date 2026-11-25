@@ -203,6 +203,9 @@ export function summary(run) {
     // this intent, not just to execute a list of steps.
     goal: run.goal || '',
     screenReviewCount: (run.screenReviews || []).length,
+    // Reads the check could not make (model offline, no window scope). They are
+    // counted apart so "checked" only ever means "actually judged".
+    screenReviewSkipped: (run.screenReviews || []).filter((entry) => entry.status === 'skipped').length,
     // A verdict per automatic check, not just a picture: pass, mismatch, or an
     // honest "could not read". A mismatch that survived its retry sends the run
     // to review instead of letting it read as a clean pass.
@@ -666,7 +669,7 @@ async function reviewScreenAfterStep(run, step, workflow, probe = null) {
       }
       break;
     } catch (err) {
-      outcome = { ...reviewOutcome({ error: err.message || String(err) }), attempts: attempt };
+      outcome = { ...reviewOutcome({ error: err }), attempts: attempt };
       for (const ev of err?.evidence || []) {
         const stored = collectReviewEvidence(run, step, ev, caption);
         if (stored) {
@@ -674,7 +677,9 @@ async function reviewScreenAfterStep(run, step, workflow, probe = null) {
           evidencePath = stored.path;
         }
       }
-      if (attempt < limit && !run.cancelRequested) {
+      // Only a real contradiction is worth a second frame; an unreadable failure
+      // is retried by nothing the operator can wait for.
+      if (attempt < limit && !run.cancelRequested && outcome.status === 'mismatch') {
         pushLog(
           run,
           'warn',

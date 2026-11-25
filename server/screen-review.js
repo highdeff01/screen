@@ -254,6 +254,16 @@ export function reviewOutcome({ skipped = false, error = null, output = '' } = {
       mismatch: '',
     };
   }
+  if (error?.unreadable) {
+    // The check itself could not read the frame (model offline, nothing
+    // conclusive to read): still not a contradiction, so still unverified.
+    return {
+      status: 'skipped',
+      verdict: 'unverified',
+      detail: String(error?.message || error || 'The screen check could not read the screen.').slice(0, 600),
+      mismatch: '',
+    };
+  }
   if (error) {
     const message = String(error?.message || error).trim() || 'the screen did not match';
     return {
