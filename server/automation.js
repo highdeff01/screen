@@ -61,32 +61,6 @@ public class SightlineInput {
   [DllImport("user32.dll")] public static extern int GetWindowTextLength(IntPtr hWnd);
   [DllImport("user32.dll")] public static extern uint GetDpiForWindow(IntPtr hWnd);
   [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
-  [StructLayout(LayoutKind.Sequential)]
-  public struct KEYBDINPUT { public ushort wVk; public ushort wScan; public uint dwFlags; public uint time; public IntPtr dwExtraInfo; }
-  [StructLayout(LayoutKind.Explicit, Size = 32)]
-  public struct INPUTUNION { [FieldOffset(0)] public KEYBDINPUT ki; }
-  [StructLayout(LayoutKind.Sequential)]
-  public struct INPUT { public uint type; public INPUTUNION u; }
-  [DllImport("user32.dll", SetLastError=true)] public static extern uint SendInput(uint nInputs, INPUT[] pInputs, int cbSize);
-  // Literal text is injected as Unicode characters instead of SendKeys
-  // keystrokes. SendKeys drops characters when the target app is busy (typing
-  // “Alpha bravo charlie” arrived as “Alpha ravo crlie” in Notepad) and loses
-  // the shift after Enter (a capital arrived lowercase), so the text a step
-  // recorded was not the text that reached the app.
-  public static void TypeUnicode(string text) {
-    foreach (char ch in text) {
-      INPUT down = new INPUT();
-      down.type = 1;
-      down.u.ki.wScan = ch;
-      down.u.ki.dwFlags = 0x0004;
-      INPUT up = new INPUT();
-      up.type = 1;
-      up.u.ki.wScan = ch;
-      up.u.ki.dwFlags = 0x0006;
-      INPUT[] batch = new INPUT[] { down, up };
-      SendInput((uint)batch.Length, batch, Marshal.SizeOf(typeof(INPUT)));
-    }
-  }
 }
 "@
 `;
@@ -125,46 +99,6 @@ export function runPowerShell(script, timeoutMs = 20000) {
 const SENDKEY_PHRASES =
   /(\{ENTER\}|\{TAB\}|\{ESC\}|\{BACKSPACE\}|\{BKSP\}|\{DELETE\}|\{DEL\}|\{INSERT\}|\{INS\}|\{HOME\}|\{END\}|\{PGUP\}|\{PGDN\}|\{UP\}|\{DOWN\}|\{LEFT\}|\{RIGHT\}|\{PRTSC\}|\{CAPSLOCK\}|\{F[1-9]\}|\{F1[0-2]\}|\{\s*enter\s*\}|\{\s*tab\s*\}|\{\s*esc\s*\})/gi;
 
-// A line break or a tab is a character the app can receive directly, so it
-// never needs a SendKeys key press in the middle of a step.
-const TYPED_AS_CHARACTER = { '{ENTER}': '\r', '{TAB}': '\t' };
-
-/**
- * The text of a type step split into what it is: literal characters, which are
- * typed as characters, and the key presses that have no character of their own
- * ({ESC}, arrows, function keys), which still go through SendKeys.
- *
- * A SendKeys press in the middle of the text corrupted everything injected
- * after it — “Delta echo foxtrot.” arrived as one dot per letter — so the line
- * breaks travel as characters inside the same typed run.
- */
-export function typingSegments(text) {
-  const raw = String(text ?? '')
-    .replace(/\r\n/g, '\n')
-    .replace(/\n/g, '{ENTER}')
-    .replace(/\t/g, '{TAB}');
-  const segments = [];
-  const addText = (value) => {
-    if (!value) return;
-    const last = segments[segments.length - 1];
-    if (last && last.kind === 'text') last.value += value;
-    else segments.push({ kind: 'text', value });
-  };
-  raw.split(SENDKEY_PHRASES).forEach((chunk, index) => {
-    if (!chunk) return;
-    if (index % 2 === 0) {
-      addText(chunk);
-      return;
-    }
-    const token = chunk.toUpperCase().replace(/\s+/g, '');
-    const typed = TYPED_AS_CHARACTER[token];
-    if (typed !== undefined) addText(typed);
-    else segments.push({ kind: 'keys', value: token });
-  });
-  return segments;
-}
-
-/** One SendKeys expression for the whole text, for callers that want that. */
 export function sendKeysText(text) {
   const raw = String(text)
     .replace(/\r\n/g, '\n')
@@ -930,16 +864,25 @@ ${p.x != null && p.y != null ? `[SightlineInput]::SetCursorPos(${num(p.x)}, ${nu
 Write-Output 'scrolled'`;
     }
     case 'type': {
-      const sends = typingSegments(str(p.text))
-        .map((segment) => {
-          if (segment.kind === 'keys') return `[System.Windows.Forms.SendKeys]::SendWait(${psQuote(segment.value)})`;
-          const b64 = Buffer.from(segment.value, 'utf8').toString('base64');
-          return `[SightlineInput]::TypeUnicode([System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('${b64}')))
-Start-Sleep -Milliseconds 20`;
-        })
-        .join('\r\n');
+      const b64 = sendKeysText(str(p.text));
       return `${pre}${foregroundGuard(p, 'type')}
-${sends}
+$escaped = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('${b64}'))
+# One SendKeys expression for the whole paragraph lost characters in a busy
+# app (“Alpha bravo charlie” arrived as “Alpha ravo crlie”, and a capital after
+# Enter arrived lowercase), so each unit is sent on its own with a short pause.
+$i = 0
+while ($i -lt $escaped.Length) {
+  if ($escaped[$i] -eq [char]'{') {
+    $end = $escaped.IndexOf('}', $i)
+    $unit = $escaped.Substring($i, $end - $i + 1)
+    $i = $end + 1
+  } else {
+    $unit = [string]$escaped[$i]
+    $i = $i + 1
+  }
+  [System.Windows.Forms.SendKeys]::SendWait($unit)
+  Start-Sleep -Milliseconds 12
+}
 Write-Output 'typed'`;
     }
     case 'key': {

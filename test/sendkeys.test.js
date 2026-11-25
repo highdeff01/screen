@@ -55,32 +55,17 @@ test('shortcut scripts guard the foreground and send a normalized Windows chord'
   assert.match(script, /\[System\.Windows\.Forms\.SendKeys\]::SendWait\('\^\+t'\)/);
 });
 
-test('typed text reaches the app as characters, not as a SendKeys burst', () => {
+test('typed text is encoded and sent one unit at a time', () => {
   const text = 'Literal {text} with café and $HOME';
   const script = automation.buildScript({ type: 'type', name: 'Type a note', params: { text, foreground: 'Notepad' } });
-  // SendKeys lost characters and the shift when the app was busy, so the prose
-  // half is injected as Unicode and only real key phrases still use SendKeys.
-  assert.match(script, /\[SightlineInput\]::TypeUnicode\(/);
-  assert.equal(/\[System\.Windows\.Forms\.SendKeys\]::SendWait\(\$text\)/.test(script), false);
-  assert.ok(script.includes(Buffer.from(text, 'utf8').toString('base64')));
+  // One SendWait for the whole paragraph dropped and garbled characters in a
+  // busy app, so each escaped character or {KEY} unit is sent on its own.
+  assert.match(script, /FromBase64String/);
+  assert.equal(/SendWait\(\$text\)/.test(script), false);
+  assert.match(script, /SendWait\(\$unit\)/);
+  assert.match(script, /\$escaped\[\$i\] -eq \[char\]'\{'/);
+  assert.ok(script.includes(automation.sendKeysText(text)));
   assert.equal(script.includes(text), false);
-});
-
-test('a type step types line breaks as characters instead of pressing keys', () => {
-  // A SendKeys press mid-text corrupted the characters typed after it, so a
-  // newline travels as a carriage return inside the same typed run.
-  assert.deepEqual(automation.typingSegments('Sightline screen agent{ENTER}Automated typing check.'), [
-    { kind: 'text', value: 'Sightline screen agent\rAutomated typing check.' },
-  ]);
-  assert.deepEqual(automation.typingSegments('a\nb'), [{ kind: 'text', value: 'a\rb' }]);
-  assert.deepEqual(automation.typingSegments('a{ESC}b'), [
-    { kind: 'text', value: 'a' },
-    { kind: 'keys', value: '{ESC}' },
-    { kind: 'text', value: 'b' },
-  ]);
-  const script = automation.buildScript({ type: 'type', name: 'Type', params: { text: 'a\nb' } });
-  assert.equal(/SendKeys\]\.SendWait\('\{ENTER\}'\)/.test(script), false);
-  assert.match(script, /\[SightlineInput\]::TypeUnicode\(/);
 });
 
 test('window actions use guarded native Win32 window controls', () => {
