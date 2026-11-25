@@ -48,6 +48,11 @@ test('a window title is normalized to a focus step and a bare URL gains a scheme
   );
   assert.equal(titleStep.type, 'focusWindow');
   assert.equal(titleStep.params.title, 'Open Google Search - Google Chrome');
+  // A space alone does not make an app name a window title: this one is a real
+  // installed app, so it must stay a launch or it is never started.
+  const appStep = planner.normalizeStep({ type: 'launchApp', name: 'Open Sightline Profile', params: { target: 'Sightline Profile' } }, 0);
+  assert.equal(appStep.type, 'launchApp');
+  assert.equal(appStep.params.target, 'Sightline Profile');
   const urlStep = planner.normalizeStep({ type: 'openUrl', name: 'Search', params: { url: 'google.com/search?q=vlc' } }, 0);
   assert.equal(urlStep.params.url, 'https://google.com/search?q=vlc');
 });

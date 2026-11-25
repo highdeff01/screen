@@ -322,8 +322,13 @@ function normalizeStep(input, index = 0) {
   }
   if (type === 'launchApp') {
     const target = String(params.target || '').trim();
-    // A window title (spaces, no path, no extension) is not an executable.
-    if (target && !/[\\/]/.test(target) && !/\.\w+$/.test(target) && /\s/.test(target)) {
+    // A window title is not an executable, but a space alone does not make a
+    // name a title: “Sightline Profile” and “Google Chrome” are installed apps.
+    // Only a title-shaped name (a document - app separator, or an untitled/new
+    // document prefix) becomes a focus step; everything else stays a launch, and
+    // the launch itself raises a window with that name when one is already open.
+    const titleShaped = /\s[-—|]\s/.test(target) || /^(untitled|new)\b/i.test(target);
+    if (target && titleShaped && !/[\\/]/.test(target) && !/\.\w+$/.test(target)) {
       type = 'focusWindow';
       params.title = target;
       delete params.target;
