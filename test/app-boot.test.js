@@ -197,3 +197,64 @@ test('a lost console server warns once instead of on every poll', async () => {
   assert.equal(rendering, 1);
   assert.equal(ui.offline, false);
 });
+
+test('in-memory status of a running job still reaches its view', async () => {
+  const source = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+  const refresh = source.slice(source.indexOf('async function refresh(options = {})'), source.indexOf('async function loadHealth()'));
+  const state = {
+    ok: true,
+    rev: 7,
+    counts: {},
+    gitSync: { status: 'idle', ahead: 0, behind: 0, lastCheckAt: null },
+    sentinel: { busy: false },
+    live: { running: false },
+    relay: {},
+    pipeline: {},
+    activity: [],
+  };
+  const ui = { view: 'sentinel', data: null, rev: null };
+  let renders = 0;
+  // A fresh sandbox per poll: a re-used one keeps the previous script's
+  // top-level declarations, and the second run would redeclare LIVE_FIELDS.
+  const poll = () =>
+    vm.runInNewContext(`${refresh}\n(async () => { await refresh(); })()`, {
+      ui,
+      api: async () => state,
+      toast: () => {},
+      render: () => { renders += 1; },
+      renderHeader: () => {},
+      $: () => null,
+      document: { activeElement: null, hidden: false },
+    });
+
+  await poll();
+  assert.equal(renders, 1, 'the first poll paints the view');
+  await poll();
+  assert.equal(renders, 1, 'an unchanged state does not repaint');
+
+  state.sentinel.busy = true;
+  await poll();
+  assert.equal(renders, 2, 'the suite starting is shown');
+  await poll();
+  assert.equal(renders, 2);
+
+  ui.view = 'builder';
+  await poll();
+  assert.equal(renders, 3, 'a new view is painted once');
+  await poll();
+  assert.equal(renders, 3);
+
+  state.gitSync.status = 'push-failed';
+  await poll();
+  assert.equal(renders, 4, 'the sync pill follows a push that starts failing');
+  state.gitSync.lastCheckAt = '2026-11-25T20:00:00.000Z';
+  await poll();
+  assert.equal(renders, 4, 'a quiet sync tick does not repaint');
+
+  state.live.running = true;
+  await poll();
+  assert.equal(renders, 5, 'a live watcher starting or stopping is shown');
+  state.activity.push({ id: 'act_1' });
+  await poll();
+  assert.equal(renders, 5, 'unrelated activity does not repaint');
+});

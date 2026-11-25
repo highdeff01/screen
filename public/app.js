@@ -6689,8 +6689,12 @@ async function refresh(options = {}) {
   // landed every 2s, replaced the whole view, and closed open panels, dropped
   // inner scroll and repainted tens of thousands of pixels under the pointer.
   // The revision only moves when the server state does, so it is the honest
-  // signal that there is something new to show.
-  if (!firstLoad && !changed && !options.force) return;
+  // signal that there is something new to show — together with the in-memory
+  // status a running job reports, which never reaches the database.
+  const live = liveSignature(res, ui.view);
+  const liveChanged = live !== ui.liveSignature;
+  ui.liveSignature = live;
+  if (!firstLoad && !changed && !liveChanged && !options.force) return;
   if (ui.view === 'shortcuts') await loadShortcuts(true);
   if (ui.view === 'memory') {
     // The episode list only changes when an episode is added or replaced, so
@@ -6728,6 +6732,33 @@ async function refresh(options = {}) {
     }
   }
   render();
+}
+
+/* -------------------------------------------------------------- live status */
+/**
+ * Status the server keeps in memory instead of in the saved state. Sync
+ * progress, the sentinel suite, the bench link and the relay queue move while
+ * a job runs and never bump the revision, so a view that prints them has to be
+ * told directly — otherwise it freezes mid-run, which is worse than repainting.
+ * The supervisor heartbeat is not printed by any view today, so it is absent.
+ */
+const LIVE_FIELDS = {
+  sync: ['gitSync', 'backup', 'share', 'bench'],
+  sentinel: ['sentinel'],
+  relay: ['relay', 'pipeline'],
+};
+
+/**
+ * The parts of the state that can move without a revision bump. Header-level
+ * indicators ride along for every view: a push that starts failing or a live
+ * watcher that stops must reach the page even while another view is open.
+ */
+function liveSignature(state, view) {
+  const parts = (LIVE_FIELDS[view] || []).map((key) => [key, state?.[key] ?? null]);
+  const git = state?.gitSync || null;
+  parts.push(['pill', git ? { status: git.status, ahead: git.ahead, behind: git.behind } : null]);
+  parts.push(['watching', Boolean(state?.live?.running)]);
+  return JSON.stringify(parts);
 }
 
 async function loadHealth() {
