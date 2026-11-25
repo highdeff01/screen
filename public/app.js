@@ -2046,7 +2046,7 @@ function renderRunDetail(run) {
   }">${full.review?.status === 'reviewed' ? 'Reopen review' : '✓ Mark reviewed'}</button>
       </div>
     </div>
-    <div class="card"><div class="card-head"><h3>Screenshot check review</h3>${Number(full.screenReviewCount || 0) ? `<span class="badge okbadge">${full.screenReviewCount} automatic</span>` : ''}<button class="btn btn-sm" data-act="run-simulate" data-id="${esc(full.id)}" ${ui.simBusy ? 'disabled' : ''}>Screenshot check</button></div><div class="card-body">${renderSimulationCard(ui.sim?.runId === full.id ? ui.sim.record : null) || '<p class="muted small">No screenshot check loaded for this run.</p>'}</div></div>
+    <div class="card"><div class="card-head"><h3>Screenshot check review</h3>${Number(full.screenReviewMismatches || 0) ? `<span class="badge warnbadge">${full.screenReviewMismatches} mismatch</span>` : Number(full.screenReviewCount || 0) ? `<span class="badge okbadge">${full.screenReviewCount} checked</span>` : ''}<button class="btn btn-sm" data-act="run-simulate" data-id="${esc(full.id)}" ${ui.simBusy ? 'disabled' : ''}>Screenshot check</button></div><div class="card-body">${(full.screenReviews || []).length ? `<ul class="small" style="margin:0 0 10px 18px">${(full.screenReviews || []).slice(-4).reverse().map((entry) => `<li><strong>${esc(entry.stepName || entry.stepId || 'step')}</strong> — ${esc(entry.status || 'captured')}${Number(entry.attempts) > 1 ? ` (${Number(entry.attempts)} reads)` : ''}${entry.mismatch ? `: ${esc(entry.mismatch)}` : ''}</li>`).join('')}</ul>` : ''}${renderSimulationCard(ui.sim?.runId === full.id ? ui.sim.record : null) || '<p class="muted small">No screenshot check loaded for this run.</p>'}</div></div>
     <div class="card"><div class="card-head"><h3>Test review</h3><div class="row" style="gap:6px;align-items:flex-end"><label class="field" style="margin:0;min-width:130px"><span>Sort</span><select data-scope="review-sort" data-id="${esc(full.id)}" ${ui.reviewBusy ? 'disabled' : ''}>${['risk', 'phase', 'status', 'seq', 'name'].map((mode) => `<option value="${mode}" ${ui.reviewSort === mode ? 'selected' : ''}>${mode}</option>`).join('')}</select></label><button class="btn btn-sm" data-act="run-review" data-id="${esc(full.id)}" ${ui.reviewBusy ? 'disabled' : ''}>${ui.reviewBusy ? 'Reviewing…' : 'Build review'}</button></div></div><div class="card-body">${renderTestReviewCard(ui.review?.runId === full.id ? ui.review.record : null)}</div></div>
 
     ${
@@ -5256,10 +5256,13 @@ function settingsFields(s) {
     </div>
     <label class="field"><span>Pending allowance (ms)</span><input type="number" min="1000" max="600000" value="${Number(recheckValue('maxPendingMs', 45000))}" data-scope="settings" data-key="recheckMaxPendingMs" /><span class="help">A step pending longer than this counts as stalled.</span></label>
     <div class="section-gap"><h3 class="settings-subhead">Automatic screen review</h3></div>
-    <p class="dim small" style="margin:-2px 0 8px">During a live run, a screenshot is captured right after each action settles, so the review is visible evidence in the run instead of a button someone has to press. At the end of the run the open steps are re-read the same way, and with “continue after” on the run carries the completed steps forward.</p>
+    <p class="dim small" style="margin:-2px 0 8px">During a live run, the screen is read right after each action settles and that frame is judged — cropped to the run’s own window, deterministic window facts plus the vision check — so a step that reported success but shows the wrong thing is caught at the step. A mismatch is re-read once after a short wait; if it still does not match, the step is flagged and the run goes to review instead of reading as a clean pass.</p>
     <label class="check" style="margin-bottom:6px"><input type="checkbox" data-scope="settings" data-key="screenReviewEnabled" ${reviewValue('enabled', true) ? 'checked' : ''} /> Capture a screen check after each action during a live run</label>
     <label class="check" style="margin-bottom:6px"><input type="checkbox" data-scope="settings" data-key="screenReviewModeEvery" ${reviewValue('mode', 'actions') === 'every' ? 'checked' : ''} /> Also capture after waits and assertions (every step)</label>
-    <label class="field" style="max-width:220px"><span>Most captures per run</span><input type="number" min="1" max="200" value="${Number(reviewValue('maxPerRun', 40))}" data-scope="settings" data-key="screenReviewMaxPerRun" /></label>
+    <label class="field" style="max-width:220px"><span>Most screen checks per run</span><input type="number" min="1" max="200" value="${Number(reviewValue('maxPerRun', 40))}" data-scope="settings" data-key="screenReviewMaxPerRun" /></label>
+    <label class="field" style="max-width:220px"><span>Re-reads when it does not match</span><input type="number" min="0" max="3" value="${Number(reviewValue('retries', 1))}" data-scope="settings" data-key="screenReviewRetries" /><span class="help">A second read after the wait below, before the step is flagged.</span></label>
+    <label class="field" style="max-width:220px"><span>Wait before re-reading (ms)</span><input type="number" min="0" max="10000" step="100" value="${Number(reviewValue('retryDelayMs', 1200))}" data-scope="settings" data-key="screenReviewRetryDelayMs" /></label>
+    <label class="field" style="max-width:220px"><span>Minimum confidence</span><input type="number" min="0.3" max="1" step="0.05" value="${Number(reviewValue('minConfidence', 0.6))}" data-scope="settings" data-key="screenReviewMinConfidence" /></label>
     <div class="section-gap"><h3 class="settings-subhead">Companion</h3></div>
     <label class="check" style="margin-bottom:6px"><input type="checkbox" data-scope="settings" data-key="companionEnabled" ${
       s.companionEnabled !== false ? 'checked' : ''
@@ -9776,6 +9779,9 @@ async function runAction(name, ds, el) {
           enabled: settings.screenReviewEnabled !== false,
           mode: settings.screenReviewModeEvery === true ? 'every' : 'actions',
           maxPerRun: Number(settings.screenReviewMaxPerRun ?? settings.screenReview?.maxPerRun ?? 40),
+          retries: Number(settings.screenReviewRetries ?? settings.screenReview?.retries ?? 1),
+          retryDelayMs: Number(settings.screenReviewRetryDelayMs ?? settings.screenReview?.retryDelayMs ?? 1200),
+          minConfidence: Number(settings.screenReviewMinConfidence ?? settings.screenReview?.minConfidence ?? 0.6),
         },
       };
       const res = await api('/api/settings', { method: 'PATCH', body });

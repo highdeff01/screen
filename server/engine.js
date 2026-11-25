@@ -17,7 +17,7 @@ import {
   silentCheck,
   resolveCheckFile,
 } from './automation.js';
-import { normalizeText } from './judgement.js';
+import { judgeTargetFor, normalizeText } from './judgement.js';
 import { assessStep, launchProducedNewWindow, looksLikeSavedDocument, reviewPrevious } from './step-context.js';
 import { classifyPresence, holdDecision, learnHold, completionFor, isFocusStealing, isQuickStep, silentChecksFor } from './presence.js';
 import { recordAction } from './action-log.js';
@@ -37,7 +37,14 @@ const runProbes = new Map();
 import { deliberateStep } from './deliberation.js';
 import { beginStepThink, recordThinkOutcome, stepThinkSettings, thinkBlocked, thinkRepairCandidates } from './step-think.js';
 import { carryCompletedSteps, normalizeRecheckSettings, runPendingRecheck, markRunInterrupted } from './pending-recheck.js';
-import { normalizeScreenReviewSettings, screenReviewCaption, shouldReviewStep } from './screen-review.js';
+import {
+  normalizeScreenReviewSettings,
+  reviewOutcome,
+  screenReviewAttempts,
+  screenReviewCaption,
+  screenReviewCheck,
+  shouldReviewStep,
+} from './screen-review.js';
 import { diffSignatures, signatureHash, shouldAuditVisual, visualChangeMatters } from './visual.js';
 import { analyzeRun, writeRunNote, addSuggestion, suggestionsFor, planSteps, workflowGoal } from './planner.js';
 import { canRetry, recordRetryOutcome } from './retry-budget.js';
@@ -196,7 +203,13 @@ export function summary(run) {
     // this intent, not just to execute a list of steps.
     goal: run.goal || '',
     screenReviewCount: (run.screenReviews || []).length,
+    // A verdict per automatic check, not just a picture: pass, mismatch, or an
+    // honest "could not read". A mismatch that survived its retry sends the run
+    // to review instead of letting it read as a clean pass.
+    screenReviewMismatches: (run.screenMismatches || []).length,
+    screenReviewUnresolved: Boolean(run.screenReviewUnresolved),
     screenReviews: (run.screenReviews || []).slice(-4),
+    screenMismatches: (run.screenMismatches || []).slice(-3),
     status: run.status,
     dryRun: run.dryRun,
     liveFallback: run.liveFallback || null,
@@ -590,61 +603,176 @@ export function screenReviewSettings() {
 }
 
 /**
- * Capture the screen right after an action settled, so the read the runner
- * already performs for the next step also leaves a visible record. Simulated
- * runs and probe-driven runs have no desktop and are skipped.
+ * Re-read the screen right after an action settled and judge the frame it
+ * captured. This reuses the existing verifyScreen path — cropped to the run's
+ * own window, deterministic window facts plus the vision model, one recorded
+ * verdict — instead of filing an unread screenshot. A mismatch is retried once
+ * (a slow app often catches up between the action and the frame); a mismatch
+ * that survives the retry flags the step, and the run goes to review instead of
+ * being reported as a clean pass.
  */
-async function captureScreenReview(run, step, workflow, probe = null) {
-  if (probe || run.dryRun || run.shadow) return null;
+async function reviewScreenAfterStep(run, step, workflow, probe = null) {
+  if (run.dryRun || run.shadow) return null;
+  // A probe without its own screen reviewer is a desktop-free run: there is no
+  // real screen to judge, and reading it would touch the machine running tests.
+  if (probe && typeof probe.screenReview !== 'function') return null;
   const cfg = screenReviewSettings();
   if (!shouldReviewStep(step, (run.screenReviews || []).length, cfg)) return null;
   const caption = screenReviewCaption(step);
-  const shot = { id: uid('chk'), type: 'screenshot', name: caption, params: { caption }, timeoutMs: 20000 };
-  try {
-    const res = await executeStep(shot, {
-      live: true,
-      runId: run.id,
-      run,
-      workflow,
-      getTool: (id) => db().tools.find((tool) => tool.id === id),
-    });
-    const captured = (res.evidence || [])[0] || null;
-    let evidenceId = null;
-    if (captured?.path) {
-      const evidence = {
-        id: uid('evd'),
-        kind: captured.kind || 'screenshot',
-        caption,
-        path: captured.path,
-        simulated: Boolean(captured.simulated),
-        width: captured.width || null,
-        height: captured.height || null,
-        stepId: step.id,
-        createdAt: now(),
-      };
-      run.evidence.push(evidence);
-      step.evidenceIds.push(evidence.id);
-      evidenceId = evidence.id;
+  const check = screenReviewCheck(step, { variables: run.variables || {} });
+  const target = judgeTargetFor(step, run);
+  const limit = screenReviewAttempts(cfg);
+  const checkStep = {
+    id: uid('chk'),
+    type: 'verifyScreen',
+    name: caption,
+    params: {
+      question: check.question,
+      caption,
+      // An unreadable frame (vision offline, no window scope) is recorded as
+      // unverified: only the judges saying "this is not it" is a mismatch.
+      onError: 'warn',
+      minConfidence: cfg.minConfidence,
+      ...(check.expectedText ? { text: check.expectedText } : {}),
+      ...(check.absentText ? { absent: check.absentText } : {}),
+      ...(target.title ? { title: target.title } : {}),
+      ...(target.process ? { app: target.process } : {}),
+    },
+    timeoutMs: 90000,
+  };
+  let outcome = null;
+  let evidenceId = null;
+  let evidencePath = null;
+  let judgement = null;
+  for (let attempt = 1; attempt <= limit; attempt += 1) {
+    try {
+      const res = probe?.screenReview
+        ? await probe.screenReview(checkStep, { run, workflow, runId: run.id, live: true, attempt })
+        : await executeStep(checkStep, {
+            live: true,
+            runId: run.id,
+            run,
+            workflow,
+            getTool: (id) => db().tools.find((tool) => tool.id === id),
+          });
+      outcome = { ...reviewOutcome({ skipped: res?.skipped, output: res?.output }), attempts: attempt };
+      judgement = res?.judgement || null;
+      for (const ev of res?.evidence || []) {
+        const stored = collectReviewEvidence(run, step, ev, caption);
+        if (stored) {
+          evidenceId = stored.id;
+          evidencePath = stored.path;
+        }
+      }
+      break;
+    } catch (err) {
+      outcome = { ...reviewOutcome({ error: err.message || String(err) }), attempts: attempt };
+      for (const ev of err?.evidence || []) {
+        const stored = collectReviewEvidence(run, step, ev, caption);
+        if (stored) {
+          evidenceId = stored.id;
+          evidencePath = stored.path;
+        }
+      }
+      if (attempt < limit && !run.cancelRequested) {
+        pushLog(
+          run,
+          'warn',
+          `Screen check after “${step.name}” did not match${outcome.mismatch ? ` — ${outcome.mismatch}` : ''}; re-reading in ${cfg.retryDelayMs} ms (${attempt + 1}/${limit}).`,
+          step.id
+        );
+        if (cfg.retryDelayMs > 0) await sleep(cfg.retryDelayMs);
+      }
     }
-    const entry = {
-      stepId: step.id,
-      stepName: step.name,
-      type: step.type,
-      at: now(),
-      evidenceId,
-      path: captured?.path || null,
-      simulated: Boolean(captured?.simulated),
-      status: 'captured',
-    };
-    run.screenReviews = [...(run.screenReviews || []), entry].slice(-200);
-    step.screenReview = { at: entry.at, evidenceId, status: 'captured' };
-    pushLog(run, 'info', `Screen check captured after “${step.name}” (automatic).`, step.id);
-    return entry;
-  } catch (err) {
-    step.screenReview = { at: now(), status: 'failed', error: String(err.message || err).slice(0, 200) };
-    pushLog(run, 'warn', `Automatic screen check after “${step.name}” failed: ${err.message}`, step.id);
-    return null;
   }
+  if (!outcome) return null;
+  const entry = {
+    stepId: step.id,
+    stepName: step.name,
+    type: step.type,
+    at: now(),
+    question: check.question,
+    title: target.title || '',
+    app: target.process || '',
+    evidenceId,
+    path: evidencePath,
+    simulated: false,
+    status: outcome.status,
+    verdict: outcome.verdict,
+    attempts: outcome.attempts,
+    retried: outcome.attempts > 1,
+    detail: outcome.detail,
+    mismatch: outcome.mismatch,
+    judgement,
+  };
+  run.screenReviews = [...(run.screenReviews || []), entry].slice(-200);
+  step.screenReview = {
+    at: entry.at,
+    evidenceId,
+    status: entry.status,
+    attempts: entry.attempts,
+    detail: entry.detail,
+    ...(entry.mismatch ? { mismatch: entry.mismatch } : {}),
+  };
+  if (entry.status === 'mismatch') {
+    // Every step said it passed, but the frame says otherwise after a re-read:
+    // the run is not a clean pass, so it is kept for review.
+    run.screenReviewFailed = true;
+    run.screenMismatches = [
+      ...(run.screenMismatches || []),
+      {
+        stepId: step.id,
+        stepName: step.name,
+        at: entry.at,
+        detail: entry.detail,
+        mismatch: entry.mismatch,
+        attempts: entry.attempts,
+      },
+    ].slice(-20);
+    step.audit = {
+      level: 'warning',
+      message: `Screen check after “${step.name}” did not match: ${entry.mismatch || entry.detail}`,
+      at: entry.at,
+    };
+    pushLog(
+      run,
+      'error',
+      `Screen check after “${step.name}” did not match after ${entry.attempts} read(s): ${entry.mismatch || entry.detail}`,
+      step.id
+    );
+  } else if (entry.status === 'skipped') {
+    pushLog(run, 'warn', `Screen check after “${step.name}” could not read the screen: ${entry.detail}`, step.id);
+  } else {
+    pushLog(
+      run,
+      'info',
+      `Screen check passed after “${step.name}”${entry.retried ? ` (matched on read ${entry.attempts})` : ''}: ${entry.detail}`,
+      step.id
+    );
+  }
+  persist();
+  return entry;
+}
+
+/** Keep one copy of a review screenshot on the run, as evidence. */
+function collectReviewEvidence(run, step, evidence, caption) {
+  if (!evidence?.path) return null;
+  const label = evidence.caption || caption;
+  if ((run.evidence || []).some((item) => item.path === evidence.path && item.caption === label)) return null;
+  const entry = {
+    id: uid('evd'),
+    kind: evidence.kind || 'screenshot',
+    caption: label,
+    path: evidence.path,
+    simulated: Boolean(evidence.simulated),
+    width: evidence.width || null,
+    height: evidence.height || null,
+    stepId: step.id,
+    createdAt: now(),
+  };
+  run.evidence.push(entry);
+  step.evidenceIds.push(entry.id);
+  return entry;
 }
 
 function buildPostCheck(step) {
@@ -2350,7 +2478,7 @@ async function executeRun(runId) {
       rememberWindow(run, step);
       // A screenshot is taken after every action, automatically, so the review
       // is evidence in the run instead of a button the operator has to press.
-      await captureScreenReview(run, step, workflow, probe);
+      await reviewScreenAfterStep(run, step, workflow, probe);
       recordLedger(run, step);
     } else {
       step.status = 'failed';
@@ -2548,6 +2676,25 @@ async function executeRun(runId) {
   if (run.followup && run.followup.ok === false && run.status === 'passed') {
     run.status = 'needs_review';
     run.followupFailed = true;
+  }
+  // An automatic screen check that never matched is a soft failure: every step
+  // reported success, but the frame disagreed — even on a second read. The run
+  // goes to review, which also hands it to the end-of-run recheck.
+  if (run.screenReviewFailed && run.status === 'passed') {
+    run.status = 'needs_review';
+    run.screenReviewUnresolved = true;
+    const lastMismatch = (run.screenMismatches || []).slice(-1)[0];
+    run.errorSummary =
+      run.errorSummary ||
+      `Automatic screen check did not match after “${lastMismatch?.stepName || 'a step'}”: ${
+        lastMismatch?.mismatch || lastMismatch?.detail || 'no detail'
+      }.`;
+    pushLog(
+      run,
+      'warn',
+      `Run sent to review: an automatic screen check did not match after “${lastMismatch?.stepName || 'a step'}”.`,
+      lastMismatch?.stepId || null
+    );
   }
   // Closeout prediction: the state the run leaves behind, judged once.
   try {
