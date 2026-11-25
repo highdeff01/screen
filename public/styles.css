@@ -131,7 +131,7 @@ a:hover { text-decoration: underline; }
 .dot.ok { background: var(--ok); }
 .dot.run { background: var(--run); box-shadow: 0 0 0 3px rgba(167, 139, 250, 0.15); }
 
-.view { padding: 22px 24px 60px; min-width: 0; }
+.view { padding: 22px 24px 60px; min-width: 0; max-width: 1680px; }
 
 /* ---------- Primitives ---------- */
 .btn {

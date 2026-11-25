@@ -816,6 +816,7 @@ function renderHeader() {
 
 /* ------------------------------------------------------------------ views */
 let lastRenderState = null;
+let lastViewHtml = null;
 
 function render() {
   if (!ui.data) {
@@ -851,7 +852,14 @@ function render() {
     sentinel: renderSentinel,
     relay: renderRelay,
   };
-  $('#view').innerHTML = (map[ui.view] || renderBuilder)();
+  const html = (map[ui.view] || renderBuilder)();
+  // A poll that produces the same markup must not touch the DOM: replacing it
+  // closed open panels and dropped the scroll position inside the page, which
+  // read as the console drifting under the operator.
+  if (html !== lastViewHtml) {
+    $('#view').innerHTML = html;
+    lastViewHtml = html;
+  }
   if (pageY != null) window.scrollTo({ top: pageY, behavior: 'auto' });
   if (listY != null) {
     const list = document.querySelector('.runs-list');
@@ -6638,10 +6646,21 @@ function renderSync() {
 async function refresh(options = {}) {
   const res = await api('/api/state');
   if (!res.ok) {
-    toast(res.error || 'Could not reach the console server', 'error');
+    // The poll runs every couple of seconds. Toasting each failure buried the
+    // page in identical errors and hid the first one, so say it once and stay
+    // quiet until the console answers again.
+    if (!ui.offline) {
+      ui.offline = true;
+      toast(res.error || 'Could not reach the console server', 'error');
+    }
     return;
   }
-  const changed = ui.rev != null && res.rev !== ui.rev;
+  if (ui.offline) {
+    ui.offline = false;
+    toast('Reconnected to the console server.', 'ok');
+  }
+  const firstLoad = ui.rev == null;
+  const changed = !firstLoad && res.rev !== ui.rev;
   ui.data = res;
   ui.rev = res.rev;
   if (res.companion) {
@@ -6657,8 +6676,22 @@ async function refresh(options = {}) {
       localStorage.setItem('sightline-state-sync', JSON.stringify(message));
     } catch {}
   }
+  // Rebuilding the page when nothing changed is what made it drift: a poll
+  // landed every 2s, replaced the whole view, and closed open panels, dropped
+  // inner scroll and repainted tens of thousands of pixels under the pointer.
+  // The revision only moves when the server state does, so it is the honest
+  // signal that there is something new to show.
+  if (!firstLoad && !changed && !options.force) return;
   if (ui.view === 'shortcuts') await loadShortcuts(true);
-  if (ui.view === 'memory') await loadWorkflowMemory(true);
+  if (ui.view === 'memory') {
+    // The episode list only changes when an episode is added or replaced, so
+    // the summary is enough to decide whether to re-read the full list again.
+    const signature = JSON.stringify(res.workflowMemory || null);
+    if (signature !== ui.memorySignature || !ui.workflowMemory) {
+      ui.memorySignature = signature;
+      await loadWorkflowMemory(true);
+    }
+  }
   if (ui.view === 'captures') await loadCaptures();
   if (ui.view === 'files' && ui.fileTab === 'files') {
     const files = await api('/api/files');
@@ -10490,7 +10523,7 @@ async function boot() {
       // Schedule only after the previous refresh settles, even on failure.
       const counts = ui.data?.counts || {};
       const busy = Number(counts.activeRuns || 0) + Number(counts.missionsActive || 0);
-      const delay = document.hidden ? 8000 : busy ? 500 : 2000;
+      const delay = ui.offline ? 8000 : document.hidden ? 8000 : busy ? 500 : 2000;
       setTimeout(pollState, delay);
     }
   };
