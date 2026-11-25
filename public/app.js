@@ -5171,15 +5171,24 @@ function settingsFields(s) {
       s.autoActEnabled ? 'checked' : ''
     } /> Allow habit auto-act (bounded: at most 2 automatic retries per chain)</label>
     <div class="section-gap"><h3 class="settings-subhead">Live step thinking</h3></div>
-    <p class="dim small" style="margin:-2px 0 8px">While a live step runs, the console reads the desktop on a loop, writes short notes, drafts candidate continuations and pre-tests each against what it just saw. Nothing is clicked or typed from the loop; the best prepared correction is offered to the repair chain when a step fails, and stops being offered as the rejects add up.</p>
+    <p class="dim small" style="margin:-2px 0 8px">Cheap by default: one combined desktop read per step and no model call. Thinking drafts at least five candidate continuations, pre-tests each against what it just saw, narrates what it is considering and why, and keeps the rejected options for review. Nothing is clicked or typed from the loop; the best prepared correction is tried first when the step fails, and stops being offered as the rejects add up.</p>
     <label class="check" style="margin-bottom:6px"><input type="checkbox" data-scope="settings" data-key="stepThinkEnabled" ${thinkValue('enabled', true) ? 'checked' : ''} /> Think while each live step runs</label>
     <label class="check" style="margin-bottom:6px"><input type="checkbox" data-scope="settings" data-key="stepThinkLiveLink" ${thinkValue('liveLink', true) ? 'checked' : ''} /> Live-link the thoughts into the run log</label>
-    <label class="check" style="margin-bottom:6px"><input type="checkbox" data-scope="settings" data-key="stepThinkModelAssist" ${thinkValue('modelAssist', true) ? 'checked' : ''} /> Let the model review the sampled choices while the step runs</label>
+    <label class="check" style="margin-bottom:6px"><input type="checkbox" data-scope="settings" data-key="stepThinkModelAssist" ${thinkValue('modelAssist', false) ? 'checked' : ''} /> Let the model review the sampled choices while the step runs</label>
     <label class="check" style="margin-bottom:6px"><input type="checkbox" data-scope="settings" data-key="stepThinkAutoApply" ${thinkValue('autoApply', true) ? 'checked' : ''} /> Auto-apply the prepared correction when a step fails (reject-rate limited)</label>
     <div class="field-row">
       <label class="field"><span>Choices per step</span><input type="number" min="3" max="12" value="${Number(thinkValue('maxChoices', 7))}" data-scope="settings" data-key="stepThinkMaxChoices" /></label>
       <label class="field"><span>Sample width (pixels)</span><input type="number" min="0" max="100" value="${Number(thinkValue('pixels', 48))}" data-scope="settings" data-key="stepThinkPixels" /><span class="help">0 turns the sampled frame off.</span></label>
       <label class="field"><span>Elements read</span><input type="number" min="0" max="200" value="${Number(thinkValue('elements', 25))}" data-scope="settings" data-key="stepThinkElements" /><span class="help">Focused control plus nearby elements; independent of pixels.</span></label>
+    </div>
+    <label class="check" style="margin-bottom:6px"><input type="checkbox" data-scope="settings" data-key="stepThinkReadOnce" ${thinkValue('readOnce', true) ? 'checked' : ''} /> Read the desktop once per step (one combined observation)</label>
+    <label class="check" style="margin-bottom:6px"><input type="checkbox" data-scope="settings" data-key="stepThinkHigherThinking" ${thinkValue('higherThinking', false) ? 'checked' : ''} /> Higher thinking — live re-reads, model review and an overseer verdict</label>
+    <label class="check" style="margin-bottom:6px"><input type="checkbox" data-scope="settings" data-key="stepThinkOverseer" ${thinkValue('overseer', false) ? 'checked' : ''} /> Add the overseer verdict to each step (recommendation, why, original step preserved)</label>
+    <label class="check" style="margin-bottom:6px"><input type="checkbox" data-scope="settings" data-key="stepThinkKeepRunning" ${thinkValue('keepRunning', false) ? 'checked' : ''} /> Keep the workflow running after a failed step (unguarded input steps are skipped)</label>
+    <div class="field-row">
+      <label class="field"><span>Live re-read every (ms)</span><input type="number" min="500" max="30000" value="${Number(thinkValue('monitorIntervalMs', 3000))}" data-scope="settings" data-key="stepThinkMonitorMs" /><span class="help">Used only when live monitoring or higher thinking is on.</span></label>
+      <label class="field"><span>Keep running after (failed steps)</span><input type="number" min="1" max="20" value="${Number(thinkValue('maxStepFailures', 3))}" data-scope="settings" data-key="stepThinkMaxStepFailures" /></label>
+      <label class="field"><span>Replans per run</span><input type="number" min="0" max="10" value="${Number(thinkValue('maxReplans', 2))}" data-scope="settings" data-key="stepThinkMaxReplans" /><span class="help">Lets the engine reorganise the remaining steps after repeated failures.</span></label>
     </div>
     <div class="field-row">
       <label class="field"><span>Preview rate (ms)</span><input type="number" min="500" max="15000" value="${Number(thinkValue('previewIntervalMs', 2000))}" data-scope="settings" data-key="stepThinkPreviewMs" /></label>
@@ -6719,12 +6728,14 @@ function renderStepThink(step) {
   const think = step?.think;
   if (!think) return '';
   const notes = (think.notes || []).slice(-5);
-  const choices = (think.choices || []).slice(0, 4);
+  const alternatives = (think.alternatives || think.choices || []).slice(0, 5);
+  const overseer = think.overseer;
   return `<details class="code-wrap" style="margin-top:6px">
-    <summary class="small">Thinking · ${Number(think.ticks) || 0} tick(s) · ${choices.length} choice(s)${think.best ? ` · best ${esc(think.best.name)} (${Math.round((Number(think.best.confidence) || 0) * 100)}%)` : ''}${think.autoApplyBlocked ? ' · auto-apply held' : ''}</summary>
+    <summary class="small">Thinking · ${Number(think.reads) || Number(think.ticks) || 0} read(s) · ${(think.choices || []).length} choice(s)${think.best ? ` · best ${esc(think.best.name)} (${Math.round((Number(think.best.confidence) || 0) * 100)}%)` : ''}${think.autoApplyBlocked ? ' · auto-apply held' : ''}</summary>
     <div style="padding:6px 0 0">
+      ${overseer ? `<div class="small"><b>Overseer:</b> ${esc(overseer.decision)} — ${esc(overseer.recommend)}${overseer.why ? ` <span class="dim">(${esc(overseer.why)})</span>` : ''}${overseer.preservation ? `<div class="dim">${esc(overseer.preservation)}</div>` : ''}</div>` : ''}
       ${notes.map((note) => `<div class="small dim">${esc(note.text)}</div>`).join('')}
-      ${choices.map((choice) => `<div class="small"><span class="badge ${choice.ok ? 'okbadge' : 'warnbadge'}">${Math.round((Number(choice.confidence) || 0) * 100)}%</span> ${esc(choice.name)} <span class="dim">${esc(choice.why || '')}</span></div>`).join('')}
+      ${alternatives.map((choice) => `<div class="small"><span class="badge ${choice.verdict === 'best' ? 'okbadge' : choice.verdict === 'rejected' ? 'warnbadge' : ''}">${Math.round((Number(choice.confidence) || 0) * 100)}%</span> ${esc(choice.name)}${choice.verdict ? ` <span class="dim">${esc(choice.verdict)}</span>` : ''} <span class="dim">${esc((choice.reasons || [])[0] || choice.why || '')}</span></div>`).join('')}
       ${think.model?.why ? `<div class="small dim">Model: ${esc(think.model.why)}</div>` : ''}
       ${think.autoApplyBlocked ? `<div class="small" style="color:var(--bad)">${esc(think.autoApplyBlocked)}</div>` : ''}
       ${think.summary ? `<div class="small dim">${esc(think.summary)}</div>` : ''}
@@ -9625,6 +9636,13 @@ async function runAction(name, ds, el) {
           previewIntervalMs: Number(settings.stepThinkPreviewMs ?? settings.stepThink?.previewIntervalMs ?? 2000),
           mirrorIntervalMs: Number(settings.stepThinkMirrorMs ?? settings.stepThink?.mirrorIntervalMs ?? 4000),
           sideBySide: settings.stepThinkSideBySide === true,
+          readOnce: settings.stepThinkReadOnce !== false,
+          higherThinking: settings.stepThinkHigherThinking === true,
+          overseer: settings.stepThinkOverseer === true,
+          keepRunning: settings.stepThinkKeepRunning === true,
+          monitorIntervalMs: Number(settings.stepThinkMonitorMs ?? settings.stepThink?.monitorIntervalMs ?? 3000),
+          maxStepFailures: Number(settings.stepThinkMaxStepFailures ?? settings.stepThink?.maxStepFailures ?? 3),
+          maxReplans: Number(settings.stepThinkMaxReplans ?? settings.stepThink?.maxReplans ?? 2),
         },
       };
       const res = await api('/api/settings', { method: 'PATCH', body });

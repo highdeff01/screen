@@ -299,3 +299,71 @@ test('a successful correction counts as an apply, and read-only steps never star
   const budgetOff = think.normalizeThinkSettings({ pixels: 0, elements: 0 });
   assert.equal(think.beginStepThink({ id: 'r' }, step(), { settings: budgetOff }), null, 'zero budget with no observe reader does nothing');
 });
+
+test('thinking is cheap by default: one read, no model, five alternatives', async () => {
+  const defaults = think.normalizeThinkSettings({});
+  assert.equal(defaults.modelAssist, false, 'the model is off unless asked for');
+  assert.equal(defaults.readOnce, true, 'one combined read per step');
+  assert.equal(defaults.overseer, false);
+  assert.equal(defaults.keepRunning, false);
+
+  const higher = think.normalizeThinkSettings({ higherThinking: true });
+  assert.equal(higher.modelAssist, true, 'higher thinking includes the model review');
+  assert.equal(higher.liveMonitor, true);
+  assert.equal(higher.readOnce, false);
+  assert.equal(higher.overseer, true);
+
+  let reads = 0;
+  const target = step();
+  const loop = think.beginStepThink({ id: 'run_cheap', workflowGoal: 'ask Kiro' }, target, {
+    settings: think.normalizeThinkSettings({ enabled: true, intervalMs: 500, liveMonitor: false }),
+    observe: async () => {
+      reads += 1;
+      return dialogObservation;
+    },
+    schedule: (fn) => setTimeout(fn, 20),
+    cancel: (timer) => clearTimeout(timer),
+  });
+  await new Promise((resolve) => setTimeout(resolve, 160));
+  const record = await loop.stop();
+  assert.equal(reads, 1, 'the step is read exactly once');
+  assert.equal(record.ticks, 1);
+  assert.ok((record.alternatives || []).length >= 5, 'the ranked alternatives survive the read');
+});
+
+test('the narration keeps five or more options and names why weak ones are passed over', () => {
+  const target = step();
+  const plain = think.normalizeObservation({
+    foreground: { title: 'Getting started - Kiro' },
+    windows: [{ title: 'Getting started - Kiro' }],
+    pointer: { x: 640, y: 360 },
+  });
+  const choices = think.thinkChoices({
+    step: target,
+    run: { workflowGoal: 'ask Kiro what is a diamond' },
+    observation: plain,
+    maxChoices: 7,
+  });
+  assert.ok(choices.length >= 5, 'at least five continuations are drafted without a dialog');
+
+  const notes = [];
+  think.runThinkOnce(target, {
+    observation: plain,
+    run: { workflowGoal: 'ask Kiro what is a diamond' },
+    settings: think.normalizeThinkSettings({ overseer: true }),
+    onNote: (message) => notes.push(message),
+  });
+  assert.ok(target.think.alternatives.length >= 5);
+  assert.deepEqual(
+    target.think.alternatives.map((entry) => entry.rank),
+    target.think.alternatives.map((entry, index) => index + 1)
+  );
+  assert.ok(target.think.alternatives.some((entry) => entry.verdict === 'rejected'), 'weak options are labelled, not hidden');
+  assert.ok(notes.some((note) => /Pointer at \(640, 360\)/.test(note)), 'the pointer is named');
+  assert.ok(notes.some((note) => /alternate|Considering/.test(note)), 'the narration explains the choice');
+
+  const brief = think.overseerBrief({ run: {}, step: target, think: target.think, goal: 'ask Kiro what is a diamond' });
+  assert.match(brief.decision, /continue|hold/);
+  assert.match(brief.preservation, /retried|no step/);
+  assert.ok(brief.alternatives.length >= 5);
+});

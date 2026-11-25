@@ -2172,6 +2172,14 @@ async function executeRun(runId) {
         }
       }
       if (thinkLoop) think = await thinkLoop.stop();
+      if (think?.overseer) {
+        pushLog(
+          run,
+          'info',
+          `Overseer: ${think.overseer.decision} — ${think.overseer.recommend}${think.overseer.why ? ` (${think.overseer.why})` : ''}`,
+          step.id
+        );
+      }
       if (run.cancelRequested && !succeeded) cancelled = true;
       if (!succeeded && !cancelled && !skipped && repairEnabled) {
         step.repairStartedAt = now();
@@ -2283,7 +2291,8 @@ async function executeRun(runId) {
       if (
         repairResult?.remainingSteps?.length &&
         run.aiReplan !== false &&
-        Number(run.replanCount || 0) < 2
+        Number(run.replanCount || 0) <
+          Math.max(0, Number(run.policy?.maxReplans ?? stepThinkSettings().maxReplans ?? 2))
       ) {
         const at = run.steps.indexOf(step);
         const tail = at >= 0 ? run.steps.slice(at + 1) : [];
@@ -2338,6 +2347,36 @@ async function executeRun(runId) {
         }
       }
 
+      // Keep-running: an unrepaired failure is recorded, and the rest of the
+      // plan still runs up to the cap. Unguarded input steps are skipped so a
+      // keystroke cannot land in the wrong app.
+      const keepConfig = stepThinkSettings();
+      const keepRunning = run.policy?.keepRunning === true || keepConfig.keepRunning === true;
+      const maxStepFailures = Math.max(
+        1,
+        Number(run.policy?.maxStepFailures ?? keepConfig.maxStepFailures) || 1
+      );
+      if (keepRunning && failedCount < maxStepFailures) {
+        run.keptRunning = [
+          ...(run.keptRunning || []),
+          { stepId: step.id, name: step.name, error: String(step.error || '').slice(0, 240), at: now() },
+        ].slice(-20);
+        pushLog(
+          run,
+          'warn',
+          `Keeping the run going after “${step.name}” failed (${failedCount}/${maxStepFailures} this run); guarded steps still run, unguarded input steps are skipped.`,
+          step.id
+        );
+        for (const rest of run.steps.slice(run.steps.indexOf(step) + 1)) {
+          if (rest.status !== 'pending' || canContinueSafely(rest)) continue;
+          rest.status = 'skipped';
+          rest.output = `Skipped because “${step.name}” failed and this input step has no window or foreground guard.`;
+          recordLedger(run, rest);
+          pushLog(run, 'warn', rest.output, rest.id);
+        }
+        persist();
+        continue;
+      }
       const policy = run.policy?.onFailure || 'stop';
       const optional = step.optional;
       if ((policy === 'stop' || policy === 'retry') && !optional) {
@@ -2411,7 +2450,7 @@ async function executeRun(runId) {
   } else if (failedCount > 0) {
     const policy = run.policy?.onFailure || 'stop';
     const onlyOptional = run.steps.filter((s) => s.status === 'failed').every((s) => s.optional);
-    run.status = policy === 'continue' || onlyOptional ? 'needs_review' : 'failed';
+    run.status = policy === 'continue' || onlyOptional || (run.keptRunning || []).length ? 'needs_review' : 'failed';
   } else {
     run.status = 'passed';
   }

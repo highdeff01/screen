@@ -412,6 +412,12 @@ export function thinkChoices({
     // the very thing the step needs to answer.
     push({
       type: 'key',
+      name: 'Press Enter in the target window',
+      params: { keys: 'enter', ...(target ? { foreground: target } : {}) },
+      why: 'submitting is the usual next move once the text is in the field',
+    });
+    push({
+      type: 'key',
       name: 'Press Escape to clear a stray overlay',
       params: { keys: 'escape', ...(target ? { foreground: target } : {}) },
       why: 'a menu, tooltip or overlay can swallow the click; Escape clears it without touching the document',
