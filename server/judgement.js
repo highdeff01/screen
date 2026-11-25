@@ -39,10 +39,25 @@ export function judgeTargetFor(step, run) {
   const p = step?.params || {};
   const asked = String(p.title || p.expected || p.window || '').trim();
   const app = String(p.app || p.expectedApp || p.process || '').trim();
+  const askedHandle = Math.max(0, Number(p.handle || p.hwnd || p.windowHandle) || 0);
   const last = run?.lastWindow || null;
   const lastHwnd = Number(last?.hwnd) || 0;
   const lastTitle = String(last?.title || '').trim();
   const sameTitle = asked && lastTitle && lastTitle.toLowerCase().includes(asked.toLowerCase());
+  // A check that names a handle means that exact window, even after the window
+  // renamed itself (typing into an untitled document does that). Looking it up
+  // by a title that stopped matching would turn the subject into “whatever is
+  // in front” — the wrong window, or a lookalike behind it.
+  if (askedHandle) {
+    const sameHandle = lastHwnd === askedHandle;
+    return {
+      hwnd: askedHandle,
+      title: asked || (sameHandle ? lastTitle : ''),
+      process: app || (sameHandle ? String(last?.process || '') : ''),
+      scoped: true,
+      source: 'step-handle',
+    };
+  }
   // The run opened this window and the step names it too, so the handle is the
   // exact subject — another document with the same title is a different window.
   if (lastHwnd && (!asked || sameTitle)) {

@@ -7,6 +7,7 @@ const root = process.cwd();
 const load = (name) => import(pathToFileURL(path.join(root, name)).href);
 const stepPlan = await load('server/step-plan.js');
 const screenReview = await load('server/screen-review.js');
+const judgement = await load('server/judgement.js');
 const planner = await load('server/planner.js');
 
 test('an explicit instruction becomes steps instead of a template', () => {
@@ -144,6 +145,23 @@ test('one reading becomes a pass, a mismatch or an honest unverified', () => {
     screenReview.reviewOutcome({ error: new Error('Screen check could not read the screen: the vision model was unreachable') }).status,
     'mismatch'
   );
+});
+
+test('a check that names a handle keeps judging that window after it renames', () => {
+  const run = { lastWindow: { hwnd: 4242, title: 'Untitled - Notepad', process: 'Notepad' } };
+  const byHandle = judgement.judgeTargetFor({ params: { handle: 4242, app: 'Notepad' } }, run);
+  assert.equal(byHandle.hwnd, 4242);
+  assert.equal(byHandle.process, 'Notepad');
+  assert.equal(byHandle.source, 'step-handle');
+
+  // Notepad takes the document's first line as its name, so the title the run
+  // opened is gone by the time the frame is judged.
+  const renamed = { lastWindow: { hwnd: 4242, title: 'Sightline screen agent - Notepad', process: 'Notepad' } };
+  const byTitle = judgement.judgeTargetFor({ params: { title: 'Untitled - Notepad' } }, renamed);
+  assert.equal(byTitle.hwnd, 0, 'a stale title no longer identifies the window');
+  const stillScoped = judgement.judgeTargetFor({ params: { handle: 4242 } }, renamed);
+  assert.equal(stillScoped.hwnd, 4242);
+  assert.equal(stillScoped.scoped, true);
 });
 
 test('screen review retries and confidence are clamped', () => {

@@ -223,6 +223,30 @@ test('an unreadable frame is recorded as unverified, never as a failure', async 
   assert.equal(done.status, 'passed');
 });
 
+test('the review is pinned to the run window, not to a title the step renames', async () => {
+  const d = resetDb();
+  const wf = workflow('wf_screen_review_handle');
+  d.workflows = [wf];
+  const probe = stubProbe(() => ({ output: 'Screen verified (vision 95%): the text is on screen', evidence: [] }));
+  const inner = probe.executeStep;
+  probe.executeStep = async (step, ctx) => {
+    // What the real run records after the window is opened and focused.
+    if (step.type === 'type' && ctx?.run) {
+      ctx.run.lastWindow = { hwnd: 4242, title: 'Untitled - Notepad', process: 'Notepad' };
+    }
+    return inner(step, ctx);
+  };
+
+  const run = engine.createRun(wf, { dryRun: false, probe, repair: false, aiReplan: false });
+  const done = await settle(run.id);
+
+  assert.equal(done.status, 'passed');
+  const check = probe.reviews[0].checkStep;
+  assert.equal(check.params.handle, 4242, 'the check is pinned to the window the run opened');
+  assert.equal(check.params.title, undefined, 'a title snapshot fails once the window renames itself');
+  assert.equal(check.params.app, 'Notepad');
+});
+
 test('a frame that could not be captured is unverified, not a mismatch', async () => {
   const d = resetDb();
   const wf = workflow('wf_screen_review_capture_failed');

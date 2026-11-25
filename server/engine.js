@@ -638,7 +638,10 @@ async function reviewScreenAfterStep(run, step, workflow, probe = null) {
       minConfidence: cfg.minConfidence,
       ...(check.expectedText ? { text: check.expectedText } : {}),
       ...(check.absentText ? { absent: check.absentText } : {}),
-      ...(target.title ? { title: target.title } : {}),
+      // The handle is the subject. A title is only a snapshot: a step that types
+      // into an untitled document renames the window it is then judged in, and
+      // handing that stale title to the check failed a frame that was right.
+      ...(target.hwnd ? { handle: target.hwnd } : target.title ? { title: target.title } : {}),
       ...(target.process ? { app: target.process } : {}),
     },
     timeoutMs: 90000,
@@ -3069,11 +3072,15 @@ export async function recheckRun(id, { continueAfter = null, probe = null } = {}
       const settled = (run.steps || []).find((candidate) => candidate.id === entry.stepId);
       if (settled) recordLedger(run, settled);
     }
+    // A recheck only answers the queued silent checks. An automatic screen
+    // check that never matched is a separate contradiction the recheck never
+    // looked at, so resolving the queue must not promote such a run to passed.
     if (
       summary.status === 'resolved' &&
       ['failed', 'needs_review'].includes(run.status) &&
       !run.followupFailed &&
-      !run.goalUnverified
+      !run.goalUnverified &&
+      !run.screenReviewUnresolved
     ) {
       run.status = 'passed';
       run.recovered = true;
@@ -3088,7 +3095,7 @@ export async function recheckRun(id, { continueAfter = null, probe = null } = {}
       pushLog(
         run,
         summary.unresolved.length ? 'warn' : 'info',
-        `Recheck ${String(summary.status).replace('_', ' ')}: ${summary.resolved.length} step(s) passed, ${summary.unresolved.length} still open, ${summary.needsRun.length} need a real re-run${summary.tasks.length ? `; ${summary.tasks.length} task(s) assigned` : ''}.`
+        `Recheck ${String(summary.status).replace('_', ' ')}: ${summary.resolved.length} step(s) passed, ${summary.unresolved.length} still open, ${summary.needsRun.length} need a real re-run${summary.tasks.length ? `; ${summary.tasks.length} task(s) assigned` : ''}${run.screenReviewUnresolved ? '; the automatic screen check still does not match, so the run stays in review' : ''}.`
       );
     }
     persist();
