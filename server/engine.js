@@ -1937,6 +1937,17 @@ async function executeRun(runId) {
     recordLedger(run, step);
     persist();
     pushLog(run, 'info', `Step ${step.name} (${step.type})`, step.id);
+    let maxAttempts = run.policy?.onFailure === 'retry' ? Math.max(1, Number(run.policy.maxRetries || 0) + 1) : 1;
+    let lastError = null;
+    let verificationFailure = false;
+    let succeeded = false;
+    let result = null;
+    let repairResult = null;
+    let skipped = false;
+    let cancelled = false;
+    let thinkLoop = null;
+    let think = null;
+
     // Thinking starts with the step, not after it fails: the loop reads the
     // desktop while the action runs, samples its candidate continuations, and
     // keeps the record on the step. It is read-only; only the repair chain acts.
@@ -1957,17 +1968,6 @@ async function executeRun(runId) {
         pushLog(run, 'warn', `Step thinking did not start: ${err.message}`, step.id);
       }
     }
-
-    let maxAttempts = run.policy?.onFailure === 'retry' ? Math.max(1, Number(run.policy.maxRetries || 0) + 1) : 1;
-    let lastError = null;
-    let verificationFailure = false;
-    let succeeded = false;
-    let result = null;
-    let repairResult = null;
-    let skipped = false;
-    let cancelled = false;
-    let thinkLoop = null;
-    let think = null;
 
     if (step.type === 'wait') {
       step.attempts = 1;

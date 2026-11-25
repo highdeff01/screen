@@ -334,8 +334,8 @@ test('thinking is cheap by default: one read, no model, five alternatives', asyn
 test('the narration keeps five or more options and names why weak ones are passed over', () => {
   const target = step();
   const plain = think.normalizeObservation({
-    foreground: { title: 'Getting started - Kiro' },
-    windows: [{ title: 'Getting started - Kiro' }],
+    foreground: { title: 'Untitled - Notepad' },
+    windows: [{ title: 'Untitled - Notepad' }, { title: 'Getting started - Kiro' }],
     pointer: { x: 640, y: 360 },
   });
   const choices = think.thinkChoices({
