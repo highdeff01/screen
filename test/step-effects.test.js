@@ -223,8 +223,13 @@ test('retryRun resumes at the failed step instead of restarting the workflow', a
   const retry = await engine.retryRun('run_resume_probe', { replan: false });
   assert.equal(retry.resumedFrom?.step, 'Ask the question');
   assert.equal(retry.resumedFrom?.skipped, 1);
+  // The prefix is kept on the retry as "already done" instead of being sliced
+  // off, so the console can show the work that was completed.
   const ids = retry.steps.map((step) => step.id);
-  assert.equal(ids.includes('stp_open'), false);
+  assert.equal(ids.includes('stp_open'), true);
+  assert.equal(retry.steps[0].status, 'passed');
+  assert.equal(retry.steps[0].carriedFrom?.stepId, 'stp_open');
+  assert.deepEqual(retry.carriedSteps.map((step) => step.id), ['stp_open']);
   assert.equal(ids.includes('stp_ask'), true);
   assert.equal(ids.includes('stp_copy'), true);
   await settle(retry.id);
