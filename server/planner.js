@@ -2316,7 +2316,23 @@ function memoryPlanFrom(memories, goal, appContext) {
  */
 export async function ensureWorkflowSteps(workflow, goal) {
   if (!workflow) throw new Error('Workflow not found');
-  if (Array.isArray(workflow.steps) && workflow.steps.length) return { created: 0, source: 'existing' };
+  if (Array.isArray(workflow.steps) && workflow.steps.length) {
+    // A rerun keeps its saved steps. The plan is still checked against the
+    // goal's own words, but only to report gaps: nothing is added, rewritten or
+    // approved here.
+    const existingGoal = String(goal || workflow.description || workflow.name || '').trim();
+    const coverage = existingGoal ? planCoverage(existingGoal, workflow.steps) : null;
+    if (coverage && !coverage.ok) {
+      logActivity(
+        'workflow',
+        `${coverage.missing.length} goal element(s) have no step in "${workflow.name}": ${coverage.missing
+          .slice(0, 4)
+          .map((entry) => entry.label)
+          .join(', ')}`
+      );
+    }
+    return { created: 0, source: 'existing', coverage, coverageNote: describeCoverage(coverage) };
+  }
   const text = String(goal || workflow.description || workflow.name || '').trim();
   if (!text) throw new Error('Describe the workflow goal before auto-creating steps');
   const plan = await planSteps(text, workflow);
