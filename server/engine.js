@@ -585,6 +585,68 @@ async function captureFailureEvidence(run, step, workflow) {
   }
 }
 
+export function screenReviewSettings() {
+  return normalizeScreenReviewSettings(db().settings?.screenReview || {});
+}
+
+/**
+ * Capture the screen right after an action settled, so the read the runner
+ * already performs for the next step also leaves a visible record. Simulated
+ * runs and probe-driven runs have no desktop and are skipped.
+ */
+async function captureScreenReview(run, step, workflow, probe = null) {
+  if (probe || run.dryRun || run.shadow) return null;
+  const cfg = screenReviewSettings();
+  if (!shouldReviewStep(step, (run.screenReviews || []).length, cfg)) return null;
+  const caption = screenReviewCaption(step);
+  const shot = { id: uid('chk'), type: 'screenshot', name: caption, params: { caption }, timeoutMs: 20000 };
+  try {
+    const res = await executeStep(shot, {
+      live: true,
+      runId: run.id,
+      run,
+      workflow,
+      getTool: (id) => db().tools.find((tool) => tool.id === id),
+    });
+    const captured = (res.evidence || [])[0] || null;
+    let evidenceId = null;
+    if (captured?.path) {
+      const evidence = {
+        id: uid('evd'),
+        kind: captured.kind || 'screenshot',
+        caption,
+        path: captured.path,
+        simulated: Boolean(captured.simulated),
+        width: captured.width || null,
+        height: captured.height || null,
+        stepId: step.id,
+        createdAt: now(),
+      };
+      run.evidence.push(evidence);
+      step.evidenceIds.push(evidence.id);
+      evidenceId = evidence.id;
+    }
+    const entry = {
+      stepId: step.id,
+      stepName: step.name,
+      type: step.type,
+      at: now(),
+      evidenceId,
+      path: captured?.path || null,
+      simulated: Boolean(captured?.simulated),
+      status: 'captured',
+    };
+    run.screenReviews = [...(run.screenReviews || []), entry].slice(-200);
+    step.screenReview = { at: entry.at, evidenceId, status: 'captured' };
+    pushLog(run, 'info', `Screen check captured after “${step.name}” (automatic).`, step.id);
+    return entry;
+  } catch (err) {
+    step.screenReview = { at: now(), status: 'failed', error: String(err.message || err).slice(0, 200) };
+    pushLog(run, 'warn', `Automatic screen check after “${step.name}” failed: ${err.message}`, step.id);
+    return null;
+  }
+}
+
 function buildPostCheck(step) {
   const raw = step.params?.verifyAfter ?? step.params?.verify ?? null;
   if (!raw) return null;
@@ -2286,6 +2348,10 @@ async function executeRun(runId) {
       }
       step.status = 'passed';
       rememberWindow(run, step);
+      // A screenshot is taken after every action, automatically, so the review
+      // is evidence in the run instead of a button the operator has to press.
+      await captureScreenReview(run, step, workflow, probe);
+      recordLedger(run, step);
     } else {
       step.status = 'failed';
       step.error = lastError || 'Step failed';
@@ -2550,6 +2616,29 @@ async function executeRun(runId) {
   endRunObservation(run);
   logActivity('run', `"${run.workflowName}" finished ${run.status}`, { runId: run.id, status: run.status });
 
+  // The screenshot review also runs on its own at the end of a live run: open
+  // steps are re-read with a fresh screenshot and, when "continue after" is
+  // checked, the run continues with the completed steps passed through.
+  if (
+    !probe &&
+    !run.dryRun &&
+    !run.shadow &&
+    !run.autoRecheckDone &&
+    Number(run.retryDepth || 0) < 1 &&
+    ['failed', 'needs_review'].includes(run.status)
+  ) {
+    const cfg = recheckSettings();
+    if (cfg.enabled) {
+      run.autoRecheckDone = true;
+      persist();
+      try {
+        await recheckRun(run.id, { continueAfter: cfg.continueAfter });
+      } catch (err) {
+        pushLog(run, 'warn', `Automatic recheck failed: ${err.message}`);
+      }
+    }
+  }
+
   if (runFinishedHook) {
     Promise.resolve(runFinishedHook(run)).catch((err) => {
       run.log.push({ at: now(), level: 'warn', message: `Run-finished hook failed: ${err.message}` });
@@ -2711,6 +2800,9 @@ export async function retryRun(id, { replan = true, planner = planSteps, carry =
     probe,
     carryFrom: carry === false ? null : original,
   });
+  run.retryOf = original.id;
+  // Depth stops the automatic recheck from retrying itself in a loop.
+  run.retryDepth = Number(original.retryDepth || 0) + 1;
   if (run.carriedSteps?.length) {
     logActivity('run', `Passed through ${run.carriedSteps.length} completed step(s) from ${original.id}.`, { runId: run.id });
   }

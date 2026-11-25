@@ -139,6 +139,8 @@ import { ensureGateway, gatewayStatus, stopGateway } from './gateway.js';
 import { estimateTokens } from './context.js';
 import { readTextChunk, writeTextChunk, digestForSummary, isTextFile } from './longfiles.js';
 import { planSteps, ensureWorkflowSteps, analyzeRun, writeRunNote, addSuggestion, normalizeStep, lintWorkflow } from './planner.js';
+import { planStepChange } from './step-plan.js';
+import { normalizeScreenReviewSettings } from './screen-review.js';
 import { listProposals, findProposal, proposalView, createProposal, approveProposal, rejectProposal, createProposalForRun, shadowTestProposal } from './proposals.js';
 import { JUDGE_MODES, judgementSummary, resolveJudgementReview } from './judgement.js';
 import { visualTesterStatus, testScreenshot, rememberVisualTest } from './visual-tester.js';
@@ -2751,6 +2753,114 @@ route('POST', /^\/api\/workflows\/([^/]+)\/plan$/, async (req, res, [id]) => {
   sendJson(res, 200, { ok: true, ...result });
 });
 
+/* ---------------- Instruction-driven step changes ---------------- */
+// An instruction is read into steps, checked against the current plan and then
+// held for approval. Nothing here writes to a workflow until the operator
+// approves the change.
+route('POST', /^\/api\/workflows\/([^/]+)\/instruction$/, async (req, res, [id]) => {
+  const wf = db().workflows.find((w) => w.id === id);
+  if (!wf) return fail(res, 404, 'Workflow not found');
+  const body = await readBody(req);
+  const instruction = String(body.instruction || '').trim();
+  if (!instruction) return fail(res, 400, 'Say what should change, for example “type hi in notepad”');
+  if (instruction.length > 800) return fail(res, 400, 'Keep the instruction short enough to name one change');
+  const plan = planStepChange({
+    instruction,
+    steps: wf.steps,
+    goal: String(body.goal || wf.description || wf.name || ''),
+  });
+  if (!plan.ok) return fail(res, 400, plan.reason || 'That instruction did not change any step');
+  const turn = Math.max(0, Number(wf.changeTurn || 0)) + 1;
+  wf.pendingStepChange = {
+    ...plan,
+    id: uid('chg'),
+    workflowId: wf.id,
+    status: 'pending',
+    turn,
+    instruction,
+    createdAt: now(),
+    review: { ...(plan.review || {}), turn, status: 'pending', at: now() },
+  };
+  persist();
+  logActivity('workflow', `Proposed ${plan.changes.length} step change(s) for "${wf.name}" from an instruction`, {
+    workflowId: wf.id,
+  });
+  sendJson(res, 200, { ok: true, change: wf.pendingStepChange, workflow: workflowView(wf) });
+});
+
+route('POST', /^\/api\/workflows\/([^/]+)\/instruction\/([^/]+)\/approve$/, async (req, res, [id, changeId]) => {
+  const wf = db().workflows.find((w) => w.id === id);
+  if (!wf) return fail(res, 404, 'Workflow not found');
+  const pending = wf.pendingStepChange;
+  if (!pending || pending.id !== changeId || pending.status !== 'pending') {
+    return fail(res, 404, 'That step change is no longer waiting for approval');
+  }
+  const body = await readBody(req);
+  const before = (wf.steps || []).length;
+  wf.steps = (pending.steps || []).map((step, index) => ({
+    ...step,
+    id: step.id || uid('stp'),
+    name: String(step.name || `Step ${index + 1}`).slice(0, 80),
+  }));
+  wf.updatedAt = now();
+  wf.changeTurn = Number(pending.turn || wf.changeTurn || 0);
+  wf.lastChange = {
+    id: pending.id,
+    turn: wf.changeTurn,
+    instruction: pending.instruction,
+    summary: pending.review?.summary || '',
+    changes: pending.changes || [],
+    gaps: pending.gaps || [],
+    status: 'approved',
+    at: now(),
+    note: String(body.note || '').slice(0, 500),
+  };
+  wf.stepChanges = [wf.lastChange, ...(wf.stepChanges || [])].slice(0, 20);
+  delete wf.pendingStepChange;
+  // One approval re-syncs the whole workflow: intents are re-pinned and the
+  // plan is linted again so the change cannot leave a step behind.
+  try {
+    pinStepIntents(wf);
+  } catch { /* pinning never blocks the approval */ }
+  const lint = lintWorkflow(wf);
+  wf.updatedAt = now();
+  persist();
+  logActivity('workflow', `Approved ${(pending.changes || []).length} step change(s) for "${wf.name}"`, {
+    workflowId: wf.id,
+  });
+  sendJson(res, 200, {
+    ok: true,
+    workflow: workflowView(wf),
+    change: wf.lastChange,
+    lint,
+    stepsChanged: wf.steps.length - before,
+  });
+});
+
+route('POST', /^\/api\/workflows\/([^/]+)\/instruction\/([^/]+)\/decline$/, async (req, res, [id, changeId]) => {
+  const wf = db().workflows.find((w) => w.id === id);
+  if (!wf) return fail(res, 404, 'Workflow not found');
+  const pending = wf.pendingStepChange;
+  if (!pending || pending.id !== changeId) return fail(res, 404, 'That step change is no longer waiting for approval');
+  wf.stepChanges = [
+    {
+      id: pending.id,
+      turn: pending.turn,
+      instruction: pending.instruction,
+      summary: pending.review?.summary || '',
+      changes: pending.changes || [],
+      gaps: pending.gaps || [],
+      status: 'declined',
+      at: now(),
+    },
+    ...(wf.stepChanges || []),
+  ].slice(0, 20);
+  delete wf.pendingStepChange;
+  persist();
+  logActivity('workflow', `Declined step change for "${wf.name}"`, { workflowId: wf.id });
+  sendJson(res, 200, { ok: true, workflow: workflowView(wf) });
+});
+
 route('POST', /^\/api\/workflows\/([^/]+)\/propose$/, async (req, res, [id]) => {
   try {
     const body = await readBody(req);
@@ -4336,6 +4446,9 @@ route('PATCH', /^\/api\/settings$/, async (req, res) => {
   }
   if (body.recheck !== undefined && body.recheck && typeof body.recheck === 'object') {
     s.recheck = normalizeRecheckSettings({ ...(s.recheck || {}), ...body.recheck });
+  }
+  if (body.screenReview !== undefined && body.screenReview && typeof body.screenReview === 'object') {
+    s.screenReview = normalizeScreenReviewSettings({ ...(s.screenReview || {}), ...body.screenReview });
   }
   persist();
   logActivity('settings', 'Settings updated');
