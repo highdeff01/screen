@@ -18,6 +18,8 @@ const ui = {
   planNote: '',
   planResearch: null,
   planBusy: false,
+  stepInstruction: '',
+  stepChangeBusy: false,
   proposalBusy: false,
   proposalShadowBusy: null,
   chat: [],
@@ -1212,7 +1214,8 @@ function renderBuilderMain(wf, lastRun, sim, liveAvailable, liveReason) {
   <section>
     <div class="card wf-head">
       <input class="title-input" value="${esc(wf.name)}" data-scope="wf" data-key="name" data-id="${wf.id}" aria-label="Workflow name" />
-      <textarea class="wf-desc" rows="2" data-scope="wf" data-key="description" data-id="${wf.id}" aria-label="Workflow description" placeholder="What does this workflow verify?">${esc(
+      <label class="wf-intent"><span class="dim small">User intent — every plan, retry and recheck answers to this</span></label>
+      <textarea class="wf-desc" rows="2" data-scope="wf" data-key="description" data-id="${wf.id}" aria-label="User intent" placeholder="What should this workflow accomplish? For example: type hi in notepad">${esc(
         wf.description || ''
       )}</textarea>
       <label class="wf-tags"><span class="dim small">Pattern tags</span>
@@ -1440,6 +1443,29 @@ function renderRules(wf) {
   </div>`;
 }
 
+function renderStepChange(wf) {
+  const change = wf.pendingStepChange;
+  if (!change) {
+    const last = (wf.stepChanges || [])[0];
+    return last
+      ? `<div class="dim small" style="margin-top:6px">Last turn ${Number(last.turn || 0)} ${esc(last.status)} · ${esc(last.summary || last.instruction || '')}</div>`
+      : '';
+  }
+  const changes = change.changes || [];
+  const gaps = change.gaps || [];
+  return `<div class="hint-box section-gap" style="border-color:rgba(56,189,248,.35)">
+    <div class="row wrap" style="align-items:center;gap:6px"><strong>Turn ${Number(change.turn || 0)} · needs approval</strong><span class="badge">${changes.length} change(s)</span><span class="spacer"></span><span class="dim small">${esc(change.instruction || '')}</span></div>
+    <div class="small" style="margin-top:4px">${esc(change.review?.summary || '')}</div>
+    <div class="small" style="margin-top:6px">${(change.review?.inputConsidered || []).map((item) => `<div class="dim">${esc(item.field)}: <b>${esc(item.value || '—')}</b> · ${esc(item.source)}</div>`).join('')}</div>
+    ${changes.length ? `<ul class="rule-list small" style="margin-top:6px">${changes.slice(0, 10).map((item) => `<li><b>${esc(item.op)}</b> ${esc(item.name || '')}${item.before || item.after ? ` · ${esc(item.before || '')} → ${esc(item.after || '')}` : ''}<div class="dim">${esc(item.reason || '')}</div></li>`).join('')}</ul>` : ''}
+    ${gaps.length ? `<div class="small" style="color:var(--warn, #fbbf24);margin-top:6px">Needs your input: ${gaps.map((gap) => esc(gap.reason || '')).join(' · ')}</div>` : ''}
+    <div class="row wrap" style="margin-top:8px;gap:6px">
+      <button class="btn btn-sm btn-primary" data-act="step-instruction-approve" data-id="${esc(wf.id)}" data-change="${esc(change.id)}">Approve &amp; sync steps</button>
+      <button class="btn btn-sm btn-ghost" data-act="step-instruction-decline" data-id="${esc(wf.id)}" data-change="${esc(change.id)}">Decline</button>
+    </div>
+  </div>`;
+}
+
 function renderCopilot(wf, suggestions) {
   const plan = ui.planPreview;
   const research = ui.planResearch;
@@ -1450,6 +1476,15 @@ function renderCopilot(wf, suggestions) {
   <div class="side-card">
     <div class="side-card-head"><h3>AI copilot</h3><span class="badge ai">${esc(ui.data.settings.model)}</span></div>
     <div class="side-card-body">
+      <label class="field"><span>Change this workflow with words</span><textarea rows="2" data-scope="step-instruction" placeholder="type hi in notepad">${esc(
+        ui.stepInstruction || ''
+      )}</textarea></label>
+      <button class="btn" data-act="step-instruction-plan" data-id="${wf.id}" ${ui.stepChangeBusy ? 'disabled' : ''}>
+        ${ui.stepChangeBusy ? '<span class="spinner"></span> Reading the instruction…' : 'Review this change'}
+      </button>
+      <span class="help" style="display:block;margin-top:5px">Creates or updates the steps the instruction names, then waits for your approval. Other steps are re-synced so the plan still fits.</span>
+      ${renderStepChange(wf)}
+      <div class="divider" style="margin:12px 0"></div>
       <label class="field"><span>Describe the goal</span><textarea rows="3" data-scope="plan" placeholder="Open Kiro, ask a question, select and copy the answer, then save it in Notepad">${esc(
         ui.planGoal
       )}</textarea></label>
@@ -1956,6 +1991,7 @@ function renderRunDetail(run) {
     full.review?.status === 'reviewed' ? '<span class="badge okbadge">reviewed</span>' : ''
   }</div>
           <h2>${esc(full.workflowName)}</h2>
+          <p class="run-intent small"><span class="dim">User intent</span> ${esc(full.goal || workflow?.description || 'No intent was recorded for this run.')}</p>
           <div class="run-meta">
             <span>id <b>${esc(full.id)}</b></span>
             <span>started <b>${fmtTime(full.startedAt || full.createdAt)}</b></span>
@@ -2010,7 +2046,7 @@ function renderRunDetail(run) {
   }">${full.review?.status === 'reviewed' ? 'Reopen review' : '✓ Mark reviewed'}</button>
       </div>
     </div>
-    <div class="card"><div class="card-head"><h3>Screenshot check review</h3><button class="btn btn-sm" data-act="run-simulate" data-id="${esc(full.id)}" ${ui.simBusy ? 'disabled' : ''}>Screenshot check</button></div><div class="card-body">${renderSimulationCard(ui.sim?.runId === full.id ? ui.sim.record : null) || '<p class="muted small">No screenshot check loaded for this run.</p>'}</div></div>
+    <div class="card"><div class="card-head"><h3>Screenshot check review</h3>${Number(full.screenReviewCount || 0) ? `<span class="badge okbadge">${full.screenReviewCount} automatic</span>` : ''}<button class="btn btn-sm" data-act="run-simulate" data-id="${esc(full.id)}" ${ui.simBusy ? 'disabled' : ''}>Screenshot check</button></div><div class="card-body">${renderSimulationCard(ui.sim?.runId === full.id ? ui.sim.record : null) || '<p class="muted small">No screenshot check loaded for this run.</p>'}</div></div>
     <div class="card"><div class="card-head"><h3>Test review</h3><div class="row" style="gap:6px;align-items:flex-end"><label class="field" style="margin:0;min-width:130px"><span>Sort</span><select data-scope="review-sort" data-id="${esc(full.id)}" ${ui.reviewBusy ? 'disabled' : ''}>${['risk', 'phase', 'status', 'seq', 'name'].map((mode) => `<option value="${mode}" ${ui.reviewSort === mode ? 'selected' : ''}>${mode}</option>`).join('')}</select></label><button class="btn btn-sm" data-act="run-review" data-id="${esc(full.id)}" ${ui.reviewBusy ? 'disabled' : ''}>${ui.reviewBusy ? 'Reviewing…' : 'Build review'}</button></div></div><div class="card-body">${renderTestReviewCard(ui.review?.runId === full.id ? ui.review.record : null)}</div></div>
 
     ${
@@ -5069,6 +5105,11 @@ function settingsFields(s) {
     const flat = `recheck${key[0].toUpperCase()}${key.slice(1)}`;
     return s[flat] !== undefined ? s[flat] : recheckDraft[key] !== undefined ? recheckDraft[key] : fallback;
   };
+  const reviewDraft = s.screenReview && typeof s.screenReview === 'object' ? s.screenReview : {};
+  const reviewValue = (key, fallback) => {
+    const flat = `screenReview${key[0].toUpperCase()}${key.slice(1)}`;
+    return s[flat] !== undefined ? s[flat] : reviewDraft[key] !== undefined ? reviewDraft[key] : fallback;
+  };
   return `
     ${renderLocalModelCard()}
     <label class="field"><span>Model API style</span><select data-scope="settings" data-key="apiStyle">
@@ -5214,6 +5255,11 @@ function settingsFields(s) {
       <label class="field"><span>Retry timing (ms)</span><input type="number" min="250" max="60000" value="${Number(recheckValue('intervalMs', 3000))}" data-scope="settings" data-key="recheckIntervalMs" /><span class="help">Grows linearly between attempts.</span></label>
     </div>
     <label class="field"><span>Pending allowance (ms)</span><input type="number" min="1000" max="600000" value="${Number(recheckValue('maxPendingMs', 45000))}" data-scope="settings" data-key="recheckMaxPendingMs" /><span class="help">A step pending longer than this counts as stalled.</span></label>
+    <div class="section-gap"><h3 class="settings-subhead">Automatic screen review</h3></div>
+    <p class="dim small" style="margin:-2px 0 8px">During a live run, a screenshot is captured right after each action settles, so the review is visible evidence in the run instead of a button someone has to press. At the end of the run the open steps are re-read the same way, and with “continue after” on the run carries the completed steps forward.</p>
+    <label class="check" style="margin-bottom:6px"><input type="checkbox" data-scope="settings" data-key="screenReviewEnabled" ${reviewValue('enabled', true) ? 'checked' : ''} /> Capture a screen check after each action during a live run</label>
+    <label class="check" style="margin-bottom:6px"><input type="checkbox" data-scope="settings" data-key="screenReviewModeEvery" ${reviewValue('mode', 'actions') === 'every' ? 'checked' : ''} /> Also capture after waits and assertions (every step)</label>
+    <label class="field" style="max-width:220px"><span>Most captures per run</span><input type="number" min="1" max="200" value="${Number(reviewValue('maxPerRun', 40))}" data-scope="settings" data-key="screenReviewMaxPerRun" /></label>
     <div class="section-gap"><h3 class="settings-subhead">Companion</h3></div>
     <label class="check" style="margin-bottom:6px"><input type="checkbox" data-scope="settings" data-key="companionEnabled" ${
       s.companionEnabled !== false ? 'checked' : ''
@@ -7771,6 +7817,49 @@ async function runAction(name, ds, el) {
       await refresh();
       break;
     }
+    case 'step-instruction-plan': {
+      const instruction = (ui.stepInstruction || '').trim();
+      if (!instruction) return toast('Describe the step change first, for example “type hi in notepad”', 'error');
+      ui.stepChangeBusy = true;
+      render();
+      const res = await api(`/api/workflows/${encodeURIComponent(ds.id)}/instruction`, {
+        method: 'POST',
+        body: { instruction, goal: ui.planGoal || '' },
+      });
+      ui.stepChangeBusy = false;
+      if (!res.ok) {
+        toast(res.error, 'error');
+        return render();
+      }
+      ui.stepInstruction = '';
+      ui.railTab = 'copilot';
+      await refresh();
+      toast(`Turn ${Number(res.change?.turn || 0)} ready for approval · ${(res.change?.changes || []).length} change(s)`, 'ok');
+      break;
+    }
+    case 'step-instruction-approve': {
+      const res = await api(
+        `/api/workflows/${encodeURIComponent(ds.id)}/instruction/${encodeURIComponent(ds.change)}/approve`,
+        { method: 'POST', body: {} }
+      );
+      if (!res.ok) return toast(res.error, 'error');
+      await refresh();
+      toast(
+        `Approved · ${res.workflow?.steps?.length || 0} steps synced${res.lint?.issues?.length ? ` · ${res.lint.issues.length} lint note(s)` : ''}`,
+        'ok'
+      );
+      break;
+    }
+    case 'step-instruction-decline': {
+      const res = await api(
+        `/api/workflows/${encodeURIComponent(ds.id)}/instruction/${encodeURIComponent(ds.change)}/decline`,
+        { method: 'POST', body: {} }
+      );
+      if (!res.ok) return toast(res.error, 'error');
+      await refresh();
+      toast('Step change declined', 'ok');
+      break;
+    }
     case 'plan-generate': {
       const goal = (ui.planGoal || '').trim();
       if (!goal) return toast('Describe the goal first', 'error');
@@ -9683,6 +9772,11 @@ async function runAction(name, ds, el) {
           intervalMs: Number(settings.recheckIntervalMs ?? settings.recheck?.intervalMs ?? 3000),
           maxPendingMs: Number(settings.recheckMaxPendingMs ?? settings.recheck?.maxPendingMs ?? 45000),
         },
+        screenReview: {
+          enabled: settings.screenReviewEnabled !== false,
+          mode: settings.screenReviewModeEvery === true ? 'every' : 'actions',
+          maxPerRun: Number(settings.screenReviewMaxPerRun ?? settings.screenReview?.maxPerRun ?? 40),
+        },
       };
       const res = await api('/api/settings', { method: 'PATCH', body });
       if (!res.ok) return toast(res.error, 'error');
@@ -10290,6 +10384,7 @@ document.addEventListener('input', (event) => {
     return;
   }
   if (scope === 'plan') ui.planGoal = el.value;
+  else if (scope === 'step-instruction') ui.stepInstruction = el.value;
   else if (scope === 'missioninput') ui.missionInput = el.value;
   else if (scope === 'chat') ui.chatInput = el.value;
   else if (scope === 'review') ui.reviewComment = el.value;
