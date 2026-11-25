@@ -11,6 +11,8 @@ import { buildWorkflowResearch, compactResearch } from './research.js';
 import { platformMethodGuidance, strategyBrief } from './strategy.js';
 import { liveControl } from './platform.js';
 import { parseDirective, directiveSteps } from './step-plan.js';
+import { DECOMPOSE_RULES, decompositionBrief, planCoverage, describeCoverage } from './goal-decompose.js';
+import { COURTESY_RULES } from './courtesy.js';
 
 const TYPE_SET = new Set(STEP_TYPES.map((s) => s.type));
 const SAMPLE_VIDEO_URL = 'https://interactive-examples.mdn.mozilla.net/media/cc0-videos/flower.mp4';
@@ -1679,7 +1681,7 @@ Default to mouse and visible-control actions for navigation, opening panels, swi
 Never substitute a different app for the one the user named. If the goal says Kiro, use Kiro, not Notepad. Use the running-window and installed-app context supplied with the goal. For copy/paste tasks use key or clipboard steps with ctrl+a/ctrl+c/ctrl+v; do not type the shortcut words as text.
 Before choosing steps, consider that part of the goal may already be in progress. If the goal needs a Save/Open dialog, an installer window or an app that is already running, plan the step that continues from it (type the file name, click that dialog's own Next/Save/Finish) rather than restarting the flow; the runner re-reads the foreground window before every step and skips a launch or focus that is already satisfied. Give a critical click params.preview=true so the screen is read before the click (it skips when the expected state is already visible, lists the elements around the target and can correct the position), and params.humanize=true when a hover menu or tooltip must appear on the way. Expect each step's stated result, not just a green status: an open dialog changes what the next step should be.
 The research pack may include failed attempts, screenshots and conversation corrections from this workstation. Treat failed attempts as negative evidence: do not replay their order, their wrong target app or their failure signature unchanged. Treat passed attempts as positive evidence, but replace old typed questions and filenames with the current goal. If a screenshot marker shows a control, use a visible-control action rather than a guessed coordinate.
-Prior workflow memory is evidence from this workstation, not a script to copy blindly. Reuse validated step sequences and control labels when the app and goal match. If a remembered step had no visible screen change, add an explicit wait/assertion or choose a more reliable visible control. If memory reports stale clipboard, focus loss or old tab labels, add clipboard clearing, foreground guards and active-message scoping instead of guessing. Never treat a tab label or filename as proof that an app state is current.`;
+Prior workflow memory is evidence from this workstation, not a script to copy blindly. Reuse validated step sequences and control labels when the app and goal match. If a remembered step had no visible screen change, add an explicit wait/assertion or choose a more reliable visible control. If memory reports stale clipboard, focus loss or old tab labels, add clipboard clearing, foreground guards and active-message scoping instead of guessing. Never treat a tab label or filename as proof that an app state is current.\n${DECOMPOSE_RULES}\n${COURTESY_RULES}`;
 
 function variableReads(step) {
   const params = step.params || {};
@@ -2086,7 +2088,7 @@ async function buildPlan(goal, workflow, options = {}) {
         role: 'user',
         content: `Goal: ${goal}\n${platformContextText()}\n${ctx}\n${contextText}\nGoal app: ${
           namedApp ? `${namedApp.name}${namedApp.process ? ` (process ${namedApp.process})` : ''}` : 'not named'
-        }\nSTRATEGY BRIEF — plan against this, keep the fallback order and the continuations:\n${strategyText}\nValidated shortcuts from passed live reviewed runs (only reuse when the same app/control matches; otherwise prefer the visible control):\n${shortcutText}\nPrior workflow memory and visual checks from this workstation (use as evidence, adapt to the current screen, and do not repeat a known hindrance):\n${memoryText}\nRESEARCH PACK (conversation, failed attempts, screenshots and all-workflow history):\n${research?.promptText || 'No cross-referenced history yet.'}\nIf you reuse a learned shortcut, set the key step's params.foreground to the window title shown for it so the runner refuses the wrong window.\nUse the goal app above. Never use Notepad unless the goal says Notepad.\nReturn JSON.`,
+        }\nSTRATEGY BRIEF — plan against this, keep the fallback order and the continuations:\n${strategyText}\nValidated shortcuts from passed live reviewed runs (only reuse when the same app/control matches; otherwise prefer the visible control):\n${shortcutText}\nPrior workflow memory and visual checks from this workstation (use as evidence, adapt to the current screen, and do not repeat a known hindrance):\n${memoryText}\nRESEARCH PACK (conversation, failed attempts, screenshots and all-workflow history):\n${research?.promptText || 'No cross-referenced history yet.'}\nIf you reuse a learned shortcut, set the key step's params.foreground to the window title shown for it so the runner refuses the wrong window.\nUse the goal app above. Never use Notepad unless the goal says Notepad.\n${decompositionBrief(goal)}\nReturn JSON.`,
       },
     ],
     { format: 'json', kind: 'plan', timeoutMs: 90000, temperature: 0.15, maxTokens: 12000, images: research?.images || [] }
@@ -2269,7 +2271,11 @@ export async function planSteps(goal, workflow, options = {}) {
           .filter(Boolean)
           .join(' '),
       };
-  return preparePlanForLaunch(cleaned, options);
+  const prepared = await preparePlanForLaunch(cleaned, options);
+  // Coverage is a read-only audit of the finished plan against the goal's own
+  // words. It reports gaps; it never adds, rewrites or approves a step.
+  const coverage = planCoverage(goal, prepared.steps);
+  return { ...prepared, coverage, coverageNote: describeCoverage(coverage) };
 }
 
 function pickReusableMemory(memories, { emptyWorkflow = false, allowLowScore = false } = {}) {
@@ -2328,7 +2334,8 @@ export async function ensureWorkflowSteps(workflow, goal) {
   return {
     created: workflow.steps.length,
     source: plan.source || 'planner',
-    note: plan.note || '',
+    note: [plan.note, plan.coverageNote].filter(Boolean).join(' '),
+    coverage: plan.coverage || null,
     steps: workflow.steps.length,
     memoryMatches: plan.memoryMatches || [],
   };

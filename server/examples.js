@@ -968,6 +968,274 @@ const EXAMPLE_BLUEPRINTS = [
     followups: ['Add a clipboard or token-extraction tool so the handoff is machine-checked', 'Use executor-a for the browser leg and executor-b for the repair when the window assertion fails', 'Export the session with the multi-agent record pattern from the Knack schema tab'],
     failurePolicy: policy({ onFailure: 'retry', maxRetries: 2, pauseBeforeRetryMs: 1500 }),
   },
+  {
+    id: 'ex_account_email_verify',
+    title: 'Create an account, read the verification code, sign in',
+    category: 'Accounts / email',
+    difficulty: 'Advanced',
+    estimated: '40–60 s',
+    status: 'template',
+    tags: ['account', 'signup', 'email-verification', 'forms', 'sample-app'],
+    patternTags: ['account', 'signup', 'email-verification', 'forms'],
+    goal:
+      'open sightline accounts create an account with username dana, email dana@example.com and a demo password, read the verification code from the app and the inbox file, enter it, then confirm the signed-in state',
+    refined: {
+      summary:
+        'Launch the sample Accounts app, fill the sign-up form field by field (each field is clicked by its visible label before typing, so the caret is never guessed), submit, read the verification code the app displays and writes to inbox.txt, enter it, then verify from pixels that the app shows the signed-in state.',
+      assumptions: [
+        'The Sightline Accounts desktop shortcut exists (examples/sample-apps/make_shortcuts.ps1 creates it).',
+        'The sample app always issues the demo code 482913 and writes it to examples/sample-apps/inbox.txt.',
+        'The form labels are the visible control names: Username, Email, Password, Create account, Verification code, Verify.',
+      ],
+      inputs: ['username dana', 'email dana@example.com', 'demo password', 'verification code 482913'],
+    },
+    prerequisites: ['Sightline Accounts shortcut', 'Live mode for real pixels', 'Write access to examples/sample-apps for inbox.txt'],
+    warnings: [
+      'The password is a demo placeholder; use a credential tool before pointing this at a real service.',
+      'If the verification banner is missed, the inbox file is the fallback source of the code — read it with readNote or the app banner, never guess.',
+    ],
+    steps: [
+      st('ex_acc_1', 'launchApp', 'Open Sightline Accounts', { target: 'Sightline Accounts' }, { timeoutMs: 20000 }),
+      st('ex_acc_2', 'wait', 'Wait for the sign-up window', { ms: 1500 }, { timeoutMs: 10000 }),
+      st('ex_acc_3', 'focusWindow', 'Focus the Accounts window', { title: 'Sightline Accounts' }),
+      st('ex_acc_page_1', 'verifyScreen', 'Verify the sign-up form', {
+        title: 'Sightline Accounts sign-up form',
+        caption: 'Verified sign-up form',
+        question:
+          'The window titled Sightline Accounts must show a Create account tab with Username, Email and Password fields and a Create account button. Fail if another app is in front or the form is not visible.',
+      }),
+      st('ex_acc_4', 'clickElement', 'Click the Username field', { window: 'Sightline Accounts', name: 'Username' }),
+      st('ex_acc_5', 'type', 'Type the username', { text: 'dana', foreground: 'Sightline Accounts' }),
+      st('ex_acc_6', 'clickElement', 'Click the Email field', { window: 'Sightline Accounts', name: 'Email' }),
+      st('ex_acc_7', 'type', 'Type the email', { text: 'dana@example.com', foreground: 'Sightline Accounts' }),
+      st('ex_acc_8', 'clickElement', 'Click the Password field', { window: 'Sightline Accounts', name: 'Password' }),
+      st('ex_acc_9', 'type', 'Type the demo password', { text: 'demo-password-1', foreground: 'Sightline Accounts' }),
+      st('ex_acc_10', 'screenshot', 'Capture the filled form before submit', { caption: 'Sign-up form filled (no password shown in later captures)' }),
+      st('ex_acc_11', 'clickElement', 'Submit the sign-up form', { window: 'Sightline Accounts', name: 'Create account', verifyAfter: true }),
+      st('ex_acc_page_2', 'verifyScreen', 'Verify the verification step appeared', {
+        title: 'Verification code step',
+        caption: 'Verified verification step',
+        question:
+          'The Sightline Accounts window must now show a verification step with a code entry and the demo code 482913 visible in the banner. Fail if the form is unchanged, an error is shown, or another app is in front.',
+      }),
+      st('ex_acc_12', 'clickElement', 'Click the verification code field', { window: 'Sightline Accounts', name: 'Verification code' }),
+      st('ex_acc_13', 'type', 'Enter the verification code', { text: '482913', foreground: 'Sightline Accounts' }),
+      st('ex_acc_14', 'clickElement', 'Verify the account', { window: 'Sightline Accounts', name: 'Verify', verifyAfter: true }),
+      st('ex_acc_page_3', 'verifyScreen', 'Verify the signed-in state', {
+        title: 'Signed in as dana',
+        caption: 'Verified signed-in account',
+        question:
+          'The Sightline Accounts window must show a signed-in state that names dana and no verification form. Fail if the code step is still visible, an error is shown, or another app is in front.',
+      }),
+      st('ex_acc_15', 'screenshot', 'Capture the signed-in account', { caption: 'Account created and verified' }),
+      st('ex_acc_16', 'note', 'Record the account details for the next run', {
+        text: 'Created dana / dana@example.com in Sightline Accounts with the demo verification code 482913. The code is also written to examples/sample-apps/inbox.txt.',
+      }),
+    ],
+    verification: {
+      assertions: [
+        'Each field was clicked by its visible label before typing',
+        'The verification step appeared after submit',
+        'The final screen names dana and shows no verification form',
+      ],
+      evidence: ['Filled form', 'Verification step', 'Signed-in account'],
+    },
+    conclusion:
+      'Pass means the form was filled field by field, the code from the app was entered, and the screen proves a signed-in account named dana. A code step that never appears fails the run.',
+    followups: [
+      'Read inbox.txt with readNote when the app banner is covered by a toast',
+      'Swap the demo password for a credential tool before a real service',
+      'Add a duplicate-account branch that signs in instead of creating when the username exists',
+    ],
+    failurePolicy: policy({ onFailure: 'retry', maxRetries: 1, pauseBeforeRetryMs: 1200 }),
+  },
+  {
+    id: 'ex_qr_signin',
+    title: 'Sign in with username and password, then scan a QR code',
+    category: 'Accounts / QR',
+    difficulty: 'Advanced',
+    estimated: '30–45 s',
+    status: 'template',
+    tags: ['qr', 'signin', 'two-factor', 'sample-app'],
+    patternTags: ['qr', 'signin', 'two-factor'],
+    goal:
+      'open sightline qr sign in with username dana and the demo password then scan the qr code shown on the page and confirm the signed-in state',
+    refined: {
+      summary:
+        'Launch the sample QR app, sign in with the demo credentials, verify the QR panel is actually on screen, scan it with the app\'s own scan control (the stand-in for a phone), then verify the signed-in state from pixels.',
+      assumptions: [
+        'The Sightline QR shortcut exists.',
+        'The QR panel only appears after a correct username and password, so a missing QR means the sign-in failed.',
+      ],
+      inputs: ['username dana', 'demo password'],
+    },
+    prerequisites: ['Sightline QR shortcut', 'Live mode for real pixels'],
+    warnings: [
+      'A QR code is a second factor: never screenshot a real one into a shared note.',
+      'If the QR panel is blank, read the page before clicking Scan; a blank panel is a failed sign-in, not a scan target.',
+    ],
+    steps: [
+      st('ex_qr_1', 'launchApp', 'Open Sightline QR', { target: 'Sightline QR' }, { timeoutMs: 20000 }),
+      st('ex_qr_2', 'wait', 'Wait for the sign-in window', { ms: 1500 }, { timeoutMs: 10000 }),
+      st('ex_qr_3', 'focusWindow', 'Focus the QR window', { title: 'Sightline QR' }),
+      st('ex_qr_page_1', 'verifyScreen', 'Verify the sign-in form', {
+        title: 'Sightline QR sign-in form',
+        caption: 'Verified QR sign-in form',
+        question: 'The window must show Username, Password and a Sign in button. Fail if another app is in front.',
+      }),
+      st('ex_qr_4', 'clickElement', 'Click the Username field', { window: 'Sightline QR', name: 'Username' }),
+      st('ex_qr_5', 'type', 'Type the username', { text: 'dana', foreground: 'Sightline QR' }),
+      st('ex_qr_6', 'clickElement', 'Click the Password field', { window: 'Sightline QR', name: 'Password' }),
+      st('ex_qr_7', 'type', 'Type the demo password', { text: 'demo-password-1', foreground: 'Sightline QR' }),
+      st('ex_qr_8', 'clickElement', 'Sign in', { window: 'Sightline QR', name: 'Sign in', verifyAfter: true }),
+      st('ex_qr_page_2', 'verifyScreen', 'Verify the QR panel appeared', {
+        title: 'QR code panel',
+        caption: 'Verified QR panel',
+        question:
+          'The window must show a square QR code pattern and a Scan control, and the password form must be gone. Fail if the form is unchanged, an error is shown, or another app is in front.',
+      }),
+      st('ex_qr_9', 'screenshot', 'Capture the QR panel', { caption: 'QR panel after credentials' }),
+      st('ex_qr_10', 'clickElement', 'Scan the QR code', { window: 'Sightline QR', name: 'I scanned the code', verifyAfter: true }),
+      st('ex_qr_page_3', 'verifyScreen', 'Verify the QR sign-in completed', {
+        title: 'Signed in as dana',
+        caption: 'Verified QR sign-in',
+        question: 'The window must show a signed-in state naming dana and no QR panel. Fail if the QR is still shown or an error is visible.',
+      }),
+      st('ex_qr_11', 'screenshot', 'Capture the signed-in state', { caption: 'QR sign-in complete' }),
+      st('ex_qr_12', 'note', 'Record the two-factor path', { text: 'Username/password accepted, QR panel appeared, scan completed, signed-in state verified.' }),
+    ],
+    verification: {
+      assertions: ['The QR panel appears only after a correct credential pair', 'The scan control completes the sign-in', 'The final screen names dana'],
+      evidence: ['QR panel', 'Signed-in state'],
+    },
+    conclusion: 'Pass means the credentials were accepted, the QR panel was visible, the scan completed and the signed-in state is proven from pixels.',
+    followups: ['Add a wrong-password branch that expects an error and does not click Scan', 'Replace the scan stand-in with a phone-side confirmation when one is available'],
+    failurePolicy: policy({ onFailure: 'retry', maxRetries: 1, pauseBeforeRetryMs: 1200 }),
+  },
+  {
+    id: 'ex_profile_settings_save',
+    title: 'Navigate Settings → Profile, fill the whole profile tab and save',
+    category: 'Settings / profile',
+    difficulty: 'Intermediate',
+    estimated: '30–45 s',
+    status: 'template',
+    tags: ['settings', 'profile', 'form', 'save', 'sample-app'],
+    patternTags: ['settings', 'profile', 'form', 'save'],
+    goal:
+      'open sightline profile go to settings click profile and fill out the entire profile tab with name, email, bio and time zone then save and confirm the saved state',
+    refined: {
+      summary:
+        'Launch the sample Profile app, open Settings, open the Profile tab, fill every field it shows (name, email, bio, time zone), click Save profile, then verify from pixels that the app reports the profile saved.',
+      assumptions: [
+        'The Sightline Profile shortcut exists.',
+        'Settings is a nav control that reveals Profile; both are visible control names.',
+      ],
+      inputs: ['full name', 'email', 'bio', 'time zone'],
+    },
+    prerequisites: ['Sightline Profile shortcut', 'Live mode for real pixels'],
+    warnings: [
+      'Every field in the tab is filled; skipping one leaves the form half-complete and the save is not a pass.',
+      'The saved banner is the assertion; a green Save click alone does not prove the profile persisted.',
+    ],
+    steps: [
+      st('ex_prof_1', 'launchApp', 'Open Sightline Profile', { target: 'Sightline Profile' }, { timeoutMs: 20000 }),
+      st('ex_prof_2', 'wait', 'Wait for the app window', { ms: 1500 }, { timeoutMs: 10000 }),
+      st('ex_prof_3', 'focusWindow', 'Focus the Profile window', { title: 'Sightline Profile' }),
+      st('ex_prof_page_1', 'verifyScreen', 'Verify the home screen', {
+        title: 'Sightline Profile home',
+        caption: 'Verified Profile home',
+        question: 'The window must show a Settings control. Fail if another app is in front.',
+      }),
+      st('ex_prof_4', 'clickElement', 'Open Settings', { window: 'Sightline Profile', name: 'Settings', verifyAfter: true }),
+      st('ex_prof_5', 'clickElement', 'Open the Profile tab', { window: 'Sightline Profile', name: 'Profile', verifyAfter: true }),
+      st('ex_prof_page_2', 'verifyScreen', 'Verify the whole profile tab is visible', {
+        title: 'Profile form with all fields',
+        caption: 'Verified profile tab',
+        question:
+          'The window must show a Profile form with Full name, Email, Bio and Time zone fields and a Save profile button. Fail if any field is missing or another app is in front.',
+      }),
+      st('ex_prof_6', 'clickElement', 'Click Full name', { window: 'Sightline Profile', name: 'Full name' }),
+      st('ex_prof_7', 'type', 'Type the full name', { text: 'Dana Operator', foreground: 'Sightline Profile' }),
+      st('ex_prof_8', 'clickElement', 'Click Email', { window: 'Sightline Profile', name: 'Email' }),
+      st('ex_prof_9', 'type', 'Type the email', { text: 'dana@example.com', foreground: 'Sightline Profile' }),
+      st('ex_prof_10', 'clickElement', 'Click Bio', { window: 'Sightline Profile', name: 'Bio' }),
+      st('ex_prof_11', 'type', 'Type the bio', { text: 'Automation operator. Prefers visible controls over guessed pixels.', foreground: 'Sightline Profile' }),
+      st('ex_prof_12', 'clickElement', 'Click Time zone', { window: 'Sightline Profile', name: 'Time zone' }),
+      st('ex_prof_13', 'type', 'Type the time zone', { text: 'UTC', foreground: 'Sightline Profile' }),
+      st('ex_prof_14', 'screenshot', 'Capture the completed profile tab', { caption: 'Profile tab filled' }),
+      st('ex_prof_15', 'clickElement', 'Save the profile', { window: 'Sightline Profile', name: 'Save profile', verifyAfter: true }),
+      st('ex_prof_page_3', 'verifyScreen', 'Verify the profile saved', {
+        title: 'Profile saved',
+        caption: 'Verified saved profile',
+        question: 'The window must show a saved confirmation for Dana Operator with no empty required field. Fail if the form is unchanged, an error is shown, or another app is in front.',
+      }),
+      st('ex_prof_16', 'screenshot', 'Capture the saved state', { caption: 'Profile saved' }),
+      st('ex_prof_17', 'note', 'Record which fields were filled', { text: 'Filled Full name, Email, Bio and Time zone, then clicked Save profile and verified the saved banner.' }),
+    ],
+    verification: {
+      assertions: ['Settings and Profile were opened as visible controls', 'Every profile field was filled', 'The saved banner is the pass condition'],
+      evidence: ['Completed form', 'Saved state'],
+    },
+    conclusion: 'Pass means every field in the profile tab was filled, Save profile was clicked and the saved state is visible.',
+    followups: ['Add a read-back step that reopens the tab and compares the saved values', 'Tag the workflow settings/profile so its pass rate is tracked separately'],
+    failurePolicy: policy({ onFailure: 'retry', maxRetries: 1, pauseBeforeRetryMs: 1000 }),
+  },
+  {
+    id: 'ex_video_unavailable_fallback',
+    title: 'Video unavailable: choose another video on the same topic',
+    category: 'Browser / media',
+    difficulty: 'Advanced',
+    estimated: '40–70 s',
+    status: 'template',
+    tags: ['media', 'fallback', 'courtesy', 'same-topic', 'sample-app'],
+    patternTags: ['media', 'fallback', 'courtesy'],
+    goal:
+      'open sightline media pick the first video and play it, and if it is unavailable choose another video on the same topic without re-entering the address, then confirm a video is playing',
+    refined: {
+      summary:
+        'Open the sample Media app, select the first video, discover it is unavailable, then recover in place: scroll to the next row, use the Up next panel, pick another video on the same topic, start it and verify playback. The address is never re-entered.',
+      assumptions: [
+        'The Sightline Media shortcut exists.',
+        'The first video is deliberately unavailable and the Up next panel holds same-topic videos.',
+      ],
+      inputs: ['first video', 'same-topic alternate'],
+    },
+    prerequisites: ['Sightline Media shortcut', 'Live mode for real pixels'],
+    warnings: [
+      'Do not re-enter the URL or repeat the search; the page already holds the alternates.',
+      'An unavailable frame is not a pass and not a failure until the alternate route is tried.',
+    ],
+    steps: [
+      st('ex_media_1', 'launchApp', 'Open Sightline Media', { target: 'Sightline Media' }, { timeoutMs: 20000 }),
+      st('ex_media_2', 'wait', 'Wait for the media window', { ms: 1500 }, { timeoutMs: 10000 }),
+      st('ex_media_3', 'focusWindow', 'Focus the Media window', { title: 'Sightline Media' }),
+      st('ex_media_4', 'verifyScreen', 'Verify the video list is visible', {
+        title: 'Video list with Up next',
+        caption: 'Verified video list',
+        question: 'The window must show a list of videos and an Up next panel. Fail if another app is in front.',
+      }),
+      st('ex_media_5', 'clickElement', 'Select the first video', { window: 'Sightline Media', name: 'Unavailable video' }),
+      st('ex_media_6', 'screenshot', 'Capture the first video state', { caption: 'First video selected' }),
+      st('ex_media_7', 'scroll', 'Scroll to the next row of videos', { amount: -400, foreground: 'Sightline Media' }),
+      st('ex_media_8', 'clickElement', 'Pick a video from Up next', { window: 'Sightline Media', name: 'Same topic video 2' }),
+      st('ex_media_9', 'clickElement', 'Start the alternate video', { window: 'Sightline Media', name: 'Play', verifyAfter: true }),
+      st('ex_media_10', 'verifyScreen', 'Verify a playable video is playing', {
+        title: 'Alternate video playing',
+        caption: 'Verified alternate playback',
+        question:
+          'The window must show “Now playing: Same topic video 2” with no unavailable message. Fail if the unavailable video is still selected, the player is stopped, or another app is in front.',
+      }),
+      st('ex_media_11', 'screenshot', 'Capture the alternate video playing', { caption: 'Alternate video playing' }),
+      st('ex_media_12', 'note', 'Record the courtesy route', { text: 'First video was unavailable; recovered by scrolling and using Up next, without re-entering the address, and verified the alternate is playing.' }),
+    ],
+    verification: {
+      assertions: ['The unavailable state was recognised, not treated as a pass', 'The alternate came from the page, not a re-typed URL', 'Playback is visible on the alternate'],
+      evidence: ['First video state', 'Alternate playing'],
+    },
+    conclusion: 'Pass means an unavailable video was replaced in place by a same-topic video that is visibly playing.',
+    followups: ['Add the browser variant with alt+left back to results', 'Prefer a new same-topic video when the page is already familiar'],
+    failurePolicy: policy({ onFailure: 'retry', maxRetries: 1, pauseBeforeRetryMs: 1000 }),
+  },
 ];
 
 const DEFAULT_CHAIN_ROLES = ['scheduler', 'executor-a', 'verifier', 'reviewer'];

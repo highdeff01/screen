@@ -110,7 +110,8 @@ export function pageReadPrompt({ goal = '', stepName = '', nextNames = [], varia
     'type {text}; focusWindow {title|process}; ' +
     'openUrl {url}; wait {ms}. Set nextAction=null when the goal is visibly done, when the screen shows nothing that ' +
     'belongs to the goal, or when the needed step is already contained in the plan. ' +
-    'goalLooksMet is true only when the visible screen already shows the outcome the goal describes.';
+    'goalLooksMet is true only when the visible screen already shows the outcome the goal describes. ' +
+    'When a video or result is unavailable, prefer scrolling for the next row, looking right at “Up next”, going back or choosing another result on the same topic over re-entering the address.';
 
   const next = (nextNames || []).filter(Boolean).slice(0, 6);
   const variableText = Object.entries(variables || {})

@@ -14,6 +14,7 @@
 import { chat, parseJsonLoose } from './llm.js';
 import { normalizePlanSteps } from './planner.js';
 import { STEP_TYPES } from './automation.js';
+import { courtesyBrief } from './courtesy.js';
 
 const MAX_STEPS = 24;
 const MAX_PREP = 4;
@@ -229,6 +230,7 @@ Other workflows that already solve similar work:
 ${workflowSummary(workflows) || 'none'}
 
 Available step types: ${types}
+${courtesyBrief({ goal: goal || workflow.description || workflow.name || '' })}
 Prep is limited to: launchApp, openUrl, focusWindow, waitFor, wait, screenshot, readNote.
 
 Decide:
