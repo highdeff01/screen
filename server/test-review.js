@@ -153,7 +153,11 @@ export function buildTestReview({
     // A frame that disagreed outranks any status the step reported itself.
     if (screenStep?.status === 'mismatch') {
       scored.risk = Math.max(scored.risk, 88);
-      scored.reasons = ['screen check did not match', ...scored.reasons].slice(0, 3);
+      // “no check of its own” would contradict the check that just disagreed.
+      scored.reasons = [
+        'screen check did not match',
+        ...scored.reasons.filter((reason) => reason !== 'changes the screen without a check of its own'),
+      ].slice(0, 3);
     }
     return {
       seq,

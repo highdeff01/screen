@@ -204,6 +204,11 @@ test('an unresolved screen mismatch is part of the review, not only a run-card b
   assert.equal(review.tests[0].screen.status, 'mismatch');
   assert.ok(review.tests[0].risk >= 88);
   assert.ok(review.tests[0].riskReasons.includes('screen check did not match'));
+  assert.equal(
+    review.tests[0].riskReasons.includes('changes the screen without a check of its own'),
+    false,
+    'a check that disagreed is not also called missing'
+  );
   assert.ok(review.review.summary.some((line) => /Automatic screen check: 1 mismatch/.test(line)));
   assert.ok(review.suggestions.now.some((line) => /Open the frame for “Type sample note”/.test(line)));
 });
