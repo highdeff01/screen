@@ -255,7 +255,10 @@ import {
   writeRunNote as writeNoteForRun,
   setRunFinishedHook,
   verifyRunSilently,
+  recheckRun,
+  recoverInterruptedRuns,
 } from './engine.js';
+import { normalizeRecheckSettings } from './pending-recheck.js';
 
 import {
   approveJob,
@@ -3213,6 +3216,21 @@ route('POST', /^\/api\/runs\/([^/]+)\/retry$/, async (req, res, [id]) => {
   }
 });
 
+// Re-read a finished run: completed steps are kept and the failed/stalled ones
+// are checked again with a fresh screenshot. Continue-after is a setting, and a
+// request can ask for it per run.
+route('POST', /^\/api\/runs\/([^/]+)\/recheck$/, async (req, res, [id]) => {
+  try {
+    const body = await readBody(req);
+    const run = await recheckRun(decodeURIComponent(id), {
+      continueAfter: body?.continueAfter === undefined ? null : Boolean(body.continueAfter),
+    });
+    sendJson(res, 200, { ok: true, run, recheck: run.recheck });
+  } catch (err) {
+    fail(res, 400, err.message);
+  }
+});
+
 route('POST', /^\/api\/runs\/([^/]+)\/replan-retry$/, async (req, res, [id]) => {
   try {
     const body = await readBody(req);
@@ -4316,6 +4334,9 @@ route('PATCH', /^\/api\/settings$/, async (req, res) => {
   if (body.stepThink !== undefined && body.stepThink && typeof body.stepThink === 'object') {
     s.stepThink = normalizeThinkSettings({ ...(s.stepThink || {}), ...body.stepThink });
   }
+  if (body.recheck !== undefined && body.recheck && typeof body.recheck === 'object') {
+    s.recheck = normalizeRecheckSettings({ ...(s.recheck || {}), ...body.recheck });
+  }
   persist();
   logActivity('settings', 'Settings updated');
   sendJson(res, 200, { ok: true, settings: s });
@@ -4796,6 +4817,11 @@ server.listen(PORT, HOST, () => {
   ensurePythonFiles();
   reconcileStuckRecoveryPacks();
   reconcileStuckReplans({ live: replanning });
+  try {
+    recoverInterruptedRuns();
+  } catch (err) {
+    console.warn(`[engine] Interrupted-run recovery failed: ${err.message}`);
+  }
   try {
     backfillWorkflowMemory();
   } catch (err) {

@@ -1974,6 +1974,9 @@ function renderRunDetail(run) {
           ${(full.patternTags || []).length ? `<div class="chip-row" style="margin-top:7px">${full.patternTags.map((tag) => `<span class="badge">${esc(tag)}</span>`).join('')}</div>` : ''}
           ${full.failureSignature ? `<p class="dim small mono" style="margin-top:5px">signature: ${esc(full.failureSignature)}</p>` : ''}
           ${full.errorSummary ? `<div class="hint-box" style="margin-top:8px;border-color:rgba(251,113,133,.35)"><strong>${failedSteps.length} step${failedSteps.length === 1 ? '' : 's'} failed</strong><div class="small" style="margin-top:4px">${esc(full.errorSummary)}</div>${full.continuedAfterFailure ? '<div class="small dim" style="margin-top:4px">The run continued with the remaining independent steps after the failure.</div>' : ''}</div>` : ''}
+          ${full.recheck && full.recheck.status !== 'checking' ? `<div class="hint-box" style="margin-top:8px;border-color:${full.recheck.status === 'resolved' ? 'rgba(74,222,128,.3)' : 'rgba(56,189,248,.35)'}"><strong>Pending recheck · ${esc(String(full.recheck.status || '').replace(/_/g, ' '))}</strong><div class="small" style="margin-top:4px">${Number(full.recheck.resolved || 0)} step(s) passed · ${Number(full.recheck.unresolved || 0)} still open · ${Number(full.recheck.needsRun || 0)} to re-run${full.recheck.continued ? ` · continuing as ${esc(full.recheck.retryRunId || 'a new run')}` : ''}</div>${(full.recheck.notes || []).slice(-3).map((note) => `<div class="small dim" style="margin-top:2px">${esc(note)}</div>`).join('')}</div>` : ''}
+          ${(full.carriedSteps || []).length ? `<div class="hint-box" style="margin-top:8px;border-color:rgba(74,222,128,.25)"><strong>Passed through ${full.carriedSteps.length} completed step(s)</strong><div class="small dim" style="margin-top:3px">${full.carriedSteps.slice(0, 6).map((step) => esc(step.name || step.type || 'step')).join(' · ')}</div></div>` : ''}
+          ${(full.recheckTasks || []).filter((task) => task.status === 'open').length ? `<div class="hint-box" style="margin-top:8px;border-color:rgba(251,191,36,.35)"><strong>Tasks assigned by the recheck</strong>${(full.recheckTasks || []).filter((task) => task.status === 'open').slice(-4).map((task) => `<div class="small" style="margin-top:3px"><b>${esc(task.name || task.type || 'step')}</b> · ${esc(task.reason || '')} <span class="dim">(${esc(task.assignedTo || 'operator')})</span></div>`).join('')}</div>` : ''}
           ${full.followup ? `<div class="hint-box" style="margin-top:8px;border-color:${full.followup.ok ? 'rgba(74,222,128,.3)' : 'rgba(251,191,36,.35)'}"><strong>Follow-up check · ${full.followup.ok ? 'passed' : 'needs review'}</strong><div class="small" style="margin-top:4px">${esc(full.followup.summary)}</div>${(full.followup.verificationFailed || []).length ? `<div class="small" style="color:var(--bad);margin-top:3px">Failed checks: ${esc((full.followup.verificationFailed || []).join(', '))}</div>` : ''}</div>` : ''}
           ${(() => { const co = full.closeout; if (!co || !co.action) return ''; const stepsText = (co.followUpSteps || []).map((step) => `${step.type}: ${esc(step.name || '')}`).join(' · '); const button = co.appended ? '<div class="small" style="color:var(--ok);margin-top:4px">Steps already appended to the workflow.</div>' : (co.followUpSteps || []).length ? `<button class="btn btn-sm" data-act="closeout-append" data-id="${esc(run.id)}" style="margin-top:6px">Append to workflow</button>` : ''; return `<div class="hint-box" style="margin-top:8px;border-color:rgba(56,189,248,.35)"><strong>Predicted follow-up · ${esc(co.action)}</strong><div class="small" style="margin-top:4px">${esc((co.reasons || []).join('; '))}</div>${stepsText ? `<div class="small dim" style="margin-top:4px">Proposed: ${stepsText}</div>` : ''}${button}</div>`; })()}
           ${(full.agentReplans || []).length ? `<div class="hint-box" style="margin-top:8px;border-color:rgba(129,140,248,.35)"><strong>AI repair agent</strong>${full.agentReplans.map((replan) => `<div class="small" style="margin-top:6px"><b>${esc(replan.step)}</b> · ${esc(replan.method)}${replan.confidence != null ? ` · ${Math.round(Number(replan.confidence) * 100)}% confidence` : ''}${replan.diagnosis ? `<div class="dim" style="margin-top:2px">${esc(replan.diagnosis)}</div>` : ''}<div class="dim" style="margin-top:2px">${replan.replacesStep ? 'replaced the failed step' : 'ran prerequisites, then retried'}${(replan.steps || []).length ? ` · ${esc((replan.steps || []).join(' → '))}` : ''}${(replan.remaining || []).length ? ` · rewrote ${replan.remaining.length} remaining step(s)` : ''}</div></div>`).join('')}</div>` : ''}
@@ -1985,6 +1988,7 @@ function renderRunDetail(run) {
           ${renderDeepFocusCard(full)}
         <div class="row wrap">
           <button class="btn btn-sm" data-act="retry-run" data-id="${full.id}" ${retryBusy ? 'disabled' : ''}>${retryBusy ? 'Re-planning…' : '↻ Re-plan & retry'}</button>
+          ${['failed', 'needs_review', 'passed', 'cancelled'].includes(full.status) ? `<button class="btn btn-sm btn-ghost" data-act="recheck-run" data-id="${full.id}" ${full.recheck?.status === 'checking' ? 'disabled' : ''}>${full.recheck?.status === 'checking' ? 'Rechecking…' : '⟳ Recheck & keep progress'}</button>` : ''}
           ${['failed', 'needs_review', 'cancelled'].includes(full.status) ? `<button class="btn btn-sm btn-ghost" data-act="propose-run" data-id="${full.id}">🧭 Research repair proposal</button>` : ''}
           ${canCancel ? `<button class="btn btn-sm" data-act="run-control" data-id="${full.id}" data-cmd="pause" ${runPaused ? 'disabled' : ''}>Pause</button>` : ''}
           ${canCancel && runPaused ? `<button class="btn btn-sm btn-primary" data-act="run-control" data-id="${full.id}" data-cmd="resume">Resume</button>` : ''}
@@ -5060,6 +5064,11 @@ function settingsFields(s) {
     const flat = `stepThink${key[0].toUpperCase()}${key.slice(1)}`;
     return s[flat] !== undefined ? s[flat] : thinkDraft[key] !== undefined ? thinkDraft[key] : fallback;
   };
+  const recheckDraft = s.recheck && typeof s.recheck === 'object' ? s.recheck : {};
+  const recheckValue = (key, fallback) => {
+    const flat = `recheck${key[0].toUpperCase()}${key.slice(1)}`;
+    return s[flat] !== undefined ? s[flat] : recheckDraft[key] !== undefined ? recheckDraft[key] : fallback;
+  };
   return `
     ${renderLocalModelCard()}
     <label class="field"><span>Model API style</span><select data-scope="settings" data-key="apiStyle">
@@ -5195,6 +5204,16 @@ function settingsFields(s) {
       <label class="field"><span>AI mirror rate (ms)</span><input type="number" min="500" max="30000" value="${Number(thinkValue('mirrorIntervalMs', 4000))}" data-scope="settings" data-key="stepThinkMirrorMs" /></label>
     </div>
     <label class="check" style="margin-bottom:6px"><input type="checkbox" data-scope="settings" data-key="stepThinkSideBySide" ${thinkValue('sideBySide', false) ? 'checked' : ''} /> Show the operator preview and the AI mirror side by side</label>
+    <div class="section-gap"><h3 class="settings-subhead">Pending recheck</h3></div>
+    <p class="dim small" style="margin:-2px 0 8px">A restart, retry or replan keeps the steps that already passed instead of opening a second Notepad. Steps that failed or sat pending past the allowance get a bounded re-read with a fresh screenshot, and anything still open becomes a task for the operator.</p>
+    <label class="check" style="margin-bottom:6px"><input type="checkbox" data-scope="settings" data-key="recheckEnabled" ${recheckValue('enabled', true) ? 'checked' : ''} /> Recheck failed and stalled steps before giving up</label>
+    <label class="check" style="margin-bottom:6px"><input type="checkbox" data-scope="settings" data-key="recheckContinueAfter" ${recheckValue('continueAfter', false) ? 'checked' : ''} /> Continue the run after the recheck — completed steps are passed through, not repeated</label>
+    <div class="field-row">
+      <label class="field"><span>Prep allowance (ms)</span><input type="number" min="0" max="60000" value="${Number(recheckValue('prepMs', 4000))}" data-scope="settings" data-key="recheckPrepMs" /><span class="help">Quiet time before the first re-read.</span></label>
+      <label class="field"><span>Attempts</span><input type="number" min="1" max="10" value="${Number(recheckValue('maxAttempts', 3))}" data-scope="settings" data-key="recheckMaxAttempts" /><span class="help">Screenshot reads per open step.</span></label>
+      <label class="field"><span>Retry timing (ms)</span><input type="number" min="250" max="60000" value="${Number(recheckValue('intervalMs', 3000))}" data-scope="settings" data-key="recheckIntervalMs" /><span class="help">Grows linearly between attempts.</span></label>
+    </div>
+    <label class="field"><span>Pending allowance (ms)</span><input type="number" min="1000" max="600000" value="${Number(recheckValue('maxPendingMs', 45000))}" data-scope="settings" data-key="recheckMaxPendingMs" /><span class="help">A step pending longer than this counts as stalled.</span></label>
     <div class="section-gap"><h3 class="settings-subhead">Companion</h3></div>
     <label class="check" style="margin-bottom:6px"><input type="checkbox" data-scope="settings" data-key="companionEnabled" ${
       s.companionEnabled !== false ? 'checked' : ''
@@ -8408,6 +8427,18 @@ async function runAction(name, ds, el) {
       await refresh();
       break;
     }
+    case 'recheck-run': {
+      const res = await api(`/api/runs/${encodeURIComponent(ds.id)}/recheck`, { method: 'POST', body: {} });
+      if (!res.ok) return toast(res.error, 'error');
+      const recheck = res.recheck || res.run?.recheck || {};
+      toast(
+        `Recheck: ${Number(recheck.resolved || 0)} passed, ${Number(recheck.unresolved || 0)} open${recheck.continued ? ' — continuing the run' : ''}`,
+        Number(recheck.unresolved || 0) ? 'error' : 'ok'
+      );
+      await refresh();
+      await loadRun(ds.id);
+      break;
+    }
     case 'capture-run': {
       const res = await api(`/api/runs/${encodeURIComponent(ds.id)}/capture`, { method: 'POST', body: { caption: 'Reviewer capture' } });
       if (!res.ok) return toast(res.error, 'error');
@@ -9643,6 +9674,14 @@ async function runAction(name, ds, el) {
           monitorIntervalMs: Number(settings.stepThinkMonitorMs ?? settings.stepThink?.monitorIntervalMs ?? 3000),
           maxStepFailures: Number(settings.stepThinkMaxStepFailures ?? settings.stepThink?.maxStepFailures ?? 3),
           maxReplans: Number(settings.stepThinkMaxReplans ?? settings.stepThink?.maxReplans ?? 2),
+        },
+        recheck: {
+          enabled: settings.recheckEnabled !== false,
+          continueAfter: settings.recheckContinueAfter === true,
+          prepMs: Number(settings.recheckPrepMs ?? settings.recheck?.prepMs ?? 4000),
+          maxAttempts: Number(settings.recheckMaxAttempts ?? settings.recheck?.maxAttempts ?? 3),
+          intervalMs: Number(settings.recheckIntervalMs ?? settings.recheck?.intervalMs ?? 3000),
+          maxPendingMs: Number(settings.recheckMaxPendingMs ?? settings.recheck?.maxPendingMs ?? 45000),
         },
       };
       const res = await api('/api/settings', { method: 'PATCH', body });

@@ -36,6 +36,7 @@ import { expectsScreenChange, windowChecksFor, resumePlan, corroboratesNoChange,
 const runProbes = new Map();
 import { deliberateStep } from './deliberation.js';
 import { beginStepThink, recordThinkOutcome, stepThinkSettings, thinkBlocked, thinkRepairCandidates } from './step-think.js';
+import { carryCompletedSteps, normalizeRecheckSettings, runPendingRecheck, markRunInterrupted } from './pending-recheck.js';
 import { diffSignatures, signatureHash, shouldAuditVisual, visualChangeMatters } from './visual.js';
 import { analyzeRun, writeRunNote, addSuggestion, suggestionsFor, planSteps, workflowGoal } from './planner.js';
 import { canRetry, recordRetryOutcome } from './retry-budget.js';
@@ -312,7 +313,7 @@ export async function waitForRun(id, { timeoutMs = 30000, intervalMs = 100 } = {
   return findRun(id);
 }
 
-export function createRun(workflow, { trigger = 'manual', dryRun = null, agentRole = null, missionId = null, shortcutReplayHabitId = null, workflowSnapshot = null, shadowProposalId = null, probe = null, repair = null, aiReplan = null, liveFallback = null, liveConsent = false } = {}) {
+export function createRun(workflow, { trigger = 'manual', dryRun = null, agentRole = null, missionId = null, shortcutReplayHabitId = null, workflowSnapshot = null, shadowProposalId = null, probe = null, repair = null, aiReplan = null, liveFallback = null, liveConsent = false, carryFrom = null } = {}) {
   const d = db();
   if (!workflow || !workflow.steps?.length) {
     throw new Error('Workflow has no steps to run.');
@@ -419,6 +420,13 @@ export function createRun(workflow, { trigger = 'manual', dryRun = null, agentRo
       }
     }
   } catch { /* pinning never blocks a run */ }
+  // A retry keeps the steps that already passed: the same type and params means
+  // the effect already happened, so running it again would duplicate it.
+  if (carryFrom) {
+    const carried = carryCompletedSteps(carryFrom.steps, run.steps, { runId: carryFrom.id, at: run.createdAt });
+    run.steps = carried.steps;
+    if (carried.carried.length) run.carriedSteps = carried.carried;
+  }
   d.runs.unshift(run);
   d.runs = d.runs.slice(0, MAX_RUNS);
   persist();
@@ -1804,6 +1812,10 @@ async function executeRun(runId) {
       persist();
       continue;
     }
+    if (step.status === 'passed' && step.carriedFrom) {
+      pushLog(run, 'info', `Passed through “${step.name}” — it already completed in ${step.carriedFrom.runId || 'the previous attempt'}.`, step.id);
+      continue;
+    }
     const conditionMet = stepConditionMet(step, run);
     const decision = await deliberateStep({
       step,
@@ -2641,7 +2653,7 @@ export function cancelRun(id) {
   return run;
 }
 
-export async function retryRun(id, { replan = true, planner = planSteps } = {}) {
+export async function retryRun(id, { replan = true, planner = planSteps, carry = true, probe = null } = {}) {
   const original = findRun(id);
   if (!original) throw new Error('Run not found');
   const workflow = db().workflows.find((w) => w.id === original.workflowId);
@@ -2684,10 +2696,17 @@ export async function retryRun(id, { replan = true, planner = planSteps } = {}) 
   // Only resume when the plan before the failed step is untouched; a changed
   // prefix means the plan was repaired and must replay in full.
   const resumed = failedStep ? resumePlan(workflow.steps, original.steps, failedStep.id) : null;
-  const run = createRun(resumed ? { ...workflow, steps: resumed.steps } : workflow, {
+  // The plan replays whole so the steps that already passed can be passed
+  // through; a sliced plan forgets the work that was done and redoes it.
+  const run = createRun(workflow, {
     trigger: planInfo ? 'retry-replanned' : 'retry',
     dryRun: original.dryRun,
+    probe,
+    carryFrom: carry === false ? null : original,
   });
+  if (run.carriedSteps?.length) {
+    logActivity('run', `Passed through ${run.carriedSteps.length} completed step(s) from ${original.id}.`, { runId: run.id });
+  }
   if (resumed) {
     run.resumedFrom = {
       stepId: failedStep.id,
@@ -2702,6 +2721,165 @@ export async function retryRun(id, { replan = true, planner = planSteps } = {}) 
     persist();
   }
   return run;
+}
+
+const recheckingRuns = new Set();
+
+export function recheckSettings() {
+  return normalizeRecheckSettings(db().settings?.recheck || {});
+}
+
+/**
+ * Read-only: is this candidate's finish line on screen now? Silent checks and
+ * window state only; nothing is clicked or typed.
+ */
+async function verifyRecheckCandidate(candidate, run, probe = null) {
+  const step = (run.steps || []).find((entry) => entry.id === candidate.stepId) || {};
+  const params = step.params || {};
+  const target = String(
+    candidate.target || params.value || params.title || params.foreground || params.windowName || params.process || ''
+  ).trim();
+  const checks = (candidate.checks || []).filter(Boolean);
+  const details = [];
+  for (const check of checks) {
+    const options = { title: target, process: params.process || '', path: params.path || params.filename || '' };
+    const result = probe?.silentCheck ? await probe.silentCheck(check, options) : await silentCheck(check, options);
+    if (result?.ok !== true) return { ok: false, detail: result?.detail || `${check} is not satisfied yet` };
+    details.push(`${check}: ${result.detail || 'ok'}`);
+  }
+  if (checks.length) return { ok: true, detail: details.join('; ') };
+  if (target) {
+    const state = probe?.inspectWindowState
+      ? await probe.inspectWindowState({ title: target, process: params.process || '' })
+      : await inspectWindowState({ title: target, process: params.process || '' });
+    const present = ['foreground', 'background', 'minimized', 'visible'].includes(state?.state);
+    return { ok: present, detail: `${target}: window ${state?.state || 'unknown'}` };
+  }
+  return { ok: false, detail: 'nothing read-only to confirm; this step has to run again' };
+}
+
+/**
+ * Recheck a finished run: passed steps are never repeated, and the steps that
+ * failed or sat pending too long get a bounded, screenshot-backed re-read. The
+ * optional "continue after" retries the run with every completed step passed
+ * through instead of starting over.
+ */
+export async function recheckRun(id, { continueAfter = null, probe = null } = {}) {
+  const run = findRun(id);
+  if (!run) throw new Error('Run not found');
+  if (['queued', 'running'].includes(run.status)) throw new Error('This run is still running; recheck it after it finishes.');
+  if (recheckingRuns.has(run.id)) throw new Error('A pending recheck is already running for this run.');
+  const settings = recheckSettings();
+  if (!settings.enabled) throw new Error('Pending recheck is turned off in Settings.');
+  const cfg = continueAfter == null
+    ? settings
+    : normalizeRecheckSettings({ ...settings, continueAfter: Boolean(continueAfter) });
+  recheckingRuns.add(run.id);
+  run.recheck = {
+    status: 'checking',
+    startedAt: now(),
+    attempts: 0,
+    checked: 0,
+    resolved: 0,
+    unresolved: 0,
+    continueAfter: Boolean(cfg.continueAfter),
+  };
+  pushLog(run, 'info', `Pending recheck started${cfg.continueAfter ? ' (continue after)' : ''}: failed and stalled steps are re-read with a fresh screenshot.`);
+  persist();
+  try {
+    const workflow = db().workflows.find((entry) => entry.id === run.workflowId) || null;
+    const summary = await runPendingRecheck(run, cfg, {
+      now,
+      uid,
+      sleep,
+      capture: async () => {
+        const step = { type: 'screenshot', name: 'Recheck screen', params: { caption: 'Pending recheck' } };
+        const ctx = { live: !run.dryRun, runId: run.id, run, workflow, getTool };
+        const result = probe?.executeStep ? await probe.executeStep(step, ctx) : await executeStep(step, ctx);
+        return result?.evidence?.[0] || null;
+      },
+      verify: (candidate) => verifyRecheckCandidate(candidate, run, probe),
+    });
+    run.recheck = {
+      ...run.recheck,
+      ...summary,
+      status: summary.status,
+      checked: summary.checked,
+      resolved: summary.resolved.length,
+      unresolved: summary.unresolved.length,
+      needsRun: summary.needsRun.length,
+      endedAt: now(),
+      continued: false,
+    };
+    for (const entry of summary.resolved) {
+      const settled = (run.steps || []).find((candidate) => candidate.id === entry.stepId);
+      if (settled) recordLedger(run, settled);
+    }
+    if (
+      summary.status === 'resolved' &&
+      ['failed', 'needs_review'].includes(run.status) &&
+      !run.followupFailed &&
+      !run.goalUnverified
+    ) {
+      run.status = 'passed';
+      run.recovered = true;
+      run.error = null;
+      run.errorSummary = null;
+      run.failedSteps = [];
+      run.endedAt = now();
+      const startedAt = Date.parse(run.startedAt || run.createdAt || 0);
+      if (Number.isFinite(startedAt)) run.durationMs = Math.max(0, Date.now() - startedAt);
+      pushLog(run, 'info', 'Recheck settled every open step; the completed steps were kept and the run now passes.');
+    } else {
+      pushLog(
+        run,
+        summary.unresolved.length ? 'warn' : 'info',
+        `Recheck ${String(summary.status).replace('_', ' ')}: ${summary.resolved.length} step(s) passed, ${summary.unresolved.length} still open, ${summary.needsRun.length} need a real re-run${summary.tasks.length ? `; ${summary.tasks.length} task(s) assigned` : ''}.`
+      );
+    }
+    persist();
+    const remaining = (run.steps || []).filter((step) => !['passed', 'skipped', 'superseded'].includes(step.status));
+    if (cfg.continueAfter && remaining.length) {
+      const retry = await retryRun(run.id, { replan: false, carry: true, probe });
+      run.recheck.continued = true;
+      run.recheck.retryRunId = retry.id;
+      pushLog(run, 'info', `Continuing after the recheck as ${retry.id}; ${Number(retry.carriedSteps?.length || 0)} completed step(s) are passed through.`);
+      persist();
+    }
+    return run;
+  } catch (err) {
+    run.recheck = { ...(run.recheck || {}), status: 'failed', error: String(err.message || err), endedAt: now() };
+    persist();
+    throw err;
+  } finally {
+    recheckingRuns.delete(run.id);
+  }
+}
+
+/**
+ * Boot-time cleanup: a run this process does not own was interrupted, not
+ * erased. With "continue after recheck" on, it is rechecked and continued in
+ * the background; otherwise it waits for the operator.
+ */
+export function recoverInterruptedRuns({ probe = null } = {}) {
+  const touched = [];
+  for (const run of db().runs || []) {
+    if (!markRunInterrupted(run, { at: now() })) continue;
+    pushLog(run, 'warn', `The console restarted while this run was ${run.interruptedFrom}; completed steps were kept and open steps can be rechecked.`);
+    touched.push(run);
+  }
+  if (!touched.length) return [];
+  persist();
+  logActivity('run', `Kept ${touched.length} interrupted run(s) instead of erasing their progress.`);
+  const cfg = recheckSettings();
+  if (cfg.enabled && cfg.continueAfter) {
+    for (const run of touched.slice(0, 3)) {
+      recheckRun(run.id, { continueAfter: true, probe }).catch((err) =>
+        pushLog(run, 'warn', `Automatic recheck failed: ${err.message}`)
+      );
+    }
+  }
+  return touched.map((run) => run.id);
 }
 
 export function addEvidence(run, evidence) {
