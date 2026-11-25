@@ -36,16 +36,31 @@ import { chat, parseJsonLoose } from './llm.js';
 
 export const THINK_DEFAULTS = {
   enabled: true,
-  // Ask the model to review the drafted choices while the step runs.
-  modelAssist: true,
+  // Cheap by default: one combined desktop read per step and no model call.
+  // Both are opt-in, so thinking a normal step costs a single observation.
+  modelAssist: false,
   // Stream thoughts and the chosen correction into the run log.
   liveLink: true,
   // Offer the prepared correction to the repair chain when the step fails.
   autoApply: true,
   intervalMs: 1800,
+  // One read, taken once per step. Nothing keeps polling unless live
+  // monitoring or higher thinking is on.
+  readOnce: true,
   maxChoices: 7,
   maxNotes: 40,
   maxTicks: 60,
+  // Higher thinking is the opt-in that buys more perception: periodic combined
+  // reads, the model review, and an overseer verdict at the end of the step.
+  higherThinking: false,
+  liveMonitor: false,
+  monitorIntervalMs: 3000,
+  maxAlternatives: 5,
+  overseer: false,
+  // Keep the run going after an unrepaired failure, up to a cap.
+  keepRunning: false,
+  maxStepFailures: 3,
+  maxReplans: 2,
   // Perception budget. `pixels` is the width of the sampled frame; 0 turns the
   // frame off. `elements` caps how many UI Automation details are read; 0 turns
   // focused-element reads off. They are independent, so either or both may grow.
@@ -119,12 +134,25 @@ const flag = (value, fallback) => (typeof value === 'boolean' ? value : fallback
 
 export function normalizeThinkSettings(raw = {}) {
   const input = raw && typeof raw === 'object' ? raw : {};
+  // Higher thinking is one switch for the expensive path: model review, live
+  // re-reads and the overseer. It is the only thing that turns the model on by
+  // itself; otherwise the model runs only when its own box is ticked.
+  const higherThinking = flag(input.higherThinking, THINK_DEFAULTS.higherThinking);
   return {
     enabled: flag(input.enabled, THINK_DEFAULTS.enabled),
-    modelAssist: flag(input.modelAssist, THINK_DEFAULTS.modelAssist),
+    modelAssist: higherThinking ? true : flag(input.modelAssist, THINK_DEFAULTS.modelAssist),
     liveLink: flag(input.liveLink, THINK_DEFAULTS.liveLink),
     autoApply: flag(input.autoApply, THINK_DEFAULTS.autoApply),
     intervalMs: number(input.intervalMs, 500, 15000, THINK_DEFAULTS.intervalMs),
+    readOnce: flag(input.readOnce, higherThinking ? false : THINK_DEFAULTS.readOnce),
+    higherThinking,
+    liveMonitor: flag(input.liveMonitor, higherThinking ? true : THINK_DEFAULTS.liveMonitor),
+    monitorIntervalMs: number(input.monitorIntervalMs, 500, 30000, THINK_DEFAULTS.monitorIntervalMs),
+    maxAlternatives: number(input.maxAlternatives, 3, 12, THINK_DEFAULTS.maxAlternatives),
+    overseer: flag(input.overseer, higherThinking ? true : THINK_DEFAULTS.overseer),
+    keepRunning: flag(input.keepRunning, THINK_DEFAULTS.keepRunning),
+    maxStepFailures: number(input.maxStepFailures, 1, 20, THINK_DEFAULTS.maxStepFailures),
+    maxReplans: number(input.maxReplans, 0, 10, THINK_DEFAULTS.maxReplans),
     maxChoices: number(input.maxChoices, 3, 12, THINK_DEFAULTS.maxChoices),
     maxNotes: number(input.maxNotes, 5, 200, THINK_DEFAULTS.maxNotes),
     maxTicks: number(input.maxTicks, 1, 300, THINK_DEFAULTS.maxTicks),
@@ -212,6 +240,14 @@ export function normalizeObservation(raw = {}) {
     elements,
     frameHash: text(source.frameHash, 80) || null,
     changed: typeof source.changed === 'boolean' ? source.changed : null,
+    // Where the pointer is, when the reader could see it, so the narration can
+    // name coordinates instead of pretending the next move is invisible.
+    pointer: (() => {
+      const raw = source.pointer || source.cursor;
+      const x = Number(raw?.x);
+      const y = Number(raw?.y);
+      return Number.isFinite(x) && Number.isFinite(y) ? { x: Math.round(x), y: Math.round(y) } : null;
+    })(),
   };
 }
 
@@ -371,6 +407,17 @@ export function thinkChoices({
     });
   }
 
+  if (!dialog) {
+    // Only offered when no dialog is open: with a dialog, Escape would dismiss
+    // the very thing the step needs to answer.
+    push({
+      type: 'key',
+      name: 'Press Escape to clear a stray overlay',
+      params: { keys: 'escape', ...(target ? { foreground: target } : {}) },
+      why: 'a menu, tooltip or overlay can swallow the click; Escape clears it without touching the document',
+    });
+  }
+
   push({
     type: 'wait',
     name: 'Wait for the window to settle',
@@ -500,7 +547,9 @@ function ensureThink(step, settings) {
       observation: null,
       dialog: null,
       choices: [],
+      alternatives: [],
       best: null,
+      overseer: null,
       model: null,
       applied: [],
       rejects: [],
@@ -574,8 +623,37 @@ export function runThinkOnce(step, {
   think.choices = choices;
   think.best = choices.find((choice) => choice.ok) || null;
   think.choiceAt = now();
+  // The alternates are kept in rank order with the reason each landed where it
+  // did, so the run reads as a decision instead of a verdict.
+  think.alternatives = choices.slice(0, Math.max(5, config.maxAlternatives)).map((choice, index) => ({
+    rank: index + 1,
+    id: choice.id,
+    type: choice.type,
+    name: choice.name,
+    confidence: choice.confidence,
+    risk: choice.risk,
+    why: choice.why,
+    reasons: choice.reasons,
+    verdict: choice.id === think.best?.id ? 'best' : choice.ok ? 'backup' : 'rejected',
+  }));
+  if (obs.pointer) {
+    const message = `Pointer at (${obs.pointer.x}, ${obs.pointer.y})`;
+    if (addNote(think, message, config) && onNote) onNote(message);
+  }
   if (think.best) {
-    const message = `Best of ${choices.length}: ${think.best.name} (${Math.round(think.best.confidence * 100)}%)`;
+    const message = `Best of ${choices.length}: ${think.best.name} (${Math.round(think.best.confidence * 100)}%) — ${(think.best.reasons || [])[0] || think.best.why || ''}`;
+    if (addNote(think, message, config) && onNote) onNote(message);
+  } else {
+    const message = `Considered ${choices.length} option(s); none passed its sample, so the normal repair leads`;
+    if (addNote(think, message, config) && onNote) onNote(message);
+  }
+  const backup = choices.find((choice) => choice.ok && choice.id !== think.best?.id);
+  if (backup) {
+    const message = `Keeping ${backup.name} (${Math.round(backup.confidence * 100)}%) as the alternate — ${(backup.reasons || [])[0] || backup.why || ''}`;
+    if (addNote(think, message, config) && onNote) onNote(message);
+  }
+  for (const weak of choices.filter((choice) => !choice.ok).slice(0, 2)) {
+    const message = `Considering ${weak.name} — but ${(weak.reasons || [])[0] || 'the screen gives it no support'}; looking for a better option`;
     if (addNote(think, message, config) && onNote) onNote(message);
   }
   return think;
@@ -663,6 +741,11 @@ async function askThinkModel({ ask, goal, step, observation, choices, budget }) 
   return pickModelChoice(reply, choices.length);
 }
 
+/** Live re-reads are opt-in; a normal step is read once and the loop ends. */
+export function isLiveMonitoring(settings) {
+  return settings?.liveMonitor === true || settings?.higherThinking === true;
+}
+
 /**
  * Start thinking about `step` while it runs. The loop is read-only and its
  * timer is unref'd; `stop()` waits for an in-flight tick and returns the record.
@@ -720,6 +803,7 @@ export function beginStepThink(run, step, {
           return think;
         }
         think.availability = 'observed';
+        think.reads = (Number(think.reads) || 0) + 1;
         const budget = thinkBudget(config);
         if (budget.frame && observation.frameHash) {
           observation.changed = lastHash ? observation.frameHash !== lastHash : null;
@@ -780,6 +864,12 @@ export function beginStepThink(run, step, {
     return inFlight;
   }
 
+  const monitoring = isLiveMonitoring(config);
+  const cadence = Math.max(
+    500,
+    Number(monitoring ? config.monitorIntervalMs : config.intervalMs) || config.intervalMs
+  );
+
   function pump() {
     if (stopped) return;
     void tickNow().finally(() => {
@@ -788,12 +878,19 @@ export function beginStepThink(run, step, {
         stopped = true;
         return;
       }
-      timer = schedule(pump, config.intervalMs);
+      // One combined read per step is the default. Without live monitoring the
+      // loop is finished as soon as that read is in, which is what keeps a
+      // normal step cheap.
+      if (config.readOnce && !monitoring) {
+        stopped = true;
+        return;
+      }
+      timer = schedule(pump, cadence);
       timer?.unref?.();
     });
   }
 
-  timer = schedule(pump, config.intervalMs);
+  timer = schedule(pump, cadence);
   timer?.unref?.();
 
   async function stop() {
@@ -805,6 +902,9 @@ export function beginStepThink(run, step, {
       } catch {
         // The record already notes the failure.
       }
+    }
+    if (config.overseer || config.higherThinking) {
+      think.overseer = overseerBrief({ run, step, think, goal: run?.workflowGoal || run?.goal || '' });
     }
     think.finishedAt = now();
     think.status = 'done';
@@ -907,9 +1007,36 @@ export function recordThinkOutcome(run, step, { method = '', ok = false, error =
   return { blocked: thinkBlocked(run, step, config), ok: false };
 }
 
+/**
+ * The overseer's verdict for one step: what it would do next, why, and whether
+ * the original step is still preserved. Deterministic and free; it summarises
+ * the sampled alternatives instead of making another model call.
+ */
+export function overseerBrief({ run = {}, step = null, think = null, goal = '' } = {}) {
+  const best = think?.best || (think?.choices || []).find((choice) => choice.ok) || null;
+  const alternatives = (think?.alternatives || []).slice(0, 5);
+  return {
+    at: now(),
+    decision: best
+      ? think?.dialog
+        ? 'clear the blocker, then continue the step'
+        : 'continue with the prepared move'
+      : 'hold; the normal repair path leads',
+    recommend: best ? `${best.type}: ${best.name}` : 'no prepared move passed its sample',
+    why: best ? (best.reasons || [])[0] || best.why || '' : 'nothing on screen matched a usable continuation',
+    confidence: best ? best.confidence : 0,
+    preservation: step?.name
+      ? `Original step “${step.name}” is kept and retried after the correction`
+      : 'no step to preserve',
+    alternatives: alternatives.map((entry) => entry.name),
+    goal: text(goal, 200),
+  };
+}
+
 /** The UI can show a short headline without walking the whole record. */
 export function thinkHeadline(think) {
   if (!think) return '';
   const best = think.best ? `best: ${think.best.name} (${Math.round(think.best.confidence * 100)}%)` : 'no choice passed its sample';
-  return `${think.ticks || 0} tick(s) · ${(think.choices || []).length} choice(s) · ${best}`;
+  const alts = (think.alternatives || []).length;
+  return `${think.ticks || 0} tick(s) · ${(think.choices || []).length} choice(s)${alts ? ` · ${alts} alt(s)` : ''} · ${best}`;
 }
