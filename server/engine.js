@@ -687,6 +687,9 @@ async function reviewScreenAfterStep(run, step, workflow, probe = null) {
           step.id
         );
         if (cfg.retryDelayMs > 0) await sleep(cfg.retryDelayMs);
+      } else {
+        // Stop here: the loop must not read again just because it can.
+        break;
       }
     }
   }
