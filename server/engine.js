@@ -944,7 +944,17 @@ export function parseWindowOutput(output) {
   return { process: match[1].trim(), title, hwnd };
 }
 export function rememberWindow(run, step) {
-  if (!['launchApp', 'focusWindow'].includes(step.type) || step.status !== 'passed') return;
+  if (!['launchApp', 'focusWindow'].includes(step.type)) return;
+  // A focus step that found the window already in front did not act, but it did
+  // name the window this run means to type into: without it the next typing step
+  // looks unguarded and is skipped for no reason.
+  if (step.status === 'skipped' && /already focused/i.test(String(step.output || ''))) {
+    const title = String(step.params?.title || '').trim();
+    if (!title) return;
+    run.lastWindow = { title, process: String(step.params?.process || '').trim(), hwnd: 0, at: now(), by: step.id };
+    return;
+  }
+  if (step.status !== 'passed') return;
   const parsed = parseWindowOutput(step.output);
   if (!parsed) return;
   const carried = !parsed.hwnd && parsed.title && parsed.title === run.lastWindow?.title ? Number(run.lastWindow?.hwnd) || 0 : 0;
@@ -2271,6 +2281,7 @@ async function executeRun(runId) {
         if (skipReason) {
           step.status = 'skipped';
           step.output = skipReason;
+          rememberWindow(run, step);
           recordLedger(run, step);
           pushLog(run, 'info', `Skipped "${step.name}": ${skipReason}`, step.id);
           persist();
