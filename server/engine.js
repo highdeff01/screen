@@ -2299,6 +2299,9 @@ async function executeRun(runId) {
         step.output = `Skipped: no window was named or opened before “${step.name}”, so the keystrokes were not sent anywhere. Add a focusWindow step or set the step's foreground window.`;
         recordLedger(run, step);
         pushLog(run, 'warn', step.output, step.id);
+        // Read the screen once: if the app the goal meant is already there, the
+        // step the plan forgot is added and this input is tried again after it.
+        await readPageToUnblock(run, step, workflow, step.output, probe);
         persist();
         continue;
       }
