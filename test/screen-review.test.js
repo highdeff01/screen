@@ -223,6 +223,34 @@ test('an unreadable frame is recorded as unverified, never as a failure', async 
   assert.equal(done.status, 'passed');
 });
 
+test('a frame that could not be captured is unverified, not a mismatch', async () => {
+  const d = resetDb();
+  const wf = workflow('wf_screen_review_capture_failed');
+  d.workflows = [wf];
+  // The shape liveScreenshot throws when PowerShell cannot crop to the run's
+  // window: the frame was never taken, so nothing on screen contradicted the
+  // step and the harness must not manufacture a failure out of it.
+  const probe = stubProbe(() => {
+    throw Object.assign(
+      new Error(
+        'Screenshot failed: Exception calling "FromHandle" with "1" argument(s): "Unrecognized error." ElementNotAvailableException'
+      ),
+      { unreadable: true }
+    );
+  });
+
+  const run = engine.createRun(wf, { dryRun: false, probe, repair: false, aiReplan: false });
+  const done = await settle(run.id);
+
+  assert.equal(probe.reviews.length, 1, 'a capture failure is not re-read as if it were a contradiction');
+  assert.equal(done.screenReviews[0].status, 'skipped');
+  assert.equal(done.screenReviews[0].verdict, 'unverified');
+  assert.equal(done.screenReviews[0].mismatch, '');
+  assert.equal(done.screenReviewFailed, undefined);
+  assert.equal(done.status, 'passed');
+  assert.equal(engine.summary(done).screenReviewMismatches, 0);
+});
+
 test('the retry budget is respected when retries are turned off', async () => {
   const d = resetDb({ retries: 0 });
   const wf = workflow('wf_screen_review_single_read');

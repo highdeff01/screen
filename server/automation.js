@@ -387,7 +387,14 @@ $tg.Dispose(); $thumb.Dispose(); $g.Dispose(); $src.Dispose()
 async function liveScreenshot(runId, options = {}) {
   // macOS, Linux and Android capture through their own tools; the record shape
   // is identical so vision checks and evidence keep working off Windows.
-  if (!IS_WINDOWS) return portableLiveScreenshot(runId, options);
+  if (!IS_WINDOWS) {
+    try {
+      return await portableLiveScreenshot(runId, options);
+    } catch (err) {
+      err.unreadable = true;
+      throw err;
+    }
+  }
   const file = path.join(CAPTURES, `${uid('cap')}.png`);
   const maxWidth = Math.max(0, Math.min(4096, Number(options.maxWidth) || 0));
   const quality = Math.max(30, Math.min(95, Number(options.quality) || 80));
@@ -407,9 +414,23 @@ async function liveScreenshot(runId, options = {}) {
   const rect = crop === 'rect' ? options.crop : null;
   const cropScript =
     crop === 'foreground' || crop === 'window'
-      ? `Add-Type -AssemblyName UIAutomationClient
-$fgHandle = ${crop === 'window' ? `[IntPtr]${cropWindow}` : '[SightlineInput]::GetForegroundWindow()'}
-$fgBox = [System.Windows.Automation.AutomationElement]::FromHandle($fgHandle).Current.BoundingRectangle
+      ? `$fgHandle = ${crop === 'window' ? `[IntPtr]${cropWindow}` : '[SightlineInput]::GetForegroundWindow()'}
+$fgRect = New-Object SightlineInput+RECT
+$fgBox = $null
+# The window's own rectangle is enough to crop to, and user32 still answers it
+# for a window UI Automation refuses. UIA is the fallback, and its failure for a
+# handle that is already gone is reported below instead of crashing the frame.
+if ([SightlineInput]::GetWindowRect($fgHandle, [ref]$fgRect) -and ($fgRect.Right - $fgRect.Left) -gt 0 -and ($fgRect.Bottom - $fgRect.Top) -gt 0) {
+  $fgBox = New-Object System.Drawing.Rectangle $fgRect.Left, $fgRect.Top, ($fgRect.Right - $fgRect.Left), ($fgRect.Bottom - $fgRect.Top)
+} else {
+  try {
+    Add-Type -AssemblyName UIAutomationClient
+    $fgBox = [System.Windows.Automation.AutomationElement]::FromHandle($fgHandle).Current.BoundingRectangle
+  } catch { $fgBox = $null }
+}
+if (-not $fgBox -or $fgBox.Width -lt 1 -or $fgBox.Height -lt 1) {
+  throw "The window to capture is gone or hidden (handle $fgHandle), so there is no frame of it to judge."
+}
 $cx = [int][math]::Max(0, [math]::Floor($fgBox.X) - $b.X)
 $cy = [int][math]::Max(0, [math]::Floor($fgBox.Y) - $b.Y)
 $cw = [int][math]::Min($b.Width - $cx, [math]::Max(1, [math]::Floor($fgBox.Width)))
@@ -490,14 +511,20 @@ $record = [pscustomobject]@{
 Write-Output ($record | ConvertTo-Json -Compress)`;
   const res = await runPowerShell(script, 20000);
   if (!res.ok || !fs.existsSync(file)) {
-    throw new Error(`Screenshot failed: ${res.stderr || res.stdout || 'unknown error'}`);
+    // A frame that could not be taken is an unread screen, not a screen that
+    // disagreed: a review records it as unverified instead of a mismatch.
+    const error = new Error(`Screenshot failed: ${res.stderr || res.stdout || 'unknown error'}`);
+    error.unreadable = true;
+    throw error;
   }
   const line = String(res.stdout || '').split(/\r?\n/).filter(Boolean).pop() || '';
   let record;
   try {
     record = JSON.parse(line);
   } catch {
-    throw new Error(`Screenshot returned an unreadable record: ${line.slice(0, 200)}`);
+    const error = new Error(`Screenshot returned an unreadable record: ${line.slice(0, 200)}`);
+    error.unreadable = true;
+    throw error;
   }
   const [width, height] = String(record.screen || '').split('x').map((n) => Number(n));
   const [visionWidth, visionHeight] = String(record.view || '').split('x').map((n) => Number(n));
