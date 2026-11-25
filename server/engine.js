@@ -1698,6 +1698,9 @@ function insertImpliedStep(run, step, reading, cfg) {
   if ((run.screenReadSteps || []).length >= cfg.maxInserts) return null;
   const implied = normalizeImpliedStep(reading.nextAction, { id: uid('stp') });
   if (!implied) return null;
+  // The frame can still show the state the step just produced; repeating that
+  // action would loop instead of advancing.
+  if (duplicatesStep(implied, step)) return null;
   const at = run.steps.indexOf(step);
   if (at < 0) return null;
   const next = run.steps[at + 1];
