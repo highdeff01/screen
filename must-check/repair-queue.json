@@ -1,10 +1,10 @@
 {
   "version": 1,
   "by": "sentinel",
-  "updatedAt": "2026-11-25T14:37:02.079Z",
-  "head": "e3e501078bef",
+  "updatedAt": "2026-11-25T15:37:12.971Z",
+  "head": "f8ad14353bdd",
   "lastRun": {
-    "at": "2026-11-25T14:37:02.079Z",
+    "at": "2026-11-25T15:37:12.971Z",
     "ok": true,
     "tests": 745,
     "pass": 738,
