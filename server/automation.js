@@ -1030,7 +1030,10 @@ if ($startApp) {
   exit 0
 }
 $shortcut = $null
-foreach ($root in @("$env:APPDATA\\Microsoft\\Windows\\Start Menu\\Programs", "$env:ProgramData\\Microsoft\\Windows\\Start Menu\\Programs")) {
+# A desktop icon is how the operator launches an app, so the Desktop is
+# searched first: a shortcut there is as much an installed app as one in the
+# Start Menu.
+foreach ($root in @([Environment]::GetFolderPath('Desktop'), "$env:PUBLIC\\Desktop", "$env:APPDATA\\Microsoft\\Windows\\Start Menu\\Programs", "$env:ProgramData\\Microsoft\\Windows\\Start Menu\\Programs")) {
   if (-not (Test-Path -LiteralPath $root)) { continue }
   $shortcut = Get-ChildItem -LiteralPath $root -Filter *.lnk -Recurse -ErrorAction SilentlyContinue |
     Where-Object { $_.BaseName -like ('*' + $target + '*') } | Select-Object -First 1
