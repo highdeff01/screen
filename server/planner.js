@@ -1655,7 +1655,7 @@ Allowed types and params:
 - wait {ms}
 - waitFor {kind:"window|process|file", value, mode:"present|absent", timeoutMs} — polls until the state is reached
 - screenshot {caption}
-- verifyScreen {question,title?,app?,caption?,onError:"fail|warn"} — reads a fresh screenshot with vision and fails unless the visible page/state matches; app is the process/app that must be in the foreground
+- verifyScreen {question,title?,app?,caption?,onError:"fail|warn"} — reads a fresh screenshot with vision and fails unless the visible page/state matches; title is the window title that must be in front (the check's own label belongs in caption, not title); app is the process/app that must be in the foreground
 - verifyPlayback {title?,caption?,intervalMs?,minConfidence?} — captures two frames a few seconds apart and fails unless the video is visibly advancing (use after and during long playback waits)
 - mediaHold {title,bufferMs?,maxMs?,checkMs?,stallMs?} — use only when the current platform supports reading the player's seek slider; otherwise use verifyPlayback to confirm visible progress.
 - expect {kind:"window|file|process|foreground", value}

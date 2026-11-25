@@ -999,7 +999,7 @@ const EXAMPLE_BLUEPRINTS = [
       st('ex_acc_2', 'wait', 'Wait for the sign-up window', { ms: 1500 }, { timeoutMs: 10000 }),
       st('ex_acc_3', 'focusWindow', 'Focus the Accounts window', { title: 'Sightline Accounts' }),
       st('ex_acc_page_1', 'verifyScreen', 'Verify the sign-up form', {
-        title: 'Sightline Accounts sign-up form',
+        title: 'Sightline Accounts',
         caption: 'Verified sign-up form',
         question:
           'The window titled Sightline Accounts must show a Create account tab with Username, Email and Password fields and a Create account button. Fail if another app is in front or the form is not visible.',
@@ -1013,7 +1013,7 @@ const EXAMPLE_BLUEPRINTS = [
       st('ex_acc_10', 'screenshot', 'Capture the filled form before submit', { caption: 'Sign-up form filled (no password shown in later captures)' }),
       st('ex_acc_11', 'clickElement', 'Submit the sign-up form', { window: 'Sightline Accounts', name: 'Create account', verifyAfter: true }),
       st('ex_acc_page_2', 'verifyScreen', 'Verify the verification step appeared', {
-        title: 'Verification code step',
+        title: 'Sightline Accounts',
         caption: 'Verified verification step',
         question:
           'The Sightline Accounts window must now show a verification step with a code entry and the demo code 482913 visible in the banner. Fail if the form is unchanged, an error is shown, or another app is in front.',
@@ -1022,7 +1022,7 @@ const EXAMPLE_BLUEPRINTS = [
       st('ex_acc_13', 'type', 'Enter the verification code', { text: '482913', foreground: 'Sightline Accounts' }),
       st('ex_acc_14', 'clickElement', 'Verify the account', { window: 'Sightline Accounts', name: 'Verify', verifyAfter: true }),
       st('ex_acc_page_3', 'verifyScreen', 'Verify the signed-in state', {
-        title: 'Signed in as dana',
+        title: 'Sightline Accounts',
         caption: 'Verified signed-in account',
         question:
           'The Sightline Accounts window must show a signed-in state that names dana and no verification form. Fail if the code step is still visible, an error is shown, or another app is in front.',
@@ -1079,7 +1079,7 @@ const EXAMPLE_BLUEPRINTS = [
       st('ex_qr_2', 'wait', 'Wait for the sign-in window', { ms: 1500 }, { timeoutMs: 10000 }),
       st('ex_qr_3', 'focusWindow', 'Focus the QR window', { title: 'Sightline QR' }),
       st('ex_qr_page_1', 'verifyScreen', 'Verify the sign-in form', {
-        title: 'Sightline QR sign-in form',
+        title: 'Sightline QR',
         caption: 'Verified QR sign-in form',
         question: 'The window must show Username, Password and a Sign in button. Fail if another app is in front.',
       }),
@@ -1089,7 +1089,7 @@ const EXAMPLE_BLUEPRINTS = [
       st('ex_qr_7', 'type', 'Type the demo password', { text: 'demo-password-1', foreground: 'Sightline QR' }),
       st('ex_qr_8', 'clickElement', 'Sign in', { window: 'Sightline QR', name: 'Sign in', verifyAfter: true }),
       st('ex_qr_page_2', 'verifyScreen', 'Verify the QR panel appeared', {
-        title: 'QR code panel',
+        title: 'Sightline QR',
         caption: 'Verified QR panel',
         question:
           'The window must show a square QR code pattern and a Scan control, and the password form must be gone. Fail if the form is unchanged, an error is shown, or another app is in front.',
@@ -1097,7 +1097,7 @@ const EXAMPLE_BLUEPRINTS = [
       st('ex_qr_9', 'screenshot', 'Capture the QR panel', { caption: 'QR panel after credentials' }),
       st('ex_qr_10', 'clickElement', 'Scan the QR code', { window: 'Sightline QR', name: 'I scanned the code', verifyAfter: true }),
       st('ex_qr_page_3', 'verifyScreen', 'Verify the QR sign-in completed', {
-        title: 'Signed in as dana',
+        title: 'Sightline QR',
         caption: 'Verified QR sign-in',
         question: 'The window must show a signed-in state naming dana and no QR panel. Fail if the QR is still shown or an error is visible.',
       }),
@@ -1142,14 +1142,14 @@ const EXAMPLE_BLUEPRINTS = [
       st('ex_prof_2', 'wait', 'Wait for the app window', { ms: 1500 }, { timeoutMs: 10000 }),
       st('ex_prof_3', 'focusWindow', 'Focus the Profile window', { title: 'Sightline Profile' }),
       st('ex_prof_page_1', 'verifyScreen', 'Verify the home screen', {
-        title: 'Sightline Profile home',
+        title: 'Sightline Profile',
         caption: 'Verified Profile home',
         question: 'The window must show a Settings control. Fail if another app is in front.',
       }),
       st('ex_prof_4', 'clickElement', 'Open Settings', { window: 'Sightline Profile', name: 'Settings', verifyAfter: true }),
       st('ex_prof_5', 'clickElement', 'Open the Profile tab', { window: 'Sightline Profile', name: 'Profile', verifyAfter: true }),
       st('ex_prof_page_2', 'verifyScreen', 'Verify the whole profile tab is visible', {
-        title: 'Profile form with all fields',
+        title: 'Sightline Profile',
         caption: 'Verified profile tab',
         question:
           'The window must show a Profile form with Full name, Email, Bio and Time zone fields and a Save profile button. Fail if any field is missing or another app is in front.',
@@ -1165,7 +1165,7 @@ const EXAMPLE_BLUEPRINTS = [
       st('ex_prof_14', 'screenshot', 'Capture the completed profile tab', { caption: 'Profile tab filled' }),
       st('ex_prof_15', 'clickElement', 'Save the profile', { window: 'Sightline Profile', name: 'Save profile', verifyAfter: true }),
       st('ex_prof_page_3', 'verifyScreen', 'Verify the profile saved', {
-        title: 'Profile saved',
+        title: 'Sightline Profile',
         caption: 'Verified saved profile',
         question: 'The window must show a saved confirmation for Dana Operator with no empty required field. Fail if the form is unchanged, an error is shown, or another app is in front.',
       }),
@@ -1210,7 +1210,7 @@ const EXAMPLE_BLUEPRINTS = [
       st('ex_media_2', 'wait', 'Wait for the media window', { ms: 1500 }, { timeoutMs: 10000 }),
       st('ex_media_3', 'focusWindow', 'Focus the Media window', { title: 'Sightline Media' }),
       st('ex_media_4', 'verifyScreen', 'Verify the video list is visible', {
-        title: 'Video list with Up next',
+        title: 'Sightline Media',
         caption: 'Verified video list',
         question: 'The window must show a list of videos and an Up next panel. Fail if another app is in front.',
       }),
@@ -1220,7 +1220,7 @@ const EXAMPLE_BLUEPRINTS = [
       st('ex_media_8', 'clickElement', 'Pick a video from Up next', { window: 'Sightline Media', name: 'Same topic video 2' }),
       st('ex_media_9', 'clickElement', 'Start the alternate video', { window: 'Sightline Media', name: 'Play', verifyAfter: true }),
       st('ex_media_10', 'verifyScreen', 'Verify a playable video is playing', {
-        title: 'Alternate video playing',
+        title: 'Sightline Media',
         caption: 'Verified alternate playback',
         question:
           'The window must show “Now playing: Same topic video 2” with no unavailable message. Fail if the unavailable video is still selected, the player is stopped, or another app is in front.',
