@@ -46,6 +46,14 @@ import {
   shouldReviewStep,
 } from './screen-review.js';
 import { diffSignatures, signatureHash, shouldAuditVisual, visualChangeMatters } from './visual.js';
+import {
+  describeReading,
+  duplicatesStep,
+  normalizeImpliedStep,
+  normalizePageReadSettings,
+  readPage,
+  shouldReadPage,
+} from './page-read.js';
 import { analyzeRun, writeRunNote, addSuggestion, suggestionsFor, planSteps, workflowGoal } from './planner.js';
 import { canRetry, recordRetryOutcome } from './retry-budget.js';
 import { catalogEntry, isInstalledAppWindow } from './app-install.js';
@@ -213,6 +221,9 @@ export function summary(run) {
     screenReviewUnresolved: Boolean(run.screenReviewUnresolved),
     screenReviews: (run.screenReviews || []).slice(-4),
     screenMismatches: (run.screenMismatches || []).slice(-3),
+    // What the frame showed between steps, and the steps that reading added.
+    pageReads: (run.pageReads || []).slice(-3),
+    screenReadSteps: (run.screenReadSteps || []).slice(-4),
     status: run.status,
     dryRun: run.dryRun,
     liveFallback: run.liveFallback || null,
@@ -1589,6 +1600,186 @@ function priorRepairCandidate(previous) {
   return { method: `backtrack ${previous.name}`, steps };
 }
 
+/* ---------------------------------------------------- reading the page between steps */
+function pageReadSettings(run = null) {
+  const stored = db().settings?.pageRead || {};
+  return normalizePageReadSettings({
+    ...stored,
+    ...(run?.policy?.pageRead === false ? { enabled: false } : {}),
+  });
+}
+
+function storePageReadEvidence(run, step, result) {
+  const shot = result?.shot;
+  const file = shot?.path || result?.path;
+  if (!file) return null;
+  const evidence = {
+    id: uid('evd'),
+    kind: 'screenshot',
+    caption: `Screen read — ${step.name}`,
+    path: file,
+    simulated: false,
+    width: shot?.width || null,
+    height: shot?.height || null,
+    stepId: step.id,
+    createdAt: now(),
+  };
+  run.evidence.push(evidence);
+  step.evidenceIds.push(evidence.id);
+  return evidence;
+}
+
+/**
+ * Reading the page is best effort. A frame that cannot be read is logged and
+ * never fails a step that nothing actually contradicted, and a run with no
+ * pixels (simulated, shadow, desktop-free probe) is never read at all.
+ */
+async function takePageReading(run, step, workflow, probe = null, { enforceCap = true } = {}) {
+  if (run.dryRun || run.shadow) return null;
+  if (probe && typeof probe.pageRead !== 'function') return null;
+  const cfg = pageReadSettings(run);
+  if (!cfg.enabled) return null;
+  if (enforceCap && !shouldReadPage(step, { reads: (run.pageReads || []).length, settings: cfg })) return null;
+  try {
+    const result = probe?.pageRead
+      ? await probe.pageRead({ run, step, workflow, settings: cfg })
+      : await readPage({
+          run,
+          goal: run.goal || workflow?.description || workflow?.name || '',
+          stepName: step.name,
+          nextNames: (run.steps || []).slice((run.steps || []).indexOf(step) + 1).map((entry) => entry.name),
+          variables: run.variables || {},
+          target: run.lastWindow || null,
+        });
+    if (!result?.ok || !result.reading) {
+      pushLog(run, 'warn', `Screen read after “${step.name}”: ${result?.error || 'no answer'}`, step.id);
+      return null;
+    }
+    return { reading: result.reading, result, cfg };
+  } catch (err) {
+    pushLog(run, 'warn', `Screen read after “${step.name}” could not run: ${err.message}`, step.id);
+    return null;
+  }
+}
+
+function recordPageReading(run, step, { reading, result }, extra = {}) {
+  const evidence = storePageReadEvidence(run, step, result);
+  const entry = {
+    stepId: step.id,
+    stepName: step.name,
+    at: now(),
+    page: reading.page,
+    app: reading.app,
+    visible: reading.visible,
+    blockers: reading.blockers,
+    usable: reading.usable,
+    goalLooksMet: reading.goalLooksMet,
+    nextAction: reading.nextAction
+      ? { type: reading.nextAction.type, name: reading.nextAction.name, why: reading.nextAction.why }
+      : null,
+    confidence: reading.confidence,
+    inserted: extra.inserted || null,
+    reason: extra.reason || '',
+    evidenceId: evidence?.id || null,
+    path: evidence?.path || result?.path || '',
+  };
+  run.pageReads = [...(run.pageReads || []), entry].slice(-20);
+  const detail = describeReading(reading);
+  if (detail) {
+    pushLog(run, reading.blockers.length ? 'warn' : 'info', `Screen read after “${step.name}”: ${detail}`, step.id);
+  }
+  return entry;
+}
+
+/** Add the action the frame implies, when it is safe, confident and not already next. */
+function insertImpliedStep(run, step, reading, cfg) {
+  if (!reading?.nextAction || reading.goalLooksMet) return null;
+  if (Number(reading.confidence || 0) < cfg.minConfidence) return null;
+  if ((run.screenReadSteps || []).length >= cfg.maxInserts) return null;
+  const implied = normalizeImpliedStep(reading.nextAction, { id: uid('stp') });
+  if (!implied) return null;
+  const at = run.steps.indexOf(step);
+  if (at < 0) return null;
+  const next = run.steps[at + 1];
+  if (next && duplicatesStep(implied, next)) return null;
+  const fresh = {
+    ...implied,
+    id: implied.id || uid('stp'),
+    status: 'pending',
+    attempts: 0,
+    repairs: [],
+    startedAt: null,
+    endedAt: null,
+    ms: null,
+    output: '',
+    error: null,
+    evidenceIds: [],
+    appContext: null,
+  };
+  // The step loop walks the array by index, so inserting right after the step
+  // that just settled runs the new one next — the same way an AI replan does.
+  run.steps.splice(at + 1, 0, fresh);
+  run.screenReadSteps = [
+    ...(run.screenReadSteps || []),
+    { id: fresh.id, name: fresh.name, type: fresh.type, why: implied.why, at: now(), afterStep: step.id },
+  ].slice(-8);
+  pushLog(run, 'info', `Screen read added “${fresh.name}” (${fresh.type})${implied.why ? `: ${implied.why}` : ''}.`, step.id);
+  return fresh;
+}
+
+async function readPageAfterStep(run, step, workflow, probe = null) {
+  const taken = await takePageReading(run, step, workflow, probe);
+  if (!taken) return null;
+  const inserted = insertImpliedStep(run, step, taken.reading, taken.cfg);
+  const entry = recordPageReading(run, step, taken, { inserted: inserted?.name || null });
+  persist();
+  return entry;
+}
+
+/**
+ * A step that stopped because no window was named is the case this reader exists
+ * for: the screen shows the app the goal meant, but the plan never opened it.
+ * Read once, add the missing open/focus step, and give the skipped step one more
+ * attempt right after it.
+ */
+async function readPageToUnblock(run, step, workflow, output, probe = null) {
+  if (step.readRetry) return null;
+  if (!/no window was named or opened/i.test(String(output || ''))) return null;
+  const taken = await takePageReading(run, step, workflow, probe, { enforceCap: false });
+  if (!taken) return null;
+  const implied = insertImpliedStep(run, step, taken.reading, taken.cfg);
+  // Re-running the same input could only be skipped again.
+  if (!implied || implied.type === 'type' || implied.type === 'key') {
+    recordPageReading(run, step, taken, {
+      reason: implied ? `“${implied.name}” does not make the screen usable` : 'no usable action on screen',
+    });
+    persist();
+    return null;
+  }
+  const at = run.steps.indexOf(step);
+  if (at < 0) return null;
+  const retry = {
+    ...step,
+    id: uid('stp'),
+    status: 'pending',
+    attempts: 0,
+    repairs: [],
+    startedAt: null,
+    endedAt: null,
+    ms: null,
+    output: '',
+    error: null,
+    evidenceIds: [],
+    readRetry: true,
+    retriedAfterRead: { at: now(), by: implied.name },
+  };
+  run.steps.splice(at + 2, 0, retry);
+  recordPageReading(run, step, taken, { inserted: implied.name, reason: 'no window was open for this input' });
+  pushLog(run, 'info', `“${step.name}” will be tried again after “${implied.name}”.`, step.id);
+  persist();
+  return retry;
+}
+
 async function executeRun(runId) {
   const run = findRun(runId);
   if (!run || run.status !== 'queued') return;
@@ -2437,6 +2628,9 @@ async function executeRun(runId) {
       step.status = 'skipped';
       step.output = result.output || 'Skipped.';
       pushLog(run, 'warn', `Step "${step.name}" skipped: ${step.output}`, step.id);
+      // The plan wanted input but no window was open. Look at the screen once
+      // and add the step that makes it usable, then retry this one.
+      await readPageToUnblock(run, step, workflow, step.output, probe);
       persist();
       continue;
     }
@@ -2490,6 +2684,9 @@ async function executeRun(runId) {
       // A screenshot is taken after every action, automatically, so the review
       // is evidence in the run instead of a button the operator has to press.
       await reviewScreenAfterStep(run, step, workflow, probe);
+      // The review judges the frame against the step; the read asks what the
+      // frame actually is and which action the goal implies next.
+      await readPageAfterStep(run, step, workflow, probe);
       recordLedger(run, step);
     } else {
       step.status = 'failed';

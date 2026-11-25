@@ -384,7 +384,7 @@ $tg.Dispose(); $thumb.Dispose(); $g.Dispose(); $src.Dispose()
  * costs. A 32x18 luminance signature of the captured region lets a caller tell
  * whether a cached locate still describes what is on screen.
  */
-async function liveScreenshot(runId, options = {}) {
+export async function liveScreenshot(runId, options = {}) {
   // macOS, Linux and Android capture through their own tools; the record shape
   // is identical so vision checks and evidence keep working off Windows.
   if (!IS_WINDOWS) {
