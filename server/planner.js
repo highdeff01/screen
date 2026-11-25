@@ -10,6 +10,7 @@ import { recallWorkflowMemory, recallWorkflowTemplate, formatWorkflowMemory, pla
 import { buildWorkflowResearch, compactResearch } from './research.js';
 import { platformMethodGuidance, strategyBrief } from './strategy.js';
 import { liveControl } from './platform.js';
+import { parseDirective, directiveSteps } from './step-plan.js';
 
 const TYPE_SET = new Set(STEP_TYPES.map((s) => s.type));
 const SAMPLE_VIDEO_URL = 'https://interactive-examples.mdn.mozilla.net/media/cc0-videos/flower.mp4';
@@ -1502,7 +1503,20 @@ function enforceCopyExtractOrder(steps, app) {
   return true;
 }
 
+/** Explicit instruction -> steps. Null when the goal is not a directive. */
+function planDirective(goal, appContext = {}) {
+  const parsed = parseDirective(goal);
+  if (!parsed) return null;
+  const steps = directiveSteps(parsed)
+    .map((step, index) => normalizeStep(step, index))
+    .filter(Boolean);
+  if (!steps.length) return null;
+  return { parsed, steps };
+}
+
 export function heuristicPlan(goal, appContext = {}) {
+  const directive = planDirective(goal, appContext);
+  if (directive) return directive.steps;
   const text = String(goal || '');
   const steps = [];
   const seen = new Set();
@@ -1563,7 +1577,9 @@ export function heuristicPlan(goal, appContext = {}) {
     add(normalizeStep({ type, name: describeType(type), params: { x: +clickMatch[2], y: +clickMatch[3] } }));
   }
 
-  const typeMatch = text.match(/type\s+["“']([^"”']+)["”']/i);
+  const typeMatch =
+    text.match(/type\s+["“']([^"”']+)["”']/i) ||
+    text.match(/\btype\s+(?:the\s+)?(?:text\s+)?([^"”'\n]{1,120}?)(?=\s+(?:in|into|on)\s+[a-z]|[,.;]|$)/i);
   if (typeMatch) {
     add(normalizeStep({ type: 'type', name: 'Type text', params: { text: typeMatch[1] } }));
   }
@@ -1945,6 +1961,31 @@ async function buildPlan(goal, workflow, options = {}) {
   const research = options.research || buildWorkflowResearch({ workflow, goal });
   const researchFailures = research?.failedAttempts?.length || 0;
   const appContext = await discoverApps();
+  // The operator's own instruction wins over a template or a remembered flow:
+  // answering "type hi in notepad" with a saved Kiro capture is the bug this
+  // check exists to prevent.
+  const directive = planDirective(goal, appContext);
+  if (directive) {
+    const appName = directive.parsed.app?.name || null;
+    const missing = directive.parsed.missing || [];
+    return {
+      ok: true,
+      steps: directive.steps,
+      source: 'instruction',
+      app: appName,
+      note:
+        `Built ${directive.steps.length} step(s) from the instruction itself` +
+        (appName ? ` for ${appName}` : '') +
+        (directive.parsed.input?.kind === 'text'
+          ? `, including the exact input “${String(directive.parsed.input.text).slice(0, 80)}”`
+          : '') +
+        `.` +
+        (missing.length ? ` Still unassigned: ${missing.join('; ')}.` : ''),
+      confidence: directive.parsed.confidence,
+      ms: 0,
+      model: 'instruction',
+    };
+  }
   const templatePlan = planFromTemplate(goal, appContext);
   if (templatePlan) {
     return {

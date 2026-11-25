@@ -37,6 +37,7 @@ const runProbes = new Map();
 import { deliberateStep } from './deliberation.js';
 import { beginStepThink, recordThinkOutcome, stepThinkSettings, thinkBlocked, thinkRepairCandidates } from './step-think.js';
 import { carryCompletedSteps, normalizeRecheckSettings, runPendingRecheck, markRunInterrupted } from './pending-recheck.js';
+import { normalizeScreenReviewSettings, screenReviewCaption, shouldReviewStep } from './screen-review.js';
 import { diffSignatures, signatureHash, shouldAuditVisual, visualChangeMatters } from './visual.js';
 import { analyzeRun, writeRunNote, addSuggestion, suggestionsFor, planSteps, workflowGoal } from './planner.js';
 import { canRetry, recordRetryOutcome } from './retry-budget.js';
@@ -191,6 +192,11 @@ export function summary(run) {
     id: run.id,
     workflowId: run.workflowId,
     workflowName: run.workflowName,
+    // The operator's own words stay in the header: the run was queued to reach
+    // this intent, not just to execute a list of steps.
+    goal: run.goal || '',
+    screenReviewCount: (run.screenReviews || []).length,
+    screenReviews: (run.screenReviews || []).slice(-4),
     status: run.status,
     dryRun: run.dryRun,
     liveFallback: run.liveFallback || null,
@@ -338,6 +344,7 @@ export function createRun(workflow, { trigger = 'manual', dryRun = null, agentRo
     id: uid('run'),
     workflowId: workflow.id,
     workflowName: workflow.name,
+    goal: String(workflow.description || workflow.name || '').trim().slice(0, 2000),
     status: 'queued',
     dryRun: dryRun == null ? Boolean(d.settings.dryRun) : Boolean(dryRun),
     trigger,
