@@ -6652,12 +6652,21 @@ async function refresh(options = {}) {
     if (!ui.offline) {
       ui.offline = true;
       toast(res.error || 'Could not reach the console server', 'error');
+      // The toast fades in a few seconds; the rail keeps saying why the page
+      // has stopped moving until the console answers again.
+      const engine = $('#engine-label');
+      if (engine) {
+        engine.textContent = 'console offline · retrying';
+        const dot = engine.previousElementSibling;
+        if (dot) dot.className = 'dot bad';
+      }
     }
     return;
   }
   if (ui.offline) {
     ui.offline = false;
     toast('Reconnected to the console server.', 'ok');
+    renderHeader();
   }
   const firstLoad = ui.rev == null;
   const changed = !firstLoad && res.rev !== ui.rev;

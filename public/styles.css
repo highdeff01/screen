@@ -129,6 +129,7 @@ a:hover { text-decoration: underline; }
 .rail-foot p { color: var(--dim); font-size: 11px; line-height: 1.5; margin-top: 8px; }
 .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--dim); display: inline-block; }
 .dot.ok { background: var(--ok); }
+.dot.bad { background: var(--bad); }
 .dot.run { background: var(--run); box-shadow: 0 0 0 3px rgba(167, 139, 250, 0.15); }
 
 .view { padding: 22px 24px 60px; min-width: 0; max-width: 1680px; }

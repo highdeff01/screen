@@ -165,3 +165,35 @@ test('header renders and clears the relay review badge', () => {
   vm.runInNewContext('renderHeader();', context);
   assert.equal(element('#badge-relay').textContent, '');
 });
+
+test('a lost console server warns once instead of on every poll', async () => {
+  const source = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+  const refresh = source.slice(source.indexOf('async function refresh(options = {})'), source.indexOf('async function loadHealth()'));
+  const toasts = [];
+  let rendering = 0;
+  let reached = 0;
+  let offline = true;
+  const engine = { textContent: '', previousElementSibling: { className: '' } };
+  const ui = { view: 'builder', data: null, rev: null };
+  const context = {
+    ui,
+    api: async () => (offline ? { ok: false, error: 'Failed to fetch' } : { ok: true, rev: 1, counts: {} }),
+    toast: (message, kind) => toasts.push({ message, kind }),
+    $: (selector) => (selector === '#engine-label' ? engine : null),
+    render: () => { rendering += 1; },
+    renderHeader: () => { reached += 1; },
+    document: { activeElement: null, hidden: false },
+  };
+  await vm.runInNewContext(`${refresh}\n(async () => { await refresh(); await refresh(); })()`, context);
+  assert.deepEqual(toasts.map((entry) => entry.message), ['Failed to fetch']);
+  assert.equal(engine.textContent, 'console offline · retrying');
+  assert.equal(engine.previousElementSibling.className, 'dot bad');
+  assert.equal(rendering, 0, 'the poll does not repaint while the server is away');
+
+  offline = false;
+  await vm.runInNewContext('(async () => { await refresh(); })()', context);
+  assert.deepEqual(toasts.map((entry) => entry.message), ['Failed to fetch', 'Reconnected to the console server.']);
+  assert.equal(reached, 1, 'the rail label is repainted on reconnect');
+  assert.equal(rendering, 1);
+  assert.equal(ui.offline, false);
+});
