@@ -2794,7 +2794,7 @@ export async function recheckRun(id, { continueAfter = null, probe = null } = {}
       sleep,
       capture: async () => {
         const step = { type: 'screenshot', name: 'Recheck screen', params: { caption: 'Pending recheck' } };
-        const ctx = { live: !run.dryRun, runId: run.id, run, workflow, getTool };
+        const ctx = { live: !run.dryRun, runId: run.id, run, workflow };
         const result = probe?.executeStep ? await probe.executeStep(step, ctx) : await executeStep(step, ctx);
         return result?.evidence?.[0] || null;
       },
