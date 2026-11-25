@@ -156,3 +156,64 @@ test('test review sorts by risk and keeps immediate before long-term work', () =
   const byPhase = sortTests(review.tests, 'phase');
   assert.equal(byPhase[0].phase, 'launch');
 });
+
+test('an unresolved screen mismatch is part of the review, not only a run-card badge', () => {
+  const run = {
+    id: 'run_screen',
+    workflowId: 'wf_screen',
+    workflowName: 'Notepad quick capture',
+    status: 'needs_review',
+    screenReviewUnresolved: true,
+    steps: [
+      { id: 's1', type: 'launchApp', name: 'Open Notepad', params: { target: 'notepad.exe' }, status: 'passed' },
+      {
+        id: 's2',
+        type: 'type',
+        name: 'Type sample note',
+        params: { text: 'hello' },
+        status: 'passed',
+        screenReview: { status: 'mismatch', attempts: 2, mismatch: 'the note is not in the window' },
+      },
+    ],
+    screenReviews: [
+      { stepId: 's1', stepName: 'Open Notepad', status: 'pass', attempts: 1, path: 'captures/open.png' },
+      { stepId: 's2', stepName: 'Type sample note', status: 'mismatch', attempts: 2, path: 'captures/type.png' },
+    ],
+    screenMismatches: [
+      {
+        stepId: 's2',
+        stepName: 'Type sample note',
+        at: '2026-11-25T10:47:44.717Z',
+        attempts: 2,
+        mismatch: 'the note is not in the window',
+      },
+    ],
+  };
+
+  const review = buildTestReview({ run, sort: 'risk' });
+
+  assert.equal(review.counts.failed, 0, 'no step failed — every one reported success');
+  assert.equal(review.screenReview.unresolved, true);
+  assert.equal(review.screenReview.mismatches, 1);
+  assert.equal(review.screenReview.checked, 1);
+  assert.deepEqual(review.screenReview.items.map((item) => item.name), ['Type sample note']);
+  assert.equal(review.screenReview.items[0].frame, 'captures/type.png', 'the review names the frame to open');
+  assert.equal(review.screenReview.items[0].attempts, 2);
+  assert.equal(review.verdict, 'blocked', 'an unresolved mismatch blocks the review like a failed step');
+  assert.equal(review.tests[0].seq, 2, 'the contradicted step sorts first');
+  assert.equal(review.tests[0].screen.status, 'mismatch');
+  assert.ok(review.tests[0].risk >= 88);
+  assert.ok(review.tests[0].riskReasons.includes('screen check did not match'));
+  assert.ok(review.review.summary.some((line) => /Automatic screen check: 1 mismatch/.test(line)));
+  assert.ok(review.suggestions.now.some((line) => /Open the frame for “Type sample note”/.test(line)));
+});
+
+test('a run whose frames all agreed has an empty screen review', () => {
+  const review = buildTestReview({
+    run: { id: 'run_clean', steps: [{ id: 's1', type: 'launchApp', name: 'Open VLC', params: { target: 'vlc.exe' }, status: 'passed' }] },
+  });
+  assert.equal(review.screenReview.mismatches, 0);
+  assert.equal(review.screenReview.unresolved, false);
+  assert.deepEqual(review.screenReview.items, []);
+  assert.equal(review.review.summary.some((line) => /Automatic screen check/.test(line)), false);
+});

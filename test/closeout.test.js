@@ -132,6 +132,32 @@ test('appendCloseout writes the steps into the workflow after operator approval'
   assert.throws(() => closeout.appendCloseout('run_closeout_probe'), /No closeout prediction|already/);
 });
 
+test('an unresolved screen mismatch is named before the window advice', () => {
+  const run = probeRun();
+  run.screenReviewUnresolved = true;
+  run.screenMismatches = [
+    {
+      stepId: 's_type',
+      stepName: 'Type the note',
+      at: new Date().toISOString(),
+      attempts: 2,
+      mismatch: 'the note is not in the window',
+    },
+  ];
+  store.persist();
+
+  const prediction = closeout.predictCloseout(run);
+  assert.equal(prediction.action, 'save', 'the window advice itself still stands');
+  assert.equal(prediction.screenReview.unresolved, true);
+  assert.equal(prediction.screenReview.step, 'Type the note');
+  assert.match(prediction.reasons[0], /automatic screen check did not match after “Type the note”/);
+  assert.ok(prediction.confidence < 0.7, 'the prediction is less certain while the frame disagrees');
+  assert.match(prediction.reasons.join(' '), /never saved/, 'the window reason is kept, just not first');
+
+  const recorded = closeout.recordCloseout(run);
+  assert.equal(recorded.screenReview.unresolved, true, 'the closeout on the run carries the mismatch');
+});
+
 test('a run with no window gets a quiet leave', () => {
   const run = probeRun();
   run.lastWindow = null;

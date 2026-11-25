@@ -27,6 +27,33 @@ const clip = (value, max = 200) => {
   return text.length > max ? `${text.slice(0, Math.max(0, max - 1))}…` : text;
 };
 
+/**
+ * What the automatic screen review found for this run.
+ *
+ * A step whose own status says “passed” while the frame after it said something
+ * else is the one finding a review must not leave in a run-card badge: it is
+ * carried here step by step, with the frame to open, and it moves the verdict.
+ */
+function screenReviewFor(run) {
+  const reviews = Array.isArray(run?.screenReviews) ? run.screenReviews : [];
+  const mismatches = Array.isArray(run?.screenMismatches) ? run.screenMismatches : [];
+  const frames = new Map(reviews.map((entry) => [entry.stepId, entry.path || '']));
+  return {
+    checked: reviews.filter((entry) => entry.status === 'pass').length,
+    skipped: reviews.filter((entry) => entry.status === 'skipped').length,
+    mismatches: mismatches.length,
+    unresolved: Boolean(run?.screenReviewUnresolved),
+    items: mismatches.slice(-6).map((entry) => ({
+      stepId: entry.stepId || '',
+      name: entry.stepName || entry.stepId || 'step',
+      attempts: Number(entry.attempts) || 0,
+      at: entry.at || '',
+      mismatch: clip(entry.mismatch || entry.detail || 'the frame did not match the step', 220),
+      frame: frames.get(entry.stepId) || '',
+    })),
+  };
+}
+
 function kindOf(step) {
   if (CHECK_TYPES.has(step?.type)) return 'check';
   if (step?.type === 'screenshot') return 'evidence';
@@ -115,12 +142,19 @@ export function buildTestReview({
   installed = [],
 } = {}) {
   const steps = Array.isArray(run?.steps) ? run.steps : [];
+  const screen = screenReviewFor(run);
   const findEvidence = simulationIndex(simulation);
   const tests = steps.map((step, index) => {
     const seq = index + 1;
     const evidence = findEvidence(step, seq);
     const kind = kindOf(step);
     const scored = riskOf(step, kind, evidence);
+    const screenStep = step.screenReview || null;
+    // A frame that disagreed outranks any status the step reported itself.
+    if (screenStep?.status === 'mismatch') {
+      scored.risk = Math.max(scored.risk, 88);
+      scored.reasons = ['screen check did not match', ...scored.reasons].slice(0, 3);
+    }
     return {
       seq,
       stepId: step.id || '',
@@ -136,6 +170,13 @@ export function buildTestReview({
             changedPct: evidence.changedPct ?? null,
             frames: evidence.frames ?? null,
             note: clip(evidence.note || '', 160),
+          }
+        : null,
+      screen: screenStep
+        ? {
+            status: screenStep.status || '',
+            attempts: Number(screenStep.attempts) || 0,
+            mismatch: clip(screenStep.mismatch || '', 200),
           }
         : null,
       risk: scored.risk,
@@ -186,6 +227,9 @@ export function buildTestReview({
 
   let verdict = 'ready';
   if (counts.failed > 0) verdict = 'blocked';
+  // An unresolved screen mismatch blocks the review the same way a failed step
+  // does: the tests all claim success and the evidence says otherwise.
+  else if (screen.unresolved) verdict = 'blocked';
   else if (highRisk.length) verdict = 'needs_review';
   else if (!simulation) verdict = 'needs_evidence';
   else if (evidencePct < 50) verdict = 'needs_evidence';
@@ -199,6 +243,14 @@ export function buildTestReview({
       ? `Screenshot evidence covers ${evidencePct}% of steps (${simulation.summary?.verdict || simulation.status || 'unknown'}).`
       : 'No screenshot check has been run for this run, so pixel agreement is unknown.'
   );
+  if (screen.mismatches) {
+    reviewSummary.push(
+      `Automatic screen check: ${screen.mismatches} mismatch(es)${screen.unresolved ? ' still unresolved — every step reported success, but the frame disagreed even on the re-read' : ' (resolved after the run)'}: ${screen.items
+        .map((item) => item.name)
+        .slice(0, 3)
+        .join(', ')}.`
+    );
+  }
   if (highRisk.length) {
     reviewSummary.push(
       `${highRisk.length} test(s) need attention first: ${highRisk.slice(0, 3).map((test) => `${test.seq}. ${test.name}`).join(', ')}.`
@@ -210,6 +262,11 @@ export function buildTestReview({
 
   const now = [];
   const later = [];
+  for (const item of screen.items.slice(0, 2)) {
+    now.push(
+      `Open the frame for “${item.name}”${item.frame ? ` (${item.frame})` : ''} and decide whether it really showed the result: ${item.mismatch}`
+    );
+  }
   for (const test of highRisk.slice(0, 3)) {
     now.push(`Fix or verify “${test.name}” (${test.risk}% risk${test.riskReasons.length ? `: ${test.riskReasons.join(', ')}` : ''}).`);
   }
@@ -245,6 +302,7 @@ export function buildTestReview({
       mismatch: simulation?.summary?.mismatch ?? 0,
       missing: simulation?.summary?.missing ?? 0,
     },
+    screenReview: screen,
     phases: phaseRows,
     tests: ordered,
     highRisk: highRisk.map((test) => ({ seq: test.seq, name: test.name, risk: test.risk, riskReasons: test.riskReasons })),

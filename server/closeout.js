@@ -101,7 +101,39 @@ export function followUpSteps(prediction) {
   return steps.map((step) => ({ ...step, id: uid('stp') }));
 }
 
-export function predictCloseout(run, { workflow = null } = {}) {
+/**
+ * What the automatic screen review left open. “Leave the window” is wrong
+ * advice when the frame never matched the step, so the mismatch is carried into
+ * the prediction and named before the window advice.
+ */
+function screenState(run) {
+  const mismatches = Array.isArray(run?.screenMismatches) ? run.screenMismatches : [];
+  const last = mismatches.slice(-1)[0] || null;
+  return {
+    mismatches: mismatches.length,
+    unresolved: Boolean(run?.screenReviewUnresolved),
+    step: last?.stepName || '',
+    detail: String(last?.mismatch || last?.detail || '').slice(0, 220),
+  };
+}
+
+export function predictCloseout(run, options = {}) {
+  const prediction = planCloseout(run, options);
+  const screen = screenState(run);
+  if (screen.mismatches) {
+    prediction.screenReview = screen;
+    if (screen.unresolved) {
+      prediction.reasons = [
+        `an automatic screen check did not match after “${screen.step || 'a step'}” and is still unresolved`,
+        ...(prediction.reasons || []),
+      ];
+      prediction.confidence = Math.round(Math.max(0, prediction.confidence - 0.2) * 100) / 100;
+    }
+  }
+  return prediction;
+}
+
+function planCloseout(run, { workflow = null } = {}) {
   const window = runOwnedWindow(run);
   const reasons = [];
   if (!window) {
