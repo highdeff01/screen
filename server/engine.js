@@ -2677,9 +2677,11 @@ async function executeRun(runId) {
       // A control that is still sliding will not be where the click lands. Wait
       // for the screen to settle first, bounded so a video or a spinner cannot
       // hold the step.
-      if (visualEnabled && INPUT_STEPS.has(step.type)) {
+      // A probe is a desktop-free test adapter and brings its own reads, so the
+      // wait only applies to a real desktop.
+      if (!probe && visualEnabled && INPUT_STEPS.has(step.type)) {
         try {
-          const settled = await waitUntilStill({ capture, timeoutMs: 1200, settleMs: 180 });
+          const settled = await waitUntilStill({ capture, seed: lastSignature, timeoutMs: 1200, settleMs: 180 });
           step.stillness = { at: now(), ...settled };
           if (!settled.still) {
             pushLog(run, 'warn', `The screen was still changing after ${settled.waitedMs}ms; “${step.name}” acts on the latest frame.`, step.id);

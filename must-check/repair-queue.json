@@ -1,19 +1,67 @@
 {
   "version": 1,
   "by": "sentinel",
-  "updatedAt": "2026-11-26T06:15:32.565Z",
-  "head": "ac766dac95e9",
+  "updatedAt": "2026-11-26T09:58:51.604Z",
+  "head": "dc5d0847aabb",
   "lastRun": {
-    "at": "2026-11-26T06:15:32.565Z",
-    "ok": true,
-    "tests": 792,
-    "pass": 785,
-    "fail": 0,
-    "isolated": true,
-    "failingTests": []
+    "at": "2026-11-26T09:58:48.588Z",
+    "ok": false,
+    "tests": null,
+    "pass": null,
+    "fail": 4,
+    "isolated": false,
+    "failingTests": [
+      "the engine executes an AI replacement and records the repair (21665.272ms)",
+      "a repair that opens another app is adopted by the presenter and verifier (112972.2793ms)",
+      "the engine rewrites the remainder after an irreparable action and still passes (56830.4122ms)",
+      "C:\\Users\\Dan\\.config\\freebuff-desktop\\local-projects\\40af3ced-48bf-4a9d-a8b7-cb42815bab8f\\test\\agent-replan.test.js (4321.3636ms)"
+    ]
   },
-  "open": 8,
+  "open": 9,
   "items": [
+    {
+      "id": "sent_mwxdr40c73fef5",
+      "at": "2026-11-26T09:58:48.588Z",
+      "status": "queued",
+      "attempts": 1,
+      "fail": 4,
+      "pass": null,
+      "tests": [
+        "the engine executes an AI replacement and records the repair (21665.272ms)",
+        "a repair that opens another app is adopted by the presenter and verifier (112972.2793ms)",
+        "the engine rewrites the remainder after an irreparable action and still passes (56830.4122ms)",
+        "C:\\Users\\Dan\\.config\\freebuff-desktop\\local-projects\\40af3ced-48bf-4a9d-a8b7-cb42815bab8f\\test\\agent-replan.test.js (4321.3636ms)"
+      ],
+      "details": [
+        {
+          "name": "the engine executes an AI replacement and records the repair",
+          "file": "",
+          "line": null,
+          "message": ""
+        },
+        {
+          "name": "a repair that opens another app is adopted by the presenter and verifier",
+          "file": "",
+          "line": null,
+          "message": ""
+        },
+        {
+          "name": "the engine rewrites the remainder after an irreparable action and still passes",
+          "file": "",
+          "line": null,
+          "message": ""
+        },
+        {
+          "name": "C:\\Users\\Dan\\.config\\freebuff-desktop\\local-projects\\40af3ced-48bf-4a9d-a8b7-cb42815bab8f\\test\\agent-replan.test.js",
+          "file": "",
+          "line": null,
+          "message": ""
+        }
+      ],
+      "plan": "",
+      "planError": "",
+      "report": "must-check/2026-11-26T09-58-48-the-engine-executes-an-ai-replacement-an.md"
+    },
     {
       "id": "sent_mwwpm8d8b95078",
       "at": "2026-11-25T22:43:10.172Z",
