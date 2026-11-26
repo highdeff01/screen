@@ -148,6 +148,7 @@ test('a control with no UI Automation tree is aimed at the point it was clicked 
       workflow: { clickPoints: { s1: { x: 300, y: 240, name: 'Dan' } } },
       presence: async () => presenceAt(4000, 'Sightline Profile'),
       find: async () => ({ found: false, reason: 'no UI Automation tree' }),
+      readText: async () => ({ found: false, reason: 'no text read' }),
       move: async (_run, point) => moves.push(point),
       cursor: async () => ({ x: 900, y: 700 }),
     }
@@ -230,6 +231,31 @@ test('the tolerance is a distance in screen pixels', () => {
   assert.equal(aim.pointerIsOnTarget({ x: 100, y: 100 }, null), false);
 });
 
+test('a control UI Automation cannot see is aimed at where its label is', async () => {
+  const run = liveRun();
+  const moves = [];
+  const reads = [];
+  const result = await aim.aimBeforeStep(
+    run,
+    { id: 's4', type: 'clickElement', params: { window: 'Sightline Profile', name: 'Profile' } },
+    {
+      // The remembered point is stale (the window moved); the fresh read wins.
+      workflow: { clickPoints: { s4: { x: 10, y: 10, name: 'Profile' } } },
+      presence: async () => presenceAt(4000, 'Sightline Profile'),
+      find: async () => ({ found: false, reason: 'no UI Automation tree' }),
+      readText: async (options) => {
+        reads.push(options);
+        return { found: true, x: 193, y: 255, text: 'Profile' };
+      },
+      move: async (_run, point) => moves.push(point),
+      cursor: async () => ({ x: 900, y: 700 }),
+    }
+  );
+  assert.equal(result.ok, true);
+  assert.deepEqual(reads[0].names, ['Profile'], 'the aim reads for the same labels the click would try');
+  assert.deepEqual(moves, [{ x: 193, y: 255 }], 'the label’s own position, not the remembered point');
+});
+
 test('a control that was never clicked and is not in the tree is reported, not guessed', async () => {
   const run = liveRun();
   const messages = [];
@@ -241,6 +267,7 @@ test('a control that was never clicked and is not in the tree is reported, not g
       workflow: { clickPoints: {} },
       presence: async () => presenceAt(4000, 'Sightline Profile'),
       find: async () => ({ found: false, reason: 'no UI Automation tree' }),
+      readText: async () => ({ found: false, reason: 'no text read' }),
       move: async (_run, point) => moves.push(point),
       log: (message) => messages.push(message),
     }
