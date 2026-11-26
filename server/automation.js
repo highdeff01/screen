@@ -7,6 +7,7 @@ import { CAPTURES, DATA, NOTES, ROOT, TOOLS, db, now, persist, slug, uid, writeF
 import { chat, parseJsonLoose } from './llm.js';
 import { findSetupCommand, runSetupCommand, setupSummary } from './setup-commands.js';
 import { executePortableStep, portableLiveScreenshot } from './portable.js';
+import { mapVisionPoint } from './vision-map.js';
 import { decidePreview, describeSurroundings } from './step-context.js';
 import { judgeMode, judgeTargetFor, mergeJudgement, recordJudgement, windowFacts } from './judgement.js';
 import {
@@ -502,6 +503,8 @@ $record = [pscustomobject]@{
   view = ("{0}x{1}" -f $vw, $vh)
   x = $cx
   y = $cy
+  ox = $b.X
+  oy = $b.Y
   w = $cw
   h = $ch
   image = ${psQuote(wantVision ? visionFile : '')}
@@ -539,6 +542,8 @@ Write-Output ($record | ConvertTo-Json -Compress)`;
           cropY: Number(record.y) || 0,
           cropWidth: Number(record.w) || 0,
           cropHeight: Number(record.h) || 0,
+          originX: Number(record.ox) || 0,
+          originY: Number(record.oy) || 0,
           bytes: fs.statSync(visionPath).size,
         }
       : null;
@@ -549,6 +554,8 @@ Write-Output ($record | ConvertTo-Json -Compress)`;
     height: height || null,
     signature: record.signature ? createHash('md5').update(String(record.signature)).digest('hex').slice(0, 16) : '',
     cropTitle: String(record.cropTitle || ''),
+    originX: Number(record.ox) || 0,
+    originY: Number(record.oy) || 0,
     vision,
     runId,
   };
@@ -2395,8 +2402,9 @@ async function locateElementOnce({ description, title = '', minConfidence = 0.6 
   const cropHeight = Number(view.cropHeight) || height;
   const result = {
     found: true,
-    x: Math.round((Number(view.cropX) || 0) + (x * cropWidth) / width),
-    y: Math.round((Number(view.cropY) || 0) + (y * cropHeight) / height),
+    // The crop offset and the virtual-desktop origin both decide the answer.
+    x: mapVisionPoint({ view: { ...view, cropWidth, cropHeight }, x, y })?.x ?? null,
+    y: mapVisionPoint({ view: { ...view, cropWidth, cropHeight }, x, y })?.y ?? null,
     confidence,
     observed: str(parsed.observed),
     shot,
@@ -2744,8 +2752,8 @@ export async function previewActionOnce({ step = null, description = '', title =
   const found = parsed.found !== false && Number.isFinite(x) && Number.isFinite(y) && confidence >= minConfidence;
   return {
     found,
-    x: found ? Math.round((Number(view.cropX) || 0) + (x * cropWidth) / width) : null,
-    y: found ? Math.round((Number(view.cropY) || 0) + (y * cropHeight) / height) : null,
+    x: found ? mapVisionPoint({ view: { ...view, cropWidth, cropHeight }, x, y })?.x ?? null : null,
+    y: found ? mapVisionPoint({ view: { ...view, cropWidth, cropHeight }, x, y })?.y ?? null : null,
     confidence,
     alreadyDone: parsed.alreadyDone === true || Boolean(parsed.alreadyDone) === true,
     alreadyEvidence: str(parsed.alreadyEvidence),
@@ -3153,12 +3161,9 @@ function visionPointToScreen(shot, control) {
   if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
   const vision = shot?.vision;
   if (!vision || !vision.width || !vision.height || !vision.cropWidth || !vision.cropHeight) return null;
-  const screenX = Math.round(vision.cropX + x * (vision.cropWidth / vision.width));
-  const screenY = Math.round(vision.cropY + y * (vision.cropHeight / vision.height));
-  // A point outside the captured region is not a control this step can click.
-  if (screenX < vision.cropX || screenY < vision.cropY) return null;
-  if (screenX > vision.cropX + vision.cropWidth || screenY > vision.cropY + vision.cropHeight) return null;
-  return { x: screenX, y: screenY };
+  // The crop's offset inside the desktop, the desktop's own origin and the
+  // downscale all decide the answer; a point outside the crop is refused.
+  return mapVisionPoint({ view: vision, x, y });
 }
 
 /**
