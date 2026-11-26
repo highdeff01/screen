@@ -3101,7 +3101,7 @@ async function executeRun(runId) {
 
     if (succeeded) {
       step.output = result?.output || '';
-      if (!run.shadow) rememberClickPoint(workflow, step);
+      if (!run.shadow) rememberClickPoint(workflow, { ...step, clickPoint: result?.clickPoint || step.clickPoint });
       if (!run.shadow) rememberStepReference(workflow, step);
       if (result?.judgement) step.judgement = result.judgement;
       step.completion = completionFor(step, { ...(result || {}), output: step.output });
