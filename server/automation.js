@@ -1585,11 +1585,18 @@ if ($windowPattern -eq '*') {
 }
 if (-not $target) { Write-Output '{"found":false,"reason":"window not found"}'; exit 0 }
 $handle = $target.MainWindowHandle
+# A minimized window has no screen area to read: the capture below would grab an
+# off-screen rectangle, OCR would find no text and a named control would quietly
+# fall through to the vision model. Restore it first, the way the vision path does.
+if ([SightlineInput]::IsIconic($handle)) {
+  [void][SightlineInput]::ShowWindow($handle, 9)
+  Start-Sleep -Milliseconds 250
+}
 $rect = New-Object SightlineInput+RECT
 if (-not [SightlineInput]::GetWindowRect($handle, [ref]$rect)) { Write-Output '{"found":false,"reason":"window rectangle unavailable"}'; exit 0 }
 $width = [int]($rect.Right - $rect.Left)
 $height = [int]($rect.Bottom - $rect.Top)
-if ($width -lt 8 -or $height -lt 8) { Write-Output '{"found":false,"reason":"window has no visible area"}'; exit 0 }
+if ($width -lt 8 -or $height -lt 8) { Write-Output '{"found":false,"reason":"window has no readable area (minimized or off-screen)"}'; exit 0 }
 # Everything above the client area is title bar and frame, never a control.
 $contentTop = 0
 $clientRect = New-Object SightlineInput+RECT
