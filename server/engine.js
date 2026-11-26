@@ -20,7 +20,7 @@ import {
 } from './automation.js';
 import { judgeTargetFor, normalizeText } from './judgement.js';
 import { enqueueFrameJob, drainFrameQueue, clearFrameQueue, markReaderBlind, readerIsBlind } from './frame-queue.js';
-import { aimBeforeStep, aimAt, aimTargetForChoice, resetAimState } from './aim.js';
+import { aimBeforeStep, aimAt, aimTargetForChoice, aimWithin, resetAimState } from './aim.js';
 import { registerActiveStep, clearActiveStep } from './nudge.js';
 import { assessStep, launchProducedNewWindow, looksLikeSavedDocument, reviewPrevious } from './step-context.js';
 import { classifyPresence, holdDecision, learnHold, completionFor, isFocusStealing, isQuickStep, silentChecksFor, isOwnInput } from './presence.js';
@@ -1233,17 +1233,47 @@ export function rememberStepReference(workflow, step) {
   persist();
 }
 
-export function rememberClickPoint(workflow, step) {
-  if (!workflow || !['click', 'clickElement', 'doubleClick'].includes(String(step.type || ''))) return;
-  const match = /at (\d{1,5}),\s*(\d{1,5})/.exec(String(step.output || ''));
-  if (!match) return;
+export function clickPointOf(step) {
+  const type = String(step?.type || '');
+  if (!['click', 'clickElement', 'doubleClick', 'rightClick', 'playMedia'].includes(type)) return null;
+  const params = step?.params || {};
+  const direct = step?.clickPoint;
+  if (Number.isFinite(Number(direct?.x)) && Number.isFinite(Number(direct?.y))) {
+    return {
+      x: Math.round(Number(direct.x)),
+      y: Math.round(Number(direct.y)),
+      name: String(direct.name || params.name || step.name || '').slice(0, 80),
+      method: String(direct.method || 'click').slice(0, 80),
+    };
+  }
+  if (['click', 'doubleClick', 'rightClick'].includes(type) && Number.isFinite(Number(params.x)) && Number.isFinite(Number(params.y))) {
+    return {
+      x: Math.round(Number(params.x)),
+      y: Math.round(Number(params.y)),
+      name: String(params.name || step.name || '').slice(0, 80),
+      method: 'coordinates',
+    };
+  }
+  const match = /at\s+(-?\d{1,5})\s*,\s*(-?\d{1,5})/.exec(String(step?.output || ''));
+  if (!match) return null;
   const x = Number(match[1]);
   const y = Number(match[2]);
-  if (!Number.isFinite(x) || !Number.isFinite(y)) return;
-  workflow.clickPoints = {
-    ...(workflow.clickPoints || {}),
-    [step.id]: { x, y, at: now(), name: String(step.params?.name || step.name || '').slice(0, 80) },
-  };
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+  return { x, y, name: String(params.name || step.name || '').slice(0, 80), method: 'reported output' };
+}
+
+export function rememberClickPoint(workflow, step) {
+  const point = clickPointOf(step);
+  if (!workflow || !point) return;
+  const entry = { ...point, at: now() };
+  // A run can work from a snapshot of the workflow, and a snapshot is not what
+  // the store holds: where a control lives is a fact about the workflow, so the
+  // saved workflow is taught too, and the run's copy is updated for its own
+  // later steps.
+  const saved = (db().workflows || []).find((item) => item.id === workflow.id);
+  for (const target of saved && saved !== workflow ? [saved, workflow] : [workflow]) {
+    target.clickPoints = { ...(target.clickPoints || {}), [step.id]: entry };
+  }
   persist();
 }
 
@@ -2617,7 +2647,7 @@ async function executeRun(runId) {
       // The pointer is aimed at the control this step names while the step is
       // being prepared. It hovers, never clicks, and it stands still while the
       // operator is still using the mouse or keyboard.
-      if (!probe) void aimBeforeStep(run, step, { workflow, log: (message) => pushLog(run, 'info', message) });
+      if (!probe) await aimWithin(aimBeforeStep(run, step, { workflow, log: (message) => pushLog(run, 'info', message) }), { log: (message) => pushLog(run, 'info', message, step.id) });
       try {
         const context = await applyStepContext(step, run, workflow, probe);
         if (context?.skipReason) {

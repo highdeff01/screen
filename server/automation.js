@@ -5007,6 +5007,10 @@ try {
       const caution = surroundings?.caution ? ` ${surroundings.caution}` : '';
       return {
         output: `Clicked “${el.name || requested}” via ${method} at ${x},${y}.${around}${caution}`,
+        // Where the click actually landed, as a fact rather than a sentence: a
+        // vision-fallback click, a preview-corrected one and a plain UIA match
+        // all report the same shape, so the point is always learnable.
+        clickPoint: { x, y, method, name: String(el.name || requested).slice(0, 80), window: title },
         evidence: [...evidence, ...(clicked.evidence || [])],
         ...(surroundings ? { surroundings } : {}),
       };

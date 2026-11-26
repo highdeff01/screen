@@ -188,6 +188,30 @@ export async function aimAt(run, target, { log = null, find = findUiElement, pre
   }
 }
 
+/**
+ * Wait for an aim to finish, but never hold a step for longer than the budget.
+ * The pointer must be on the control when the click starts; an aim still in
+ * flight is reported, not silently raced by the click.
+ */
+export async function aimWithin(promise, { timeoutMs = 2500, log = null } = {}) {
+  let timer = null;
+  let timedOut = false;
+  const limit = new Promise((resolve) => {
+    timer = setTimeout(() => {
+      timedOut = true;
+      resolve(null);
+    }, Math.max(0, Number(timeoutMs) || 0));
+  });
+  try {
+    return await Promise.race([Promise.resolve(promise), limit]);
+  } finally {
+    clearTimeout(timer);
+    if (timedOut && typeof log === 'function') {
+      log('The pointer was still on its way to the control when the step started; the move finishes in the background.');
+    }
+  }
+}
+
 /** Aim for the step that is about to run, from the step's own parameters. */
 export function aimBeforeStep(run, step, options = {}) {
   const target = aimTargetFor(step);
