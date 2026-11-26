@@ -1224,6 +1224,38 @@ async function recheckBeforeContinue(run, step) {
   }
 }
 
+/**
+ * The operator moved the mouse or typed while a step is running. Input asks the
+ * run to look at the screen again now: the thinking loop ticks if it is still
+ * running, and the window in front is read either way. Nothing is clicked, no
+ * key is sent and no guard is relaxed — this is a re-read, not a turn.
+ */
+async function operatorReview(run, step, probe, thinkLoop = null) {
+  try {
+    if (thinkLoop?.tickNow) await thinkLoop.tickNow();
+    const screen = probe?.readScreenContext ? await probe.readScreenContext() : await readScreenContext();
+    const front = String(screen?.foreground?.title || '');
+    const wanted = String(
+      step.params?.foreground === true ? run.lastWindow?.title : step.params?.foreground || step.params?.title || run.lastWindow?.title || ''
+    ).trim();
+    const matches = wanted ? front.toLowerCase().includes(wanted.toLowerCase()) : true;
+    step.operatorReview = { at: now(), foreground: front, expected: wanted, matches };
+    pushLog(
+      run,
+      matches ? 'info' : 'warn',
+      matches
+        ? `Operator input: the screen still shows “${front || 'the run window'}”.`
+        : `Operator input: “${front || 'another window'}” is now in front instead of “${wanted}”. The step keeps its guard; nothing was clicked.`,
+      step.id
+    );
+    persist();
+    return step.operatorReview;
+  } catch (err) {
+    pushLog(run, 'warn', `Operator input could not be read: ${err.message}`, step.id);
+    return null;
+  }
+}
+
 async function awaitUserSettle(step, run, probe = null) {
   // A probe without presence belongs to a desktop-free test run.
   if (probe && typeof probe.readPresence !== 'function') return;
@@ -2600,7 +2632,7 @@ async function executeRun(runId) {
             },
           });
           // Operator input while this step runs asks it to look again now.
-          registerActiveStep(run, step, () => thinkLoop?.tickNow());
+          registerActiveStep(run, step, () => operatorReview(run, step, probe, thinkLoop));
         }
       } catch (err) {
         pushLog(run, 'warn', `Step thinking did not start: ${err.message}`, step.id);
