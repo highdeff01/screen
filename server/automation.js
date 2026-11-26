@@ -8,6 +8,7 @@ import { chat, parseJsonLoose } from './llm.js';
 import { findSetupCommand, runSetupCommand, setupSummary } from './setup-commands.js';
 import { executePortableStep, portableLiveScreenshot } from './portable.js';
 import { mapVisionPoint } from './vision-map.js';
+import { matchOcrLine, ocrContentTop, ocrLineAnchor, ocrLines, ocrScreenPoint, lineInk } from './ocr-locate.js';
 import { decidePreview, describeSurroundings } from './step-context.js';
 import { judgeMode, judgeTargetFor, mergeJudgement, recordJudgement, windowFacts } from './judgement.js';
 import {
@@ -42,6 +43,8 @@ public class SightlineInput {
   [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
   [DllImport("user32.dll")] public static extern bool GetCursorPos(out POINT point);
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
+  [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr hWnd, out RECT rect);
+  [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr hWnd, ref POINT point);
   [DllImport("user32.dll")] public static extern void mouse_event(uint flags, uint dx, uint dy, uint data, UIntPtr extra);
   [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
   [DllImport("user32.dll")] public static extern bool BringWindowToTop(IntPtr hWnd);
@@ -1544,6 +1547,167 @@ $best | ConvertTo-Json -Compress`;
     height: Number(parsed.height) || 0,
     scale: Number(parsed.scale) || 1,
     score: Number(parsed.score) || 0,
+  };
+}
+
+/**
+ * Find a named control by reading the window's text.
+ *
+ * UI Automation is the right answer and the wrong one for a Tk app: the toolkit
+ * exposes no element tree, so every named click fell through to the vision
+ * model — 0.7–52 s a call, and on this app's Settings button 39 px off centre and
+ * only 4 px from the button's edge. The desktop's own OCR reads the same label in
+ * 19–46 ms, and the label sits inside the control that carries it.
+ *
+ * One capture, one OCR pass and one ink pass run in a single PowerShell call: the
+ * label's dark pixels give the anchor, because a Windows OCR box is a line box
+ * and its centre sits about half a line low on a small button. Chrome above the
+ * client area is ignored, so a title bar's "Profile" cannot outrank the button.
+ */
+export async function findUiElementByOcr({ window = '', name = '', names = null, timeoutMs = 20000 } = {}) {
+  const wanted = (Array.isArray(names) && names.length ? names : [name]).map((item) => str(item).trim()).filter(Boolean);
+  if (!wanted.length) throw new Error('An element name is required.');
+  if (!IS_WINDOWS) return { found: false, reason: 'reading a label with OCR requires Windows' };
+  const file = path.join(CAPTURES, `${uid('ocr')}.png`);
+  const windowNeedle = str(window).trim();
+  const pattern = windowNeedle ? '*' + windowNeedle + '*' : '*';
+  const script = `${BASE_PRELUDE}
+Add-Type -AssemblyName System.Runtime.WindowsRuntime
+$windowPattern = ${psQuote(pattern)}
+if ($windowPattern -eq '*') {
+  $fg = [SightlineInput]::GetForegroundWindow()
+  $target = Get-Process | Where-Object { $_.MainWindowHandle -ne 0 -and $_.MainWindowHandle -eq $fg } | Select-Object -First 1
+} else {
+  $target = Get-Process | Where-Object { $_.MainWindowHandle -ne 0 -and $_.ProcessName -like $windowPattern } | Sort-Object Id | Select-Object -First 1
+  if (-not $target) {
+    $target = Get-Process | Where-Object { $_.MainWindowHandle -ne 0 -and $_.MainWindowTitle -like $windowPattern } | Sort-Object Id | Select-Object -First 1
+  }
+}
+if (-not $target) { Write-Output '{"found":false,"reason":"window not found"}'; exit 0 }
+$handle = $target.MainWindowHandle
+$rect = New-Object SightlineInput+RECT
+if (-not [SightlineInput]::GetWindowRect($handle, [ref]$rect)) { Write-Output '{"found":false,"reason":"window rectangle unavailable"}'; exit 0 }
+$width = [int]($rect.Right - $rect.Left)
+$height = [int]($rect.Bottom - $rect.Top)
+if ($width -lt 8 -or $height -lt 8) { Write-Output '{"found":false,"reason":"window has no visible area"}'; exit 0 }
+# Everything above the client area is title bar and frame, never a control.
+$contentTop = 0
+$clientRect = New-Object SightlineInput+RECT
+$clientOrigin = New-Object SightlineInput+POINT
+if ([SightlineInput]::GetClientRect($handle, [ref]$clientRect)) {
+  if ([SightlineInput]::ClientToScreen($handle, [ref]$clientOrigin)) { $contentTop = [int]($clientOrigin.Y - $rect.Top) }
+}
+$bmp = New-Object System.Drawing.Bitmap $width, $height
+$g = [System.Drawing.Graphics]::FromImage($bmp)
+$g.CopyFromScreen($rect.Left, $rect.Top, 0, 0, $bmp.Size)
+$g.Dispose()
+$bmp.Save(${psQuote(file)}, [System.Drawing.Imaging.ImageFormat]::Png)
+$asTaskGeneric = ([System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object {
+  $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1'
+})[0]
+function Await-Ocr($op, $type) {
+  $task = $asTaskGeneric.MakeGenericMethod($type).Invoke($null, @($op))
+  $task.Wait(-1) | Out-Null
+  $task.Result
+}
+[Windows.Storage.StorageFile, Windows.Storage, ContentType = WindowsRuntime] | Out-Null
+[Windows.Graphics.Imaging.BitmapDecoder, Windows.Graphics, ContentType = WindowsRuntime] | Out-Null
+[Windows.Media.Ocr.OcrEngine, Windows.Foundation, ContentType = WindowsRuntime] | Out-Null
+$engine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromUserProfileLanguages()
+if (-not $engine) { $bmp.Dispose(); Write-Output '{"found":false,"reason":"no OCR language is installed"}'; exit 0 }
+$fileRef = Await-Ocr ([Windows.Storage.StorageFile]::GetFileFromPathAsync(${psQuote(file)})) ([Windows.Storage.StorageFile])
+$stream = Await-Ocr ($fileRef.OpenAsync([Windows.Storage.FileAccessMode]::Read)) ([Windows.Storage.Streams.IRandomAccessStream])
+$decoder = Await-Ocr ([Windows.Graphics.Imaging.BitmapDecoder]::CreateAsync($stream)) ([Windows.Graphics.Imaging.BitmapDecoder])
+$software = Await-Ocr ($decoder.GetSoftwareBitmapAsync([Windows.Graphics.Imaging.BitmapPixelFormat]::Bgra8, [Windows.Graphics.Imaging.BitmapAlphaMode]::Premultiplied)) ([Windows.Graphics.Imaging.SoftwareBitmap])
+$started = Get-Date
+$result = Await-Ocr ($engine.RecognizeAsync($software)) ([Windows.Media.Ocr.OcrResult])
+$ms = [int]((Get-Date) - $started).TotalMilliseconds
+$words = @()
+foreach ($line in $result.Lines) {
+  foreach ($word in $line.Words) {
+    $box = $word.BoundingRect
+    $wx = [int]$box.X
+    $wy = [int]$box.Y
+    $ww = [int]$box.Width
+    $wh = [int]$box.Height
+    # The label's own dark pixels, measured inside its box with a little room for
+    # the glyph edges the OCR box clips.
+    $ink = $null
+    if ($ww -gt 2 -and $wh -gt 2 -and $ww -lt 800 -and $wh -lt 200) {
+      $sumX = 0.0
+      $sumY = 0.0
+      $count = 0
+      $pad = 4
+      $x0 = [math]::Max(0, $wx - $pad)
+      $y0 = [math]::Max(0, $wy - $pad)
+      $x1 = [math]::Min($width - 1, $wx + $ww + $pad)
+      $y1 = [math]::Min($height - 1, $wy + $wh + $pad)
+      for ($py = $y0; $py -le $y1; $py += 1) {
+        for ($px = $x0; $px -le $x1; $px += 1) {
+          $colour = $bmp.GetPixel($px, $py)
+          $luminance = (0.299 * $colour.R) + (0.587 * $colour.G) + (0.114 * $colour.B)
+          if ($luminance -lt 128) { $sumX += $px; $sumY += $py; $count += 1 }
+        }
+      }
+      if ($count -gt 0) { $ink = @{ x = [math]::Round($sumX / $count, 1); y = [math]::Round($sumY / $count, 1); pixels = $count } }
+    }
+    $words += @{ text = [string]$word.Text; x = $wx; y = $wy; w = $ww; h = $wh; ink = $ink }
+  }
+}
+$bmp.Dispose()
+[pscustomobject]@{
+  ok = $true
+  ms = $ms
+  image = ${psQuote(file)}
+  origin = @{ x = [int]$rect.Left; y = [int]$rect.Top }
+  width = $width
+  height = $height
+  contentTop = $contentTop
+  title = [string]$target.MainWindowTitle
+  words = $words
+} | ConvertTo-Json -Compress -Depth 6`;
+  const res = await runPowerShell(script, Math.max(10000, Number(timeoutMs) || 20000));
+  if (!res.ok) return { found: false, reason: res.stderr || res.stdout || 'the OCR read failed' };
+  const line = String(res.stdout || '').split(/\r?\n/).filter(Boolean).pop() || '';
+  let parsed;
+  try {
+    parsed = JSON.parse(line);
+  } catch {
+    throw new Error(`OCR read was not JSON: ${line.slice(0, 300)}`);
+  }
+  const shot = {
+    kind: 'screenshot',
+    caption: 'Window read for a text locator',
+    path: path.relative(DATA, file).split(path.sep).join('/'),
+    width: Number(parsed.width) || null,
+    height: Number(parsed.height) || null,
+  };
+  if (!parsed.ok) return { found: false, reason: str(parsed.reason, 'no OCR result'), shot };
+  const lines = ocrLines(parsed.words, { minY: ocrContentTop({ windowRect: { top: 0 }, clientRect: { top: Number(parsed.contentTop) || 0 } }) });
+  const best = matchOcrLine(lines, wanted);
+  if (!best) {
+    return {
+      found: false,
+      reason: lines.length ? `no line in “${str(parsed.title)}” reads as ${wanted.map((item) => `“${item}”`).join(' or ')}` : 'no text was read in the window',
+      shot,
+      lines: lines.length,
+      ms: Number(parsed.ms) || 0,
+    };
+  }
+  const ink = lineInk(best.line);
+  const anchor = ocrLineAnchor(best.line, ink);
+  const point = ocrScreenPoint(anchor, parsed.origin);
+  if (!point) return { found: false, reason: `“${best.line.text}” was read but has no usable box`, shot, ms: Number(parsed.ms) || 0 };
+  return {
+    found: true,
+    x: point.x,
+    y: point.y,
+    text: best.line.text,
+    score: best.score,
+    method: 'OCR',
+    ink: Boolean(ink),
+    ms: Number(parsed.ms) || 0,
+    shot,
   };
 }
 
@@ -5111,9 +5275,32 @@ try {
       }
     }
 
+    // A control with a label does not need a model. The desktop's own OCR reads
+    // the window in 19–46 ms and the label sits inside the control, so this runs
+    // before the vision fallback and answers most of what the model used to.
+    let ocrReason = '';
+    if (p.ocr !== false) {
+      try {
+        const read = await findUiElementByOcr({ window: title, names: labels });
+        if (read.found) {
+          el = { ...el, name: read.text };
+          return clickFound(
+            read.x,
+            read.y,
+            `OCR “${read.text}”${read.ink ? ' (ink-centred)' : ''} in ${read.ms}ms`,
+            read.shot ? [read.shot] : []
+          );
+        }
+        ocrReason = read.reason || 'no label read';
+      } catch (err) {
+        ocrReason = err.message;
+      }
+    }
+
     // Last-resort element search: ask the vision model where the target is on a
-    // fresh full-screen capture. This covers apps that expose no useful UIA
-    // names, while the confidence threshold prevents blind clicks.
+    // fresh full-screen capture. This covers controls that carry no text at all
+    // — an icon, a toolbar glyph — while the confidence threshold prevents blind
+    // clicks.
     if (p.visionFallback !== false && p.vision !== false) {
       const visual = await findVisualElement({
         description: requested,
@@ -5140,7 +5327,7 @@ try {
       return clickFound(Number(p.fallbackX), Number(p.fallbackY), 'fallback coordinates');
     }
     throw new Error(
-      `UI element not found: “${requested}” in ${title || 'the foreground window'} after trying [${labels.join(' | ')}] and a vision fallback (${el.reason || 'not present'}).`
+      `UI element not found: “${requested}” in ${title || 'the foreground window'} after trying [${labels.join(' | ')}], an OCR read${ocrReason ? ` (${ocrReason})` : ''} and a vision fallback (${el.reason || 'not present'}).`
     );
   }
 

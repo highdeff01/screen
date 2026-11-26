@@ -16,7 +16,7 @@
  */
 
 import { db, now, persist, uid } from './store.js';
-import { executeStep, findUiElement, readPresence, readCursor as readCursorPoint, elementLabels } from './automation.js';
+import { executeStep, findUiElement, findUiElementByOcr, readPresence, readCursor as readCursorPoint, elementLabels } from './automation.js';
 
 /** The person at the desk must be still: this is not a race for the pointer. */
 export const AIM_MIN_IDLE_MS = 1200;
@@ -139,12 +139,14 @@ export function shouldAim({ run = null, presence = null, target = null, last = n
 }
 
 /**
- * Turn a target into a screen point, asking UI Automation the same question a
- * click asks: the label variants first, then — when the control is not exposed
- * (Tk and other non-UIA toolkits) — the point this control was clicked at last
- * time, which is a fact about where it lives on screen.
+ * Turn a target into a screen point, asking the same questions the click will:
+ * UI Automation's label variants first, then — when the control is not exposed
+ * (Tk and other non-UIA toolkits, which is why aiming existed at all here) — a
+ * read of the window's text, which locates the label in 19–46 ms instead of the
+ * vision model's 0.7–52 s and lands inside the control. The point this control
+ * was clicked at last time is the last resort: a fact, but a stale one.
  */
-export async function resolveAimPoint(target, { find = findUiElement } = {}) {
+export async function resolveAimPoint(target, { find = findUiElement, readText = findUiElementByOcr } = {}) {
   if (!target) return null;
   if (target.kind === 'point') return { x: target.x, y: target.y };
   for (const name of elementLabels(target.name)) {
@@ -160,6 +162,16 @@ export async function resolveAimPoint(target, { find = findUiElement } = {}) {
     // The inspection script is DPI-aware, so this is already a physical screen
     // pixel — the same unit the pointer is moved in.
     return { x: Math.round(x), y: Math.round(y) };
+  }
+  if (readText) {
+    try {
+      const read = await readText({ window: target.window, names: elementLabels(target.name) });
+      const x = Number(read?.x);
+      const y = Number(read?.y);
+      if (read?.found && Number.isFinite(x) && Number.isFinite(y)) return { x: Math.round(x), y: Math.round(y) };
+    } catch {
+      // A window that could not be read leaves the aim to the remembered point.
+    }
   }
   if (target.fallback) return { x: Math.round(target.fallback.x), y: Math.round(target.fallback.y) };
   return null;
@@ -213,7 +225,7 @@ function recordAim(run, target, point, { moved, ms, log, tracker }) {
 export async function aimAt(
   run,
   target,
-  { log = null, find = findUiElement, presence = readPresence, move = movePointer, cursor = readCursorPoint, tolerance = AIM_NEAR_PX } = {}
+  { log = null, find = findUiElement, readText = findUiElementByOcr, presence = readPresence, move = movePointer, cursor = readCursorPoint, tolerance = AIM_NEAR_PX } = {}
 ) {
   if (!run?.id || !target) return { ok: false, reason: 'nothing to aim at' };
   const tracker = runState(run.id);
@@ -250,7 +262,7 @@ export async function aimAt(
     const activity = await presence();
     const check = shouldAim({ run, presence: activity, target, last: tracker.last });
     if (!check.ok) return pause(check.reason);
-    const point = await resolveAimPoint(target, { find });
+    const point = await resolveAimPoint(target, { find, readText });
     if (!point) return pause(`“${target.label}” could not be located on screen`);
     // Where the pointer is comes free with the presence read; a target resolved
     // by UI Automation can land on the pointer without any further work.
