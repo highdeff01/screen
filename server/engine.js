@@ -1191,6 +1191,28 @@ export function deriveFocusTarget(step, run) {
   );
 }
 
+/**
+ * Remember where a control was clicked, per workflow step.
+ *
+ * Aiming needs a point before the step runs, and a toolkit without a UI
+ * Automation tree (Tk, some games) cannot be asked where its controls are. The
+ * place this control was clicked last time answers the question without
+ * guessing, and it is only ever used to hover.
+ */
+export function rememberClickPoint(workflow, step) {
+  if (!workflow || !['click', 'clickElement', 'doubleClick'].includes(String(step.type || ''))) return;
+  const match = /at (\d{1,5}),\s*(\d{1,5})/.exec(String(step.output || ''));
+  if (!match) return;
+  const x = Number(match[1]);
+  const y = Number(match[2]);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+  workflow.clickPoints = {
+    ...(workflow.clickPoints || {}),
+    [step.id]: { x, y, at: now(), name: String(step.params?.name || step.name || '').slice(0, 80) },
+  };
+  persist();
+}
+
 /** Report a failed or crashed run to the action log and the working agents. */
 function reportRunFailure(run, summary, error = '') {
   try {
@@ -2510,7 +2532,7 @@ async function executeRun(runId) {
       // The pointer is aimed at the control this step names while the step is
       // being prepared. It hovers, never clicks, and it stands still while the
       // operator is still using the mouse or keyboard.
-      if (!probe) void aimBeforeStep(run, step, { log: (message) => pushLog(run, 'info', message) });
+      if (!probe) void aimBeforeStep(run, step, { workflow, log: (message) => pushLog(run, 'info', message) });
       try {
         const context = await applyStepContext(step, run, workflow, probe);
         if (context?.skipReason) {
@@ -2936,6 +2958,7 @@ async function executeRun(runId) {
 
     if (succeeded) {
       step.output = result?.output || '';
+      if (!run.shadow) rememberClickPoint(workflow, step);
       if (result?.judgement) step.judgement = result.judgement;
       step.completion = completionFor(step, { ...(result || {}), output: step.output });
       if (step.completion.pending.length) {

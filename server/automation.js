@@ -2226,7 +2226,7 @@ function runExecutable(file, args, timeoutMs = 30000) {
   });
 }
 
-function elementLabels(name) {
+export function elementLabels(name) {
   const raw = String(name || '').replace(/\s+/g, ' ').trim();
   const labels = [raw];
   const clean = raw
