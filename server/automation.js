@@ -64,6 +64,10 @@ public class SightlineInput {
   [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
 }
 "@
+// A click is a physical pixel position. Without this the process is DPI-unaware,
+// so Windows silently scales every SetCursorPos: on a 125% display a click at
+// 150,250 landed at 187,312 and missed the control the run had just found.
+[void][SightlineInput]::SetProcessDPIAware()
 `;
 
 const MOUSE = { left: [2, 4], right: [8, 16], middle: [32, 64] };
@@ -5022,9 +5026,10 @@ try {
     };
 
     if (el.found) {
-      const scale = Number(el.scale) > 0 ? Number(el.scale) : 1;
-      const x = Math.round(el.x / scale);
-      const y = Math.round(el.y / scale);
+      // The inspection script is DPI-aware, so these are physical pixels, the
+      // same units the input script now moves in.
+      const x = Math.round(el.x);
+      const y = Math.round(el.y);
       el.name = el.name || matchedLabel;
       return clickFound(
         x,
@@ -5079,16 +5084,15 @@ try {
         minConfidence: p.minConfidence ?? 0.65,
       });
       if (visual.found) {
-        // The UIA result already carries the window's DPI, so only pay for a
-        // second PowerShell spawn when that lookup had nothing to report.
-        const scale = Number(el.scale) > 0 ? Number(el.scale) : await getWindowDpiScale(title);
-        const x = Math.round(visual.x / scale);
-        const y = Math.round(visual.y / scale);
+        // The capture and the locate are DPI-aware, so this point is already in
+        // physical pixels; dividing by the display scale moved it off target.
+        const x = Math.round(visual.x);
+        const y = Math.round(visual.y);
         el = { ...el, name: requested };
         return clickFound(
           x,
           y,
-          `vision ${Math.round((visual.confidence || 0) * 100)}%${scale !== 1 ? ` at DPI ${scale}x` : ''}`,
+          `vision ${Math.round((visual.confidence || 0) * 100)}%`,
           visual.shot ? [visual.shot] : []
         );
       }

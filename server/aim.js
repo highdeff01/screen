@@ -123,9 +123,9 @@ export async function resolveAimPoint(target, { find = findUiElement } = {}) {
     const x = Number(found.x);
     const y = Number(found.y);
     if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
-    // UI Automation reports device pixels; the runner acts in screen pixels.
-    const scale = Number(found.scale) > 0 ? Number(found.scale) : 1;
-    return { x: Math.round(x / scale), y: Math.round(y / scale) };
+    // The inspection script is DPI-aware, so this is already a physical screen
+    // pixel — the same unit the pointer is moved in.
+    return { x: Math.round(x), y: Math.round(y) };
   }
   if (target.fallback) return { x: Math.round(target.fallback.x), y: Math.round(target.fallback.y) };
   return null;
