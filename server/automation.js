@@ -64,9 +64,9 @@ public class SightlineInput {
   [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
 }
 "@
-// A click is a physical pixel position. Without this the process is DPI-unaware,
-// so Windows silently scales every SetCursorPos: on a 125% display a click at
-// 150,250 landed at 187,312 and missed the control the run had just found.
+# A click is a physical pixel position. Without this the process is DPI-unaware,
+# so Windows silently scales every SetCursorPos: on a 125% display a click at
+# 150,250 landed at 187,312 and missed the control the run had just found.
 [void][SightlineInput]::SetProcessDPIAware()
 `;
 
