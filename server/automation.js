@@ -1603,7 +1603,7 @@ $g.CopyFromScreen($rect.Left, $rect.Top, 0, 0, $bmp.Size)
 $g.Dispose()
 $bmp.Save(${psQuote(file)}, [System.Drawing.Imaging.ImageFormat]::Png)
 $asTaskGeneric = ([System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object {
-  $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1'
+  $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation\`1'
 })[0]
 function Await-Ocr($op, $type) {
   $task = $asTaskGeneric.MakeGenericMethod($type).Invoke($null, @($op))
