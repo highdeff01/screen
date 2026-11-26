@@ -7,6 +7,7 @@ import {
   inspectWindowState,
   readFocusedElement,
   findUiElement,
+  findUiElementByOcr,
   findOpenUrl,
   findExistingDownload,
   findDownloadedFile,
@@ -1554,6 +1555,29 @@ export async function preStepSkip(step, probe = null, run = null) {
     }
     if (!existing?.found) return '';
     return `Already downloaded ${existing.name}${existing.bytes ? ` (${Math.round(existing.bytes / 1024 / 1024)} MB)` : ''}; skipped the download click.`;
+  }
+  // A click that opens a screen is a no-op once that screen is already showing:
+  // the only label left to match is the screen's own heading, and clicking it
+  // changes nothing. The step declares the text that proves its destination is
+  // open, so a re-run passes instead of aiming at a lookalike heading.
+  if (['click', 'clickElement', 'doubleClick'].includes(step.type) && step.params?.skipIfVisible) {
+    const marker = String(step.params.skipIfVisible).trim();
+    const window = String(step.params.window || step.params.foreground || step.params.title || '').trim();
+    if (marker && window) {
+      let read = null;
+      try {
+        // The same OCR read the click itself uses: a Tk window exposes no
+        // element tree, so its visible labels are the only honest evidence.
+        read = probe?.findUiElementByOcr
+          ? await probe.findUiElementByOcr({ window, name: marker })
+          : await findUiElementByOcr({ window, name: marker });
+      } catch {
+        return '';
+      }
+      if (read?.found) {
+        return `“${marker}” is already visible in “${window}”; the screen this click opens is already showing, so the click was skipped.`;
+      }
+    }
   }
   if (step.type === 'downloadMedia' && step.params?.overwrite !== true) {
     const url = String(

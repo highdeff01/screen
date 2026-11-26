@@ -105,6 +105,42 @@ test('a downloaded installer skips the download click', async () => {
   assert.match(reason, /skipped the download click/);
 });
 
+test('a click whose destination screen is already showing is skipped', async () => {
+  const asked = [];
+  const probe = {
+    findUiElementByOcr: async (args) => {
+      asked.push(args);
+      return { found: args.name === 'Notifications', text: 'Notifications' };
+    },
+  };
+  const reason = await engine.preStepSkip(
+    {
+      type: 'clickElement',
+      name: 'Click Settings',
+      params: { window: 'Sightline Profile', name: 'Settings', skipIfVisible: 'Notifications' },
+    },
+    probe,
+    null
+  );
+  assert.match(reason, /“Notifications” is already visible/);
+  assert.match(reason, /the click was skipped/);
+  assert.deepEqual(asked, [{ window: 'Sightline Profile', name: 'Notifications' }]);
+
+  const stillHome = await engine.preStepSkip(
+    { type: 'clickElement', name: 'Click Settings', params: { window: 'Sightline Profile', name: 'Settings', skipIfVisible: 'Notifications' } },
+    { findUiElementByOcr: async () => ({ found: false, reason: 'no line matched' }) },
+    null
+  );
+  assert.equal(stillHome, '', 'from the starting screen the click still runs');
+
+  const undeclared = await engine.preStepSkip(
+    { type: 'clickElement', name: 'Click Settings', params: { window: 'Sightline Profile', name: 'Settings' } },
+    probe,
+    null
+  );
+  assert.equal(undeclared, '', 'a step that declares no marker is never skipped this way');
+});
+
 test('destination matching reads the real media folder', () => {
   fs.mkdirSync(path.join(tempRoot, 'data', 'media'), { recursive: true });
   fs.writeFileSync(path.join(tempRoot, 'data', 'media', 'movie-2.mkv'), 'x');
