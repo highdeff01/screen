@@ -2604,6 +2604,8 @@ route('POST', /^\/api\/workflows$/, async (req, res) => {
       pauseBeforeRetryMs: 800,
       notifyAgent: true,
     },
+    // Empty until the author says what the app should look like afterwards.
+    handoff: { enabled: false, steps: [] },
     steps: [],
     createdAt: now(),
     updatedAt: now(),
@@ -2632,6 +2634,23 @@ route('PATCH', /^\/api\/workflows\/([^/]+)$/, async (req, res, [id]) => {
       captureScreenshot: p.captureScreenshot !== false,
       pauseBeforeRetryMs: Math.max(0, Math.min(10000, Number(p.pauseBeforeRetryMs) || 0)),
       notifyAgent: p.notifyAgent !== false,
+    };
+  }
+  if (body.handoff !== undefined) {
+    const h = body.handoff || {};
+    const steps = (Array.isArray(h.steps) ? h.steps : []).slice(0, 10);
+    patch.handoff = {
+      enabled: h.enabled === true,
+      steps: steps
+        .map((step, index) => ({
+          id: String(step?.id || `handoff_${index + 1}`).slice(0, 40),
+          type: String(step?.type || '').trim(),
+          name: String(step?.name || step?.type || `Hand-off step ${index + 1}`).slice(0, 90),
+          params: step?.params && typeof step.params === 'object' && !Array.isArray(step.params) ? step.params : {},
+          timeoutMs: Math.max(1000, Math.min(60000, Number(step?.timeoutMs) || 20000)),
+          optional: true,
+        }))
+        .filter((step) => step.type),
     };
   }
   if (body.tags !== undefined && Array.isArray(body.tags)) patch.tags = body.tags.map(String).slice(0, 8);

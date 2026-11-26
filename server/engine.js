@@ -2132,6 +2132,44 @@ async function readPageToUnblock(run, step, workflow, output, probe = null) {
   return retry;
 }
 
+/**
+ * Hand the desktop back after a live run.
+ *
+ * A proof that clicks a navigating control ends on whatever screen the click
+ * opened. The workflow's own hand-off steps put the app back where the operator
+ * expects it — a Settings screen with the pointer on the next target, for
+ * example. Best-effort by design: a failed hand-off is reported in the run log
+ * and never rewrites the verdict, because what the run proved is not the same
+ * as what the desk looks like afterwards.
+ */
+async function runHandoff(run, workflow, { probe = null, getTool = () => undefined } = {}) {
+  const handoff = workflow?.handoff || null;
+  const steps = Array.isArray(handoff?.steps) ? handoff.steps.filter((step) => step?.type) : [];
+  if (!handoff?.enabled || !steps.length) return;
+  if (probe || run.dryRun || run.shadow || run.status === 'cancelled') return;
+  run.handoff = { at: now(), ok: true, steps: [] };
+  pushLog(run, 'info', `Hand-off: returning to the hand-off screen (${steps.length} step${steps.length === 1 ? '' : 's'}).`);
+  for (const raw of steps) {
+    const step = {
+      ...raw,
+      id: raw.id || uid('handoff'),
+      optional: true,
+      timeoutMs: Math.max(1000, Math.min(60000, Number(raw.timeoutMs) || 20000)),
+    };
+    try {
+      const result = await executeStep(step, { live: true, runId: run.id, run, workflow, getTool });
+      run.handoff.steps.push({ name: step.name || step.type, ok: true, output: String(result?.output || '').slice(0, 300) });
+      pushLog(run, 'info', `Hand-off: ${result?.output || step.name || step.type}`);
+    } catch (err) {
+      run.handoff.ok = false;
+      run.handoff.steps.push({ name: step.name || step.type, ok: false, error: String(err.message || err).slice(0, 300) });
+      pushLog(run, 'warn', `Hand-off step “${step.name || step.type}” did not complete: ${err.message}`);
+    }
+  }
+  run.handoff.finishedAt = now();
+  persist();
+}
+
 async function executeRun(runId) {
   const run = findRun(runId);
   if (!run || run.status !== 'queued') return;
@@ -3502,6 +3540,15 @@ async function executeRun(runId) {
         pushLog(run, 'warn', `Automatic recheck failed: ${err.message}`);
       }
     }
+  }
+
+  // The workflow can declare how it hands the desktop back. This runs after the
+  // automatic recheck has read the real end state, so a proof that navigated the
+  // app still leaves the operator on the screen they expect.
+  try {
+    await runHandoff(run, workflow, { probe, getTool });
+  } catch (err) {
+    pushLog(run, 'warn', `Hand-off failed: ${err.message}`);
   }
 
   if (runFinishedHook) {

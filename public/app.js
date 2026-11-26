@@ -1244,6 +1244,7 @@ function renderBuilderMain(wf, lastRun, sim, liveAvailable, liveReason) {
         <span class="badge">${wf.steps.length} steps</span>
         ${wf.stats ? `<span class="badge">complexity ${wf.stats.avgComplexity}</span><span class="badge ${wf.stats.flakinessScore > 30 ? 'warnbadge' : ''}">flaky ${wf.stats.flakinessScore}%</span><span class="badge">${wf.stats.totalFailures7d} failures / 7d</span>${wf.stats.requiresAdvancedPlanning ? '<span class="badge ai">advanced planning</span>' : ''}` : ''}
         <span class="spacer"></span>
+        <label class="check" title="After a live run, run this workflow's hand-off steps so the app is left on the screen you expect."><input type="checkbox" data-act="handoff-toggle" data-id="${wf.id}" ${wf.handoff?.enabled ? 'checked' : ''} /> Return to hand-off state</label>
         <button class="btn" data-act="run-workflow" data-id="${wf.id}" data-mode="${sim ? 'dry' : 'live'}">
           ▶ Run ${sim ? 'simulated' : 'live'}
         </button>
@@ -7733,6 +7734,29 @@ async function runAction(name, ds, el) {
       if (!res.ok) return toast(res.error, 'error');
       ui.selectedWorkflow = null;
       toast('Workflow deleted', 'ok');
+      await refresh();
+      break;
+    }
+    case 'handoff-toggle': {
+      const wf = (ui.data?.workflows || []).find((entry) => entry.id === ds.id);
+      const enabled = el?.checked === true;
+      if (enabled && !(wf?.handoff?.steps || []).length) {
+        toast('No hand-off steps are declared for this workflow, so nothing will run after the run.', 'error');
+      }
+      const res = await api(`/api/workflows/${encodeURIComponent(ds.id)}`, {
+        method: 'PATCH',
+        body: { handoff: { ...(wf?.handoff || {}), enabled } },
+      });
+      if (!res.ok) {
+        if (el) el.checked = !enabled;
+        return toast(res.error, 'error');
+      }
+      toast(
+        enabled
+          ? 'After each live run the workflow will return the app to its hand-off state.'
+          : 'Hand-off is off: runs will leave the app wherever they end.',
+        'ok'
+      );
       await refresh();
       break;
     }
