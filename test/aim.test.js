@@ -89,6 +89,7 @@ test('a quiet desktop with the run window in front lets the aim go ahead and rec
     presence: async () => presenceAt(4000, 'Sightline Accounts — Sign up'),
     find: async () => ({ found: true, x: 512, y: 480 }),
     move: async (_run, point) => moves.push(point),
+    cursor: async () => null,
   });
   assert.equal(result.ok, true);
   assert.deepEqual(moves, [{ x: 512, y: 480 }]);
@@ -104,6 +105,7 @@ test('aiming twice at the same control does not move the pointer twice', async (
     presence: async () => presenceAt(4000, 'Sightline Accounts — Sign up'),
     find: async () => ({ found: true, x: 10, y: 20 }),
     move: async (_run, point) => moves.push(point),
+    cursor: async () => null,
   };
   const target = aim.aimTargetFor({ type: 'clickElement', params: { window: 'Sightline Accounts', name: 'Email' } });
   await aim.aimAt(run, target, options);
@@ -147,11 +149,85 @@ test('a control with no UI Automation tree is aimed at the point it was clicked 
       presence: async () => presenceAt(4000, 'Sightline Profile'),
       find: async () => ({ found: false, reason: 'no UI Automation tree' }),
       move: async (_run, point) => moves.push(point),
+      cursor: async () => ({ x: 900, y: 700 }),
     }
   );
   assert.equal(result.ok, true, 'the remembered point is a real aim target');
   assert.deepEqual(moves, [{ x: 300, y: 240 }]);
   assert.equal(run.aims[0].target, 'Dan');
+});
+
+test('a pointer already within a few pixels is left alone, with nothing resolved', async () => {
+  const run = liveRun();
+  const messages = [];
+  let presenceReads = 0;
+  let finds = 0;
+  const moves = [];
+  const result = await aim.aimBeforeStep(
+    run,
+    { id: 's3', type: 'clickElement', params: { window: 'Sightline Profile', name: 'Notifications' } },
+    {
+      workflow: { clickPoints: { s3: { x: 137, y: 250, name: 'Notifications' } } },
+      cursor: async () => ({ x: 135, y: 248 }),
+      presence: async () => {
+        presenceReads += 1;
+        return presenceAt(4000, 'Sightline Profile');
+      },
+      find: async () => {
+        finds += 1;
+        return { found: true, x: 900, y: 900 };
+      },
+      move: async (_run, point) => moves.push(point),
+      log: (message) => messages.push(message),
+    }
+  );
+  assert.equal(result.ok, true);
+  assert.equal(result.moved, false);
+  assert.deepEqual(moves, [], 'the pointer was already there');
+  assert.equal(presenceReads, 0, 'the presence read is skipped too');
+  assert.equal(finds, 0, 'no UI Automation query is needed');
+  assert.match(messages[0], /already on/);
+  assert.equal(run.aims[0].moved, false);
+  assert.equal(run.aims[0].target, 'Notifications');
+  assert.equal(run.aims[0].stepId, 's3');
+});
+
+test('a pointer just outside the tolerance is still moved', async () => {
+  const moves = [];
+  const result = await aim.aimAt(liveRun(), aim.aimTargetFor({ type: 'click', params: { x: 400, y: 300 } }), {
+    cursor: async () => ({ x: 407, y: 300 }),
+    presence: async () => ({ ...presenceAt(4000, ''), cursor: { x: 407, y: 300 } }),
+    find: async () => ({ found: false }),
+    move: async (_run, point) => moves.push(point),
+  });
+  assert.equal(result.moved, true);
+  assert.deepEqual(moves, [{ x: 400, y: 300 }]);
+});
+
+test('a point UI Automation resolves under the pointer does not move it', async () => {
+  const run = liveRun();
+  const moves = [];
+  const result = await aim.aimAt(
+    run,
+    aim.aimTargetFor({ type: 'clickElement', params: { window: 'Sightline Accounts', name: 'Email' } }),
+    {
+      // No remembered point: the tree answers, and its answer is under the mouse.
+      presence: async () => ({ ...presenceAt(4000, 'Sightline Accounts'), cursor: { x: 512, y: 481 } }),
+      find: async () => ({ found: true, x: 512, y: 480 }),
+      move: async (_run, point) => moves.push(point),
+    }
+  );
+  assert.equal(result.moved, false);
+  assert.deepEqual(moves, []);
+  assert.equal(run.aims[0].moved, false);
+});
+
+test('the tolerance is a distance in screen pixels', () => {
+  assert.equal(aim.pointerIsOnTarget({ x: 100, y: 100 }, { x: 103, y: 104 }), true);
+  assert.equal(aim.pointerIsOnTarget({ x: 100, y: 100 }, { x: 107, y: 100 }), false);
+  assert.equal(aim.pointerIsOnTarget({ x: 100, y: 100 }, { x: 100, y: 100 }, 0), true);
+  assert.equal(aim.pointerIsOnTarget({ x: 100, y: 100 }, { x: 100, y: 101 }, 0), false);
+  assert.equal(aim.pointerIsOnTarget({ x: 100, y: 100 }, null), false);
 });
 
 test('a control that was never clicked and is not in the tree is reported, not guessed', async () => {
