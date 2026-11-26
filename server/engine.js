@@ -11,6 +11,7 @@ import {
   findExistingDownload,
   findDownloadedFile,
   readScreenContext,
+  captureScreenFrame,
   readPresence,
   readForegroundWindow,
   readWindowText,
@@ -18,6 +19,9 @@ import {
   resolveCheckFile,
 } from './automation.js';
 import { judgeTargetFor, normalizeText } from './judgement.js';
+import { enqueueFrameJob, drainFrameQueue, clearFrameQueue, markReaderBlind, readerIsBlind } from './frame-queue.js';
+import { aimBeforeStep, aimAt, aimTargetForChoice, resetAimState } from './aim.js';
+import { registerActiveStep, clearActiveStep } from './nudge.js';
 import { assessStep, launchProducedNewWindow, looksLikeSavedDocument, reviewPrevious } from './step-context.js';
 import { classifyPresence, holdDecision, learnHold, completionFor, isFocusStealing, isQuickStep, silentChecksFor } from './presence.js';
 import { recordAction } from './action-log.js';
@@ -53,6 +57,7 @@ import {
   normalizePageReadSettings,
   readPage,
   shouldReadPage,
+  capturePageFrame,
 } from './page-read.js';
 import { analyzeRun, writeRunNote, addSuggestion, suggestionsFor, planSteps, workflowGoal } from './planner.js';
 import { canRetry, recordRetryOutcome } from './retry-budget.js';
@@ -214,6 +219,10 @@ export function summary(run) {
     // Reads the check could not make (model offline, no window scope). They are
     // counted apart so "checked" only ever means "actually judged".
     screenReviewSkipped: (run.screenReviews || []).filter((entry) => entry.status === 'skipped').length,
+    // Frames the reader never answered for. Counted apart from the reviews so a
+    // reader that is down cannot be mistaken for a screen that was checked.
+    screenReviewUnread: (run.screenReviewSkips || []).length,
+    aims: (run.aims || []).length,
     // A verdict per automatic check, not just a picture: pass, mismatch, or an
     // honest "could not read". A mismatch that survived its retry sends the run
     // to review instead of letting it read as a clean pass.
@@ -636,20 +645,22 @@ async function caretAfterClick(step, probe = null) {
   }
 }
 
-async function reviewScreenAfterStep(run, step, workflow, probe = null) {
+async function reviewScreenAfterStep(run, step, workflow, probe = null, frame = null) {
   if (run.dryRun || run.shadow) return null;
   // A probe without its own screen reviewer is a desktop-free run: there is no
   // real screen to judge, and reading it would touch the machine running tests.
   if (probe && typeof probe.screenReview !== 'function') return null;
   const cfg = screenReviewSettings();
-  if (!shouldReviewStep(step, (run.screenReviews || []).length, cfg)) return null;
+  // The decision was made when the frame was taken: a cap that has filled in
+  // while the frame waited must not drop a frame that already exists.
+  if (!frame && !shouldReviewStep(step, (run.screenReviews || []).length, cfg)) return null;
   const caption = screenReviewCaption(step);
   const check = screenReviewCheck(step, { variables: run.variables || {} });
   const target = judgeTargetFor(step, run);
   // A static frame cannot show a caret, so asking the vision model to confirm a
   // click on a text field only ever produced “no visible focus” mismatches on
   // clicks that had landed. The focused element proves it instead.
-  const caret = await caretAfterClick(step, probe);
+  const caret = frame ? '' : await caretAfterClick(step, probe);
   if (caret) {
     const entry = {
       stepId: step.id,
@@ -677,27 +688,10 @@ async function reviewScreenAfterStep(run, step, workflow, probe = null) {
     return entry;
   }
   const limit = screenReviewAttempts(cfg);
-  const checkStep = {
-    id: uid('chk'),
-    type: 'verifyScreen',
-    name: caption,
-    params: {
-      question: check.question,
-      caption,
-      // An unreadable frame (vision offline, no window scope) is recorded as
-      // unverified: only the judges saying "this is not it" is a mismatch.
-      onError: 'warn',
-      minConfidence: cfg.minConfidence,
-      ...(check.expectedText ? { text: check.expectedText } : {}),
-      ...(check.absentText ? { absent: check.absentText } : {}),
-      // The handle is the subject. A title is only a snapshot: a step that types
-      // into an untitled document renames the window it is then judged in, and
-      // handing that stale title to the check failed a frame that was right.
-      ...(target.hwnd ? { handle: target.hwnd } : target.title ? { title: target.title } : {}),
-      ...(target.process ? { app: target.process } : {}),
-    },
-    timeoutMs: 90000,
-  };
+  const checkStep = screenReviewCheckStep(step, { caption, check, target, cfg });
+  // A frame captured with the step is judged exactly as it was: no focus, no
+  // second screenshot, nothing that touches a desktop that has moved on.
+  if (frame) checkStep.params = { ...checkStep.params, frame };
   let outcome = null;
   let evidenceId = null;
   let evidencePath = null;
@@ -804,6 +798,9 @@ async function reviewScreenAfterStep(run, step, workflow, probe = null) {
       step.id
     );
   } else if (entry.status === 'skipped') {
+    // The reader, not the frame, is what failed. Saying so once lets the rest
+    // of the run stop paying the same timeout for the same silence.
+    markReaderBlind(run.id, entry.detail);
     pushLog(run, 'warn', `Screen check after “${step.name}” could not read the screen: ${entry.detail}`, step.id);
   } else {
     pushLog(
@@ -815,6 +812,128 @@ async function reviewScreenAfterStep(run, step, workflow, probe = null) {
   }
   persist();
   return entry;
+}
+
+/** The verifyScreen step a review's frozen frame is judged with. */
+function screenReviewCheckStep(step, { caption, check, target, cfg }) {
+  return {
+    id: uid('chk'),
+    type: 'verifyScreen',
+    name: caption,
+    params: {
+      question: check.question,
+      caption,
+      // An unreadable frame (vision offline, no window scope) is recorded as
+      // unverified: only the judges saying "this is not it" is a mismatch.
+      onError: 'warn',
+      minConfidence: cfg.minConfidence,
+      ...(check.expectedText ? { text: check.expectedText } : {}),
+      ...(check.absentText ? { absent: check.absentText } : {}),
+      // The handle is the subject. A title is only a snapshot: a step that types
+      // into an untitled document renames the window it is then judged in, and
+      // handing that stale title to the check failed a frame that was right.
+      ...(target.hwnd ? { handle: target.hwnd } : target.title ? { title: target.title } : {}),
+      ...(target.process ? { app: target.process } : {}),
+    },
+    timeoutMs: 90000,
+  };
+}
+
+/** A click proven by the caret needs no frame: record that proof now. */
+function recordCaretReview(run, step, { check, target, caret }) {
+  const entry = {
+    stepId: step.id,
+    stepName: step.name,
+    type: step.type,
+    at: now(),
+    question: check.question,
+    title: target.title || '',
+    app: target.process || '',
+    evidenceId: null,
+    path: null,
+    simulated: false,
+    status: 'pass',
+    verdict: 'pass',
+    attempts: 0,
+    retried: false,
+    detail: `The click landed: ${caret}.`,
+    mismatch: '',
+    judgement: null,
+  };
+  run.screenReviews = [...(run.screenReviews || []), entry].slice(-200);
+  step.screenReview = { at: entry.at, evidenceId: null, status: 'pass', attempts: 0, detail: entry.detail };
+  pushLog(run, 'info', `Screen check after “${step.name}” passed: ${entry.detail}`, step.id);
+  persist();
+  return entry;
+}
+
+/**
+ * A review that could not be read is an evidence gap: not a pass, not a
+ * contradiction. It is kept apart from the per-run review cap, because a reader
+ * that is down must not spend the budget of the frames it never read.
+ */
+function recordBlindReview(run, step, reason) {
+  const detail = String(reason || 'the screen reader did not answer').slice(0, 300);
+  run.screenReviewSkips = [
+    ...(run.screenReviewSkips || []),
+    { stepId: step.id, stepName: step.name, at: now(), detail },
+  ].slice(-20);
+  step.screenReview = { at: now(), evidenceId: null, status: 'skipped', attempts: 0, detail: `Not read: ${detail}` };
+  if (!run.screenReviewBlind) {
+    run.screenReviewBlind = detail;
+    pushLog(
+      run,
+      'warn',
+      `The automatic screen review could not read a frame: ${detail}. The run keeps that gap; nothing is reported as checked.`,
+      step.id
+    );
+  }
+  persist();
+  return null;
+}
+
+/**
+ * Take the review's frame with the step, judge it after the step.
+ *
+ * Order matters and is the whole point: the caret (a click's own proof) and the
+ * screenshot are read now, while the desktop is still in the state the step
+ * made. The model call, which is the slow part on a real endpoint, is queued. A
+ * run therefore stops paying a minute of nothing between every two actions, and
+ * the verdict still lands before the run decides what it did — `drainFrameQueue`
+ * is awaited once, at the end.
+ */
+async function startScreenReview(run, step, workflow, probe = null) {
+  if (run.dryRun || run.shadow) return null;
+  // A probe carries its own reviewer: there is no desktop to capture and
+  // nothing worth deferring.
+  if (probe) return { frame: null, entry: await reviewScreenAfterStep(run, step, workflow, probe) };
+  const cfg = screenReviewSettings();
+  if (!shouldReviewStep(step, (run.screenReviews || []).length, cfg)) return null;
+  if (readerIsBlind(run.id)) {
+    recordBlindReview(run, step, run.screenReviewBlind || 'the screen reader did not answer an earlier frame');
+    return { frame: null, entry: null };
+  }
+  const caption = screenReviewCaption(step);
+  const check = screenReviewCheck(step, { variables: run.variables || {} });
+  const target = judgeTargetFor(step, run);
+  const caret = await caretAfterClick(step, probe);
+  if (caret) return { frame: null, entry: recordCaretReview(run, step, { check, target, caret }) };
+  const checkStep = screenReviewCheckStep(step, { caption, check, target, cfg });
+  const frame = await captureScreenFrame({ step: checkStep, run, runId: run.id }).catch((err) => ({
+    ok: false,
+    skipped: String(err?.message || err),
+  }));
+  if (!frame.ok) {
+    recordBlindReview(run, step, frame.skipped);
+    return { frame: null, entry: null };
+  }
+  enqueueFrameJob(run.id, {
+    kind: 'screen-review',
+    run: () => reviewScreenAfterStep(run, step, workflow, null, frame),
+    onBlind: (reason) => recordBlindReview(run, step, reason),
+  });
+  persist();
+  return { frame, entry: null };
 }
 
 /** Keep one copy of a review screenshot on the run, as evidence. */
@@ -1685,7 +1804,7 @@ function storePageReadEvidence(run, step, result) {
  * never fails a step that nothing actually contradicted, and a run with no
  * pixels (simulated, shadow, desktop-free probe) is never read at all.
  */
-async function takePageReading(run, step, workflow, probe = null, { enforceCap = true } = {}) {
+async function takePageReading(run, step, workflow, probe = null, { enforceCap = true, shot = null } = {}) {
   if (run.dryRun || run.shadow) return null;
   if (probe && typeof probe.pageRead !== 'function') return null;
   const cfg = pageReadSettings(run);
@@ -1701,6 +1820,9 @@ async function takePageReading(run, step, workflow, probe = null, { enforceCap =
           nextNames: (run.steps || []).slice((run.steps || []).indexOf(step) + 1).map((entry) => entry.name),
           variables: run.variables || {},
           target: run.lastWindow || null,
+          // The frame was already captured with the step; reading it later must
+          // not photograph a screen that has moved on.
+          ...(shot ? { capture: async () => shot } : {}),
         });
     if (!result?.ok || !result.reading) {
       pushLog(run, 'warn', `Screen read after “${step.name}”: ${result?.error || 'no answer'}`, step.id);
@@ -1743,7 +1865,7 @@ function recordPageReading(run, step, { reading, result }, extra = {}) {
 }
 
 /** Add the action the frame implies, when it is safe, confident and not already next. */
-function insertImpliedStep(run, step, reading, cfg) {
+function insertImpliedStep(run, step, reading, cfg, { followCursor = false } = {}) {
   if (!reading?.nextAction || reading.goalLooksMet) return null;
   if (Number(reading.confidence || 0) < cfg.minConfidence) return null;
   if ((run.screenReadSteps || []).length >= cfg.maxInserts) return null;
@@ -1752,7 +1874,13 @@ function insertImpliedStep(run, step, reading, cfg) {
   // The frame can still show the state the step just produced; repeating that
   // action would loop instead of advancing.
   if (duplicatesStep(implied, step)) return null;
-  const at = run.steps.indexOf(step);
+  // A deferred reading lands while later steps run: its action belongs next,
+  // after whichever step is running, never before work that already happened.
+  if (run.stepsClosed) return null;
+  const cursor = followCursor && run.currentStepId
+    ? run.steps.find((entry) => entry.id === run.currentStepId)
+    : null;
+  const at = run.steps.indexOf(cursor || step);
   if (at < 0) return null;
   const next = run.steps[at + 1];
   if (next && duplicatesStep(implied, next)) return null;
@@ -1781,13 +1909,41 @@ function insertImpliedStep(run, step, reading, cfg) {
   return fresh;
 }
 
-async function readPageAfterStep(run, step, workflow, probe = null) {
-  const taken = await takePageReading(run, step, workflow, probe);
+async function applyPageReading(run, step, workflow, probe = null, shot = null, { followCursor = false } = {}) {
+  const taken = await takePageReading(run, step, workflow, probe, { shot });
   if (!taken) return null;
-  const inserted = insertImpliedStep(run, step, taken.reading, taken.cfg);
+  const inserted = insertImpliedStep(run, step, taken.reading, taken.cfg, { followCursor });
   const entry = recordPageReading(run, step, taken, { inserted: inserted?.name || null });
   persist();
   return entry;
+}
+
+async function readPageAfterStep(run, step, workflow, probe = null, frame = null) {
+  // A live read is judged on the frame taken with the step, so the reading no
+  // longer blocks the next action. A probe keeps its own timing.
+  if (!probe) {
+    if (run.dryRun || run.shadow) return null;
+    const cfg = pageReadSettings(run);
+    if (!cfg.enabled) return null;
+    if (!shouldReadPage(step, { reads: (run.pageReads || []).length, settings: cfg })) return null;
+    // The frame must be the one the step made. A reading taken from a screen
+    // the run had already left would describe a page that is no longer there.
+    const shot = frame?.shot
+      || (await capturePageFrame({ run, target: run.lastWindow || null }).catch(() => null));
+    if (!shot) return null;
+    enqueueFrameJob(run.id, {
+      kind: 'page-read',
+      run: () => applyPageReading(run, step, workflow, null, shot, { followCursor: true }),
+      onBlind: (reason) => {
+        run.pageReadSkips = [
+          ...(run.pageReadSkips || []),
+          { stepId: step.id, stepName: step.name, at: now(), detail: String(reason || '').slice(0, 300) },
+        ].slice(-20);
+      },
+    });
+    return null;
+  }
+  return applyPageReading(run, step, workflow, probe, frame);
 }
 
 /**
@@ -2304,6 +2460,10 @@ async function executeRun(runId) {
       } catch (err) {
         pushLog(run, 'warn', `Presence hold failed: ${err.message}`, step.id);
       }
+      // The pointer is aimed at the control this step names while the step is
+      // being prepared. It hovers, never clicks, and it stands still while the
+      // operator is still using the mouse or keyboard.
+      if (!probe) void aimBeforeStep(run, step, { log: (message) => pushLog(run, 'info', message) });
       try {
         const context = await applyStepContext(step, run, workflow, probe);
         if (context?.skipReason) {
@@ -2432,7 +2592,15 @@ async function executeRun(runId) {
             settings: config,
             ask: probe?.agentAsk || null,
             onNote: (message) => pushLog(run, 'info', `Thinking: ${message}`, step.id),
+            // The prepared move is where the pointer belongs: aiming at it is
+            // how thinking becomes visible on the desktop instead of in a log.
+            onAim: (choice) => {
+              const target = aimTargetForChoice(choice);
+              if (target) void aimAt(run, target, { log: (message) => pushLog(run, 'info', message) });
+            },
           });
+          // Operator input while this step runs asks it to look again now.
+          registerActiveStep(run, step, () => thinkLoop?.tickNow());
         }
       } catch (err) {
         pushLog(run, 'warn', `Step thinking did not start: ${err.message}`, step.id);
@@ -2674,6 +2842,7 @@ async function executeRun(runId) {
       }
     }
 
+    clearActiveStep(run.id);
     step.endedAt = now();
     step.ms = runnerMs(step.startedAt, step.endedAt);
     if (!cancelled && !skipped && !unverified) await auditVisual(step);
@@ -2762,10 +2931,13 @@ async function executeRun(runId) {
       rememberWindow(run, step);
       // A screenshot is taken after every action, automatically, so the review
       // is evidence in the run instead of a button the operator has to press.
-      await reviewScreenAfterStep(run, step, workflow, probe);
+      // The frame is taken now, with the step, and judged while the next step
+      // runs: a slow model must not park the run between two actions.
+      const reviewed = await startScreenReview(run, step, workflow, probe);
       // The review judges the frame against the step; the read asks what the
-      // frame actually is and which action the goal implies next.
-      await readPageAfterStep(run, step, workflow, probe);
+      // frame actually is and which action the goal implies next. Both reuse
+      // the frame taken with the step instead of a second look at a later one.
+      await readPageAfterStep(run, step, workflow, probe, reviewed?.frame || null);
       recordLedger(run, step);
     } else {
       step.status = 'failed';
@@ -2906,6 +3078,22 @@ async function executeRun(runId) {
     persist();
   }
 
+  // Every frame taken between steps is judged exactly once, in its own order,
+  // before the run decides what it did. This is the one place a slow model is
+  // still waited for — instead of between every two actions.
+  run.stepsClosed = true;
+  const frames = await drainFrameQueue(run.id);
+  if (frames.jobs) {
+    pushLog(
+      run,
+      frames.blind ? 'warn' : 'info',
+      `Screen review: ${frames.ran}/${frames.jobs} frame(s) judged${
+        frames.blind
+          ? `; the reader stopped answering (${frames.blindReason || frames.lastError}) and the rest were not read`
+          : ''
+      }.`
+    );
+  }
   for (const step of run.steps) recordLedger(run, step);
   const failedEntries = failedStepEntries(run);
   run.failedSteps = failedEntries;
@@ -3053,6 +3241,8 @@ async function executeRun(runId) {
     });
   }
   runProbes.delete(run.id);
+  clearFrameQueue(run.id);
+  resetAimState(run.id);
   if (run.shadow) delete run.workflowSnapshot;
   persist();
   pushLog(run, run.status === 'failed' ? 'error' : 'info', `Run finished: ${run.status}`);

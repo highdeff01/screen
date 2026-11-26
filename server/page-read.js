@@ -251,6 +251,19 @@ async function readImage(file) {
 }
 
 /**
+ * The frame a between-step reading is about, taken when the step settled.
+ * Exported so the runner can take it in the step and judge it later: a reading
+ * of a screen the run has already left is worse than no reading.
+ */
+export async function capturePageFrame({ run = null, target = null } = {}) {
+  return liveScreenshot(run?.id || null, {
+    maxWidth: 1280,
+    quality: 72,
+    ...(target?.hwnd ? { crop: { window: target.hwnd } } : {}),
+  });
+}
+
+/**
  * Capture one frame and read it. `capture` and `ask` are injectable so the
  * engine tests can read without a desktop or a model.
  */
@@ -264,13 +277,7 @@ export async function readPage({
   capture = null,
   ask = chat,
 } = {}) {
-  const shot = capture
-    ? await capture()
-    : await liveScreenshot(run?.id || null, {
-        maxWidth: 1280,
-        quality: 72,
-        ...(target?.hwnd ? { crop: { window: target.hwnd } } : {}),
-      });
+  const shot = capture ? await capture() : await capturePageFrame({ run, target });
   const view = shot?.vision || { path: shot?.path, width: shot?.width, height: shot?.height };
   const image = await readImage(view?.path);
   if (!image) return { ok: false, error: 'the frame could not be read', shot };

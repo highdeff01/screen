@@ -94,6 +94,26 @@ test('a run waiting for review counts nudges and drafts one suggestion, never au
   assert.equal(suggestions.length, 1, 'one suggestion drafted, not one per nudge');
 });
 
+test('input while a run is working asks for a fresh read instead of waiting for the next tick', async () => {
+  const d = store.db();
+  const run = { id: 'r5', workflowId: 'wf1', workflowName: 'Working probe', status: 'running', paused: false, log: [], createdAt: new Date().toISOString() };
+  d.runs.unshift(run);
+  store.persist();
+  const calls = [];
+  nudge.registerActiveStep(run, { id: 'stp1', name: 'Click the Email field' }, (payload) => calls.push(payload));
+
+  nudge.setNudgeSource(async () => ({ idleMs: 9000 }));
+  await nudge.__tick?.();
+  nudge.setNudgeSource(async () => ({ idleMs: 400 }));
+  await nudge.__tick?.();
+
+  assert.equal(calls.length, 1, 'the input triggered one re-read');
+  assert.equal(calls[0].reason, 'operator input');
+  assert.match(run.log[0].message, /re-reading the screen now/);
+  assert.equal(run.nudges, undefined, 'a working run is not nudged like a waiting one');
+  nudge.clearActiveStep(run.id);
+});
+
 test('quiet desktops produce nothing', async () => {
   const d = store.db();
   const run = { id: 'r4', workflowId: 'wf1', workflowName: 'Quiet probe', status: 'needs_review', endedAt: new Date().toISOString(), log: [], createdAt: new Date().toISOString() };

@@ -763,6 +763,7 @@ export function beginStepThink(run, step, {
   observe = null,
   ask = null,
   onNote = null,
+  onAim = null,
   schedule = setTimeout,
   cancel = clearTimeout,
 } = {}) {
@@ -823,6 +824,16 @@ export function beginStepThink(run, step, {
           settings: config,
           onNote: note,
         });
+        // The best prepared move is where the pointer belongs: aiming from the
+        // thinking loop is what makes thinking visible on the desktop instead
+        // of only in the log.
+        if (typeof onAim === 'function' && think.best) {
+          try {
+            await onAim(think.best);
+          } catch {
+            // Aiming is a convenience; it never breaks the thinking loop.
+          }
+        }
         const choices = think.choices || [];
         if (
           config.modelAssist &&

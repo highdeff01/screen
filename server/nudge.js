@@ -36,6 +36,8 @@ let lastIdleMs = null;
 let lastNudgeAt = 0;
 let readInput = readPresence; // tests inject a fake input signal
 let debounceMs = DEBOUNCE_MS;
+// The step a running run is thinking through right now, with its live re-read.
+const activeSteps = new Map();
 
 export function nudgeStatus() {
   return { watching: Boolean(timer), platform: IS_WINDOWS ? 'windows' : 'other' };
@@ -48,6 +50,28 @@ export function setNudgeSource(fn) {
 /** Tests fire nudges faster than real typing bursts ever would. */
 export function setNudgeOptions({ debounce = null } = {}) {
   if (debounce !== null) debounceMs = Math.max(0, Number(debounce) || 0);
+}
+
+/**
+ * Register the step a run is working on, so input during the work can ask for a
+ * fresh read. The re-read is the thinking loop's own tick: read-only, bounded,
+ * and never a command to act.
+ */
+export function registerActiveStep(runOrId, step, reread) {
+  const id = String((runOrId && typeof runOrId === 'object' ? runOrId.id : runOrId) || '');
+  if (!id) return false;
+  activeSteps.set(id, { step: step || null, reread: typeof reread === 'function' ? reread : null, at: Date.now() });
+  return true;
+}
+
+export function clearActiveStep(runOrId) {
+  const id = String((runOrId && typeof runOrId === 'object' ? runOrId.id : runOrId) || '');
+  return activeSteps.delete(id);
+}
+
+export function activeStep(runOrId) {
+  const id = String((runOrId && typeof runOrId === 'object' ? runOrId.id : runOrId) || '');
+  return activeSteps.get(id) || null;
 }
 
 export function startNudgeWatch() {
@@ -76,7 +100,7 @@ function candidateRuns() {
   return (d.runs || [])
     .filter(
       (run) =>
-        (run.status === 'running' && (run.paused || run.presence?.holding)) ||
+        (run.status === 'running' && (run.paused || run.presence?.holding || activeSteps.has(run.id))) ||
         (['needs_review', 'failed'].includes(run.status) && recent(run))
     )
     .slice(0, WATCH_LIMIT);
@@ -130,6 +154,22 @@ function applyNudge(run, presence) {
       run.nudgeHinted = true;
       pushNudgeLog(run, 'Two nudges while holding — if the run should take focus regardless, press “Run now anyway”.');
     }
+    return;
+  }
+  // A run that is working, not waiting: fresh input asks it to read the screen
+  // again now instead of at the next tick. Input is a request to look, never
+  // permission to take focus and never an interruption of the action.
+  if (run.status === 'running' && !run.paused && !run.presence?.holding) {
+    const entry = activeSteps.get(run.id);
+    if (!entry?.reread) return;
+    run.inputReviews = (Number(run.inputReviews) || 0) + 1;
+    pushNudgeLog(
+      run,
+      `Operator input noticed while “${entry.step?.name || 'a step'}” runs — re-reading the screen now (re-read ${run.inputReviews}).`
+    );
+    try {
+      void entry.reread({ reason: 'operator input', idleMs: presence.idleMs });
+    } catch { /* a re-read never breaks the run */ }
     return;
   }
   // Failed or needs-review: count interest, never auto-retry.
