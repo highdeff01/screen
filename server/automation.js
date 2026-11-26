@@ -1597,11 +1597,13 @@ $clientOrigin = New-Object SightlineInput+POINT
 if ([SightlineInput]::GetClientRect($handle, [ref]$clientRect)) {
   if ([SightlineInput]::ClientToScreen($handle, [ref]$clientOrigin)) { $contentTop = [int]($clientOrigin.Y - $rect.Top) }
 }
+$t0 = Get-Date
 $bmp = New-Object System.Drawing.Bitmap $width, $height
 $g = [System.Drawing.Graphics]::FromImage($bmp)
 $g.CopyFromScreen($rect.Left, $rect.Top, 0, 0, $bmp.Size)
 $g.Dispose()
 $bmp.Save(${psQuote(file)}, [System.Drawing.Imaging.ImageFormat]::Png)
+$msCapture = [int]((Get-Date) - $t0).TotalMilliseconds
 $asTaskGeneric = ([System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object {
   $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation\`1'
 })[0]
@@ -1619,6 +1621,7 @@ $fileRef = Await-Ocr ([Windows.Storage.StorageFile]::GetFileFromPathAsync(${psQu
 $stream = Await-Ocr ($fileRef.OpenAsync([Windows.Storage.FileAccessMode]::Read)) ([Windows.Storage.Streams.IRandomAccessStream])
 $decoder = Await-Ocr ([Windows.Graphics.Imaging.BitmapDecoder]::CreateAsync($stream)) ([Windows.Graphics.Imaging.BitmapDecoder])
 $software = Await-Ocr ($decoder.GetSoftwareBitmapAsync([Windows.Graphics.Imaging.BitmapPixelFormat]::Bgra8, [Windows.Graphics.Imaging.BitmapAlphaMode]::Premultiplied)) ([Windows.Graphics.Imaging.SoftwareBitmap])
+$decodeMs = [int]((Get-Date) - $t0).TotalMilliseconds - $msCapture
 $started = Get-Date
 $result = Await-Ocr ($engine.RecognizeAsync($software)) ([Windows.Media.Ocr.OcrResult])
 $ms = [int]((Get-Date) - $started).TotalMilliseconds
@@ -1658,6 +1661,9 @@ $bmp.Dispose()
 [pscustomobject]@{
   ok = $true
   ms = $ms
+  captureMs = $msCapture
+  decodeMs = $decodeMs
+  inkMs = [int]((Get-Date) - $t0).TotalMilliseconds - $msCapture - $decodeMs - $ms
   image = ${psQuote(file)}
   origin = @{ x = [int]$rect.Left; y = [int]$rect.Top }
   width = $width
@@ -1707,6 +1713,13 @@ $bmp.Dispose()
     method: 'OCR',
     ink: Boolean(ink),
     ms: Number(parsed.ms) || 0,
+    // Where the time went: the read itself is milliseconds, the process and
+    // the frame around it are not. Recorded so the cost is never guessed.
+    timings: {
+      captureMs: Number(parsed.captureMs) || 0,
+      decodeMs: Number(parsed.decodeMs) || 0,
+      inkMs: Number(parsed.inkMs) || 0,
+    },
     shot,
   };
 }
