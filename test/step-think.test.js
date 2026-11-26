@@ -367,3 +367,27 @@ test('the narration keeps five or more options and names why weak ones are passe
   assert.match(brief.preservation, /retried|no step/);
   assert.ok(brief.alternatives.length >= 5);
 });
+
+test('the approval ladder decides which prepared corrections may act', () => {
+  const target = { id: 's_gate', type: 'clickElement', name: 'gate', params: {} };
+  const thinkObj = {
+    choices: [
+      { id: 'a', name: 'Press Enter', type: 'key', ok: true, confidence: 0.95, params: { key: 'ENTER' } },
+      { id: 'b', name: 'Click Open', type: 'clickElement', ok: true, confidence: 0.6, params: { name: 'Open' } },
+      { id: 'c', name: 'Click Cancel', type: 'clickElement', ok: true, confidence: 0.3, params: { name: 'Cancel' } },
+    ],
+  };
+  const run = { id: 'run_gate', thinkBlockedSteps: [] };
+  const candidates = think.thinkRepairCandidates({
+    run,
+    step: target,
+    think: thinkObj,
+    settings: think.normalizeThinkSettings({ autoApplyMinConfidence: 0 }),
+  });
+  // 95% acts, 60% waits for a replan first, 30% is never offered.
+  assert.deepEqual(candidates.map((entry) => entry.gate.band), ['act', 'replan']);
+  assert.equal(candidates[0].think.needsFreshLook, false);
+  assert.equal(candidates[1].think.needsFreshLook, true);
+  assert.deepEqual(thinkObj.gate.map((entry) => entry.band), ['act', 'replan', 'hold']);
+  assert.match(thinkObj.gate[2].reason, /at or below the 49% ceiling/);
+});

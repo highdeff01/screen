@@ -50,6 +50,9 @@ import {
   shouldReviewStep,
 } from './screen-review.js';
 import { diffSignatures, signatureHash, shouldAuditVisual, visualChangeMatters } from './visual.js';
+import { adaptiveAdvice, gateDecision, gateSummary } from './gate.js';
+import { optionsFor, positionLine, positionOf, referenceCompare, whereToNext } from './navigate.js';
+import { waitUntilStill } from './frames.js';
 import {
   describeReading,
   duplicatesStep,
@@ -237,6 +240,17 @@ export function summary(run) {
     // Frames the reader never answered for. Counted apart from the reviews so a
     // reader that is down cannot be mistaken for a screen that was checked.
     screenReviewUnread: (run.screenReviewSkips || []).length,
+    // What the approval ladder did with the moves it scored: acted at 90%, waited
+    // for a better option above 50%, held below it.
+    gate: gateSummary(run.gateDecisions),
+    // Settings the evidence argues for. Proposed only: learning never changes the
+    // operator's settings on its own.
+    gateAdvice: adaptiveAdvice({
+      decisions: run.gateDecisions || [],
+      outcomes: (run.steps || [])
+        .filter((entry) => entry.gate?.decisions?.some((decision) => decision.band === 'act'))
+        .map((entry) => ({ band: 'act', ok: entry.status === 'passed' })),
+    }),
     aims: (run.aims || []).length,
     // A verdict per automatic check, not just a picture: pass, mismatch, or an
     // honest "could not read". A mismatch that survived its retry sends the run
@@ -1061,6 +1075,10 @@ async function applyStepContext(step, run, workflow, probe = null) {
   if (probe && typeof probe.readScreenContext !== 'function') return null;
   const screen = probe?.readScreenContext ? await probe.readScreenContext() : await readScreenContext();
   if (!screen?.foreground?.title && !(screen?.windows || []).length) return null;
+  // Where the run is, in words, once per step: the window in front, its handle,
+  // and whether it is the window this step means to be in.
+  step.position = positionOf({ screen, step, run });
+  pushLog(run, 'info', positionLine(step.position), step.id);
   const goal = workflowGoal(workflow, run) || run.workflowName || '';
   const history = (run.steps || []).filter((entry) => entry.status && entry.id !== step.id).slice(-3);
   const assessment = assessStep({ step, screen, goal, history });
@@ -1199,6 +1217,22 @@ export function deriveFocusTarget(step, run) {
  * place this control was clicked last time answers the question without
  * guessing, and it is only ever used to hover.
  */
+/**
+ * The frame a passing step left behind, kept as the reference for the next run.
+ * Only the small signature hash is stored, so "is this the same screen as when
+ * it worked" costs a hash comparison instead of an image upload.
+ */
+export function rememberStepReference(workflow, step) {
+  if (!workflow || step?.status !== 'passed') return;
+  const hash = step.visual?.afterHash;
+  if (!hash) return;
+  const saved = (db().workflows || []).find((entry) => entry.id === workflow.id);
+  const target = saved?.steps?.find((entry) => entry.id === step.id);
+  if (!target || target.reference?.hash === hash) return;
+  target.reference = { hash, at: now() };
+  persist();
+}
+
 export function rememberClickPoint(workflow, step) {
   if (!workflow || !['click', 'clickElement', 'doubleClick'].includes(String(step.type || ''))) return;
   const match = /at (\d{1,5}),\s*(\d{1,5})/.exec(String(step.output || ''));
@@ -2339,6 +2373,48 @@ async function executeRun(runId) {
     // fact. They never replace the step; a dialog they answer still leaves the
     // original action to prove itself.
     const thinkCandidates = thinkRepairCandidates({ run, step, think, settings: stepThinkSettings() });
+    if (think?.gate?.length) {
+      step.gate = { at: now(), decisions: think.gate };
+      run.gateDecisions = [...(run.gateDecisions || []), ...think.gate.map((entry) => ({ ...entry, stepId: step.id }))].slice(-120);
+      const held = think.gate.filter((entry) => entry.band === 'hold');
+      if (held.length) {
+        pushLog(
+          run,
+          'warn',
+          `Approval gate held ${held.length} prepared move(s) below the 50% bar: ${held
+            .map((entry) => `${entry.label || 'move'} (${Math.round((entry.confidence || 0) * 100)}%)`)
+            .join(', ')}. None of them was applied.`,
+          step.id
+        );
+      }
+      // "My options are": every prepared move, best first, with the band the
+      // ladder gives it, so the log says what could be done and what was chosen.
+      const ranked = optionsFor({ choices: think.choices || [] });
+      if (ranked.length) {
+        const best = gateDecision({ confidence: ranked[0].confidence, source: 'step-think', label: ranked[0].name });
+        step.whereNext = whereToNext({ position: step.position, goal: workflowGoal(workflow, run), options: ranked, decision: best });
+        pushLog(
+          run,
+          'info',
+          `Options from here: ${ranked
+            .slice(0, 4)
+            .map((entry) => `${entry.name} (${entry.confidence == null ? 'unscored' : `${Math.round(entry.confidence * 100)}%`})`)
+            .join(', ')}; the ladder picks “${step.whereNext.next}”.`,
+          step.id
+        );
+      }
+      const waiting = think.gate.filter((entry) => entry.band === 'replan');
+      if (waiting.length) {
+        pushLog(
+          run,
+          'info',
+          `Approval gate kept ${waiting.length} prepared move(s) for a replan first: ${waiting
+            .map((entry) => `${entry.label || 'move'} (${Math.round((entry.confidence || 0) * 100)}%)`)
+            .join(', ')}.`,
+          step.id
+        );
+      }
+    }
     if (thinkCandidates.length) {
       pushLog(
         run,
@@ -2597,6 +2673,31 @@ async function executeRun(runId) {
         await readPageToUnblock(run, step, workflow, step.output, probe);
         persist();
         continue;
+      }
+      // A control that is still sliding will not be where the click lands. Wait
+      // for the screen to settle first, bounded so a video or a spinner cannot
+      // hold the step.
+      if (visualEnabled && INPUT_STEPS.has(step.type)) {
+        try {
+          const settled = await waitUntilStill({ capture, timeoutMs: 1200, settleMs: 180 });
+          step.stillness = { at: now(), ...settled };
+          if (!settled.still) {
+            pushLog(run, 'warn', `The screen was still changing after ${settled.waitedMs}ms; “${step.name}” acts on the latest frame.`, step.id);
+          } else if (settled.waitedMs > 0) {
+            pushLog(run, 'info', `Waited ${settled.waitedMs}ms for the screen to settle before “${step.name}”.`, step.id);
+          }
+        } catch (err) {
+          pushLog(run, 'warn', `Stillness check skipped: ${err.message}`, step.id);
+        }
+      }
+      // The reference frame a passing run left behind answers "is this still the
+      // screen that worked", for the price of comparing two small hashes.
+      const savedReference = (workflow?.steps || []).find((entry) => entry.id === step.id)?.reference || null;
+      if (lastSignature && savedReference?.hash) {
+        step.referenceMatch = referenceCompare({ now: { hash: signatureHash(lastSignature) }, reference: savedReference });
+        if (step.referenceMatch.matches === false) {
+          pushLog(run, 'info', `“${step.name}” starts on a different screen than the last passing run (${step.referenceMatch.detail}).`, step.id);
+        }
       }
       await perceiveStep(step, run, workflow, getTool, probe);
       if (step.perception?.guardFailed) {
@@ -2969,6 +3070,7 @@ async function executeRun(runId) {
     if (succeeded) {
       step.output = result?.output || '';
       if (!run.shadow) rememberClickPoint(workflow, step);
+      if (!run.shadow) rememberStepReference(workflow, step);
       if (result?.judgement) step.judgement = result.judgement;
       step.completion = completionFor(step, { ...(result || {}), output: step.output });
       if (step.completion.pending.length) {

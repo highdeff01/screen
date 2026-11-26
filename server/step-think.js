@@ -33,6 +33,7 @@ import { db, persist, now, uid } from './store.js';
 import { captureScreenSignature, readFocusedElement, readScreenContext } from './automation.js';
 import { signatureHash } from './visual.js';
 import { chat, parseJsonLoose } from './llm.js';
+import { gateDecision } from './gate.js';
 
 export const THINK_DEFAULTS = {
   enabled: true,
@@ -976,10 +977,22 @@ export function thinkRepairCandidates({ run, step, think = step?.think, settings
     if (think) think.autoApplyBlocked = blocked;
     return [];
   }
-  const choices = (think.choices || []).filter(
-    (choice) => choice.ok && choice.confidence >= config.autoApplyMinConfidence
-  );
-  return choices.slice(0, 3).map((choice) => ({
+  // Every sampled move is read through the approval ladder. A move under the
+  // 50% floor is never offered — the run would be acting on a guess — a move
+  // between 50% and 90% is offered but marked for a fresh look first, and only a
+  // move at the 90% bar acts on the evidence as it stands.
+  const decisions = [];
+  const choices = [];
+  for (const choice of think.choices || []) {
+    if (!choice.ok) continue;
+    const decision = gateDecision({ confidence: choice.confidence, source: 'step-think', label: choice.name });
+    decisions.push(decision);
+    if (decision.band === 'hold') continue;
+    if (choice.confidence < config.autoApplyMinConfidence) continue;
+    choices.push({ choice, decision });
+  }
+  think.gate = decisions.slice(-12);
+  return choices.slice(0, 3).map(({ choice, decision }) => ({
     method: `step-think: ${choice.name}`,
     steps: [
       {
@@ -991,8 +1004,10 @@ export function thinkRepairCandidates({ run, step, think = step?.think, settings
       },
     ],
     replaces: false,
+    gate: decision,
     think: {
       choiceId: choice.id,
+      needsFreshLook: decision.band === 'replan',
       confidence: choice.confidence,
       risk: choice.risk,
       why: choice.why,
