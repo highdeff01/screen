@@ -3196,6 +3196,67 @@ async function revealPlayerControls(step, shot, ctx) {
   await new Promise((resolve) => setTimeout(resolve, 800));
 }
 
+/**
+ * Capture the frame a screen check is about, without judging it.
+ *
+ * The frame has to be taken at the moment the step settled — the right window
+ * raised, the pixels of that state. The judgement is the expensive half: on a
+ * slow model it costs a hundred seconds. Splitting the two lets the runner
+ * capture inside the step and judge afterwards, from the frame exactly as it
+ * was, without a second look at a desktop that has moved on.
+ */
+export async function captureScreenFrame({ step = null, run = null, runId = null } = {}) {
+  const p = step?.params || {};
+  const caption = str(p.caption) || step?.name || 'Screen check';
+  const target = judgeTargetFor(step, run);
+  // A condition the operator accepted from the judgement review: judging the
+  // whole desktop is never good enough to prove the run's own state.
+  if (!target.scoped && db().settings.verifyJudgeRequireScope === true) {
+    const message = `Screen check “${caption}” names no window, and the accepted judgement condition requires one. Add a title/app to the step or focus the window first.`;
+    if (str(p.onError, 'fail') === 'warn') return { ok: false, skipped: message };
+    throw new Error(message);
+  }
+  if (target.scoped) {
+    try {
+      await executeStep(
+        {
+          id: uid('chk'),
+          type: 'focusWindow',
+          name: `Bring the run's own window forward for “${caption}”`,
+          params: {
+            ...(target.hwnd ? { handle: target.hwnd } : {}),
+            ...(target.title ? { title: target.title } : {}),
+            ...(target.process ? { process: target.process } : {}),
+          },
+          timeoutMs: 15000,
+        },
+        { live: true, runId: runId || run?.id || null, run, workflow: null, getTool: () => null }
+      );
+    } catch (err) {
+      // The deterministic judge decides whether this matters; onError=warn
+      // keeps a missing window from failing the whole run.
+      if (str(p.onError, 'fail') !== 'warn') {
+        throw new Error(
+          `Screen check could not reach “${target.title || target.process || 'the run window'}”: ${err.message}`
+        );
+      }
+    }
+  }
+  const shot = await liveScreenshot(runId || run?.id || null, {
+    maxWidth: VISION_ENABLED ? VISION_MAX_WIDTH : 0,
+    quality: VISION_JPEG_QUALITY,
+    ...(target.hwnd ? { crop: { window: target.hwnd } } : target.scoped ? { crop: 'foreground' } : {}),
+  });
+  const foreground = await readForegroundWindow();
+  const expectedText = str(p.text || p.expectedText || p.contains).trim();
+  const absentText = str(p.absent).trim();
+  const windowText =
+    target.scoped && (expectedText || absentText)
+      ? await readWindowText({ handle: target.hwnd, title: target.title }).catch(() => ({ text: '', source: '' }))
+      : { text: '', source: '' };
+  return { ok: true, target, shot, foreground, windowText };
+}
+
 export async function executeStep(step, ctx) {
   let p = step.params || {};
   const live = Boolean(ctx.live);
@@ -4353,56 +4414,24 @@ try {
     }
     // The subject is the window this run opened, not the whole desktop. A
     // lookalike document behind it used to be enough to make the model pass.
-    const target = judgeTargetFor(step, ctx.run);
-    // A condition the operator accepted from the judgement review: judging the
-    // whole desktop is never good enough to prove the run's own state.
-    if (!target.scoped && db().settings.verifyJudgeRequireScope === true) {
-      const message = `Screen check “${caption}” names no window, and the accepted judgement condition requires one. Add a title/app to the step or focus the window first.`;
-      if (str(p.onError, 'fail') === 'warn') {
-        return { output: `${message} (onError=warn)`, evidence: [], skipped: true };
-      }
-      throw new Error(message);
+    // A pre-captured frame is the frame exactly as the step left it: judging it
+    // must not focus, crop or photograph anything again.
+    const preCaptured = p.frame && typeof p.frame === 'object' && p.frame.shot ? p.frame : null;
+    const frame = preCaptured
+      ? preCaptured
+      : await captureScreenFrame({ step, run: ctx.run, runId: ctx.runId }).catch((err) => {
+          const message = String(err?.skipped || err?.message || err);
+          if (str(p.onError, 'fail') === 'warn') return { ok: false, skipped: message };
+          throw new Error(message);
+        });
+    if (!frame.ok) {
+      return { output: `${frame.skipped} (onError=warn)`, evidence: [], skipped: true };
     }
-    if (target.scoped) {
-      try {
-        await executeStep(
-          {
-            id: uid('chk'),
-            type: 'focusWindow',
-            name: `Bring the run's own window forward for “${caption}”`,
-            params: {
-              ...(target.hwnd ? { handle: target.hwnd } : {}),
-              ...(target.title ? { title: target.title } : {}),
-              ...(target.process ? { process: target.process } : {}),
-            },
-            timeoutMs: 15000,
-          },
-          { ...ctx, live: true }
-        );
-      } catch (err) {
-        // The deterministic judge below decides whether this matters; onError
-        // warn keeps a missing window from failing the whole run.
-        if (str(p.onError, 'fail') !== 'warn') {
-          throw new Error(
-            `Screen check could not reach “${target.title || target.process || 'the run window'}”: ${err.message}`
-          );
-        }
-      }
-    }
-    const shot = await liveScreenshot(ctx.runId, {
-      maxWidth: VISION_ENABLED ? VISION_MAX_WIDTH : 0,
-      quality: VISION_JPEG_QUALITY,
-      ...(target.hwnd ? { crop: { window: target.hwnd } } : target.scoped ? { crop: 'foreground' } : {}),
-    });
-    const foreground = await readForegroundWindow();
+    const { target, shot, foreground, windowText } = frame;
     const expected = str(p.title || p.expected).trim();
     const expectedApp = str(p.app || p.expectedApp).trim();
     const expectedText = str(p.text || p.expectedText || p.contains).trim();
     const absentText = str(p.absent).trim();
-    const windowText =
-      target.scoped && (expectedText || absentText)
-        ? await readWindowText({ handle: target.hwnd, title: target.title }).catch(() => ({ text: '', source: '' }))
-        : { text: '', source: '' };
     const facts = windowFacts({
       target: { ...target, process: target.process || expectedApp },
       foreground,
