@@ -2413,6 +2413,7 @@ async function executeRun(runId) {
     let result = null;
     let repairResult = null;
     let skipped = false;
+    let unverified = null;
     let cancelled = false;
     let thinkLoop = null;
     let think = null;
@@ -2598,6 +2599,14 @@ async function executeRun(runId) {
             }
             pushLog(run, 'info', `Platform guard confirmed by probe (${proof.detail || 'no answer'}); the refusal stands.`, step.id);
           }
+          // A screen check that never ran is an evidence gap, not a contradiction:
+          // the frame was not read, so the step is recorded as unverified instead
+          // of failed, and the repair chain is not spent on a step nothing
+          // contradicted.
+          if (err.unreadable && !run.cancelRequested) {
+            unverified = lastError;
+            break;
+          }
           if (attempt < maxAttempts && !run.cancelRequested) {
             const pause = Math.max(0, Number(run.policy?.pauseBeforeRetryMs || 0));
             await waitBeforeRetry(run, pause ? Math.min(pause, 10000) : 300);
@@ -2650,7 +2659,7 @@ async function executeRun(runId) {
         );
       }
       if (run.cancelRequested && !succeeded) cancelled = true;
-      if (!succeeded && !cancelled && !skipped && repairEnabled) {
+      if (!succeeded && !cancelled && !skipped && !unverified && repairEnabled) {
         step.repairStartedAt = now();
         repairResult = await attemptRepair(step, lastError, think);
         if (repairResult.ok) {
@@ -2667,7 +2676,7 @@ async function executeRun(runId) {
 
     step.endedAt = now();
     step.ms = runnerMs(step.startedAt, step.endedAt);
-    if (!cancelled && !skipped) await auditVisual(step);
+    if (!cancelled && !skipped && !unverified) await auditVisual(step);
     recordLedger(run, step);
 
     if (cancelled) {
@@ -2679,6 +2688,18 @@ async function executeRun(runId) {
       step.status = 'skipped';
       step.output = 'Skipped by operator during the wait.';
       pushLog(run, 'warn', `Skipped wait "${step.name}" by operator.`, step.id);
+      persist();
+      continue;
+    }
+    if (unverified) {
+      step.status = 'skipped';
+      step.output = `Unverified: ${unverified}`;
+      step.unverified = true;
+      run.unverifiedSteps = [
+        ...(run.unverifiedSteps || []),
+        { id: step.id, name: step.name, type: step.type, reason: unverified, at: now() },
+      ].slice(-20);
+      pushLog(run, 'warn', `“${step.name}” could not be verified: ${unverified}. It is recorded as unverified, not passed.`, step.id);
       persist();
       continue;
     }
@@ -2932,6 +2953,15 @@ async function executeRun(runId) {
     run.status = policy === 'continue' || onlyOptional || (run.keptRunning || []).length ? 'needs_review' : 'failed';
   } else {
     run.status = 'passed';
+  }
+  // A step nothing could read is not a step that passed: the run keeps its
+  // unverified checks in front of the operator instead of claiming a clean pass.
+  if (run.status === 'passed' && (run.unverifiedSteps || []).length) {
+    run.status = 'needs_review';
+    run.unverified = run.unverifiedSteps.length;
+    run.errorSummary =
+      run.errorSummary ||
+      `${run.unverifiedSteps.length} step(s) could not be verified: ${run.unverifiedSteps[0].reason}`;
   }
   // A failed run is a message, not just a record: the action log reports it
   // (with logs) and the working agents get a continuation addressed to them.

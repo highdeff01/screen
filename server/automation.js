@@ -4477,6 +4477,9 @@ try {
           }
           const error = new Error(`Screen check could not read the screenshot: ${reply.error}`);
           error.evidence = [{ kind: 'screenshot', caption: `${caption} (unreadable)`, ...shot }];
+          // A transport failure is an evidence gap, not a verdict: the frame was
+          // never read, so the step must be reported as unverified, not failed.
+          error.unreadable = true;
           throw error;
         }
       } else {
