@@ -30,7 +30,7 @@ import { closeoutFor, recordCloseout } from './closeout.js';
 import { checkStepMonitor } from './monitors.js';
 import { beginRunObservation, endRunObservation } from './app-observer.js';
 import { liveControl, probeLiveBackend, isPlatformRefusal } from './platform.js';
-import { expectsScreenChange, windowChecksFor, resumePlan, corroboratesNoChange, lookupWindowFor, screenChangeVerdict } from './step-effects.js';
+import { expectsScreenChange, windowChecksFor, resumePlan, corroboratesNoChange, lookupWindowFor, screenChangeVerdict, clickLandedOnInput } from './step-effects.js';
 
 // Per-run adapters supplied by tests so the screen policy can run without a UI.
 const runProbes = new Map();
@@ -625,6 +625,17 @@ export function screenReviewSettings() {
  * that survives the retry flags the step, and the run goes to review instead of
  * being reported as a clean pass.
  */
+/** Fact-based proof that a click landed: the caret now sits in an editable control. */
+async function caretAfterClick(step, probe = null) {
+  if (!['click', 'doubleClick', 'rightClick', 'clickElement'].includes(String(step?.type || ''))) return '';
+  try {
+    const focused = probe?.readFocusedElement ? await probe.readFocusedElement() : await readFocusedElement();
+    return clickLandedOnInput({ step: { ...step, type: 'click' }, focused });
+  } catch {
+    return '';
+  }
+}
+
 async function reviewScreenAfterStep(run, step, workflow, probe = null) {
   if (run.dryRun || run.shadow) return null;
   // A probe without its own screen reviewer is a desktop-free run: there is no
@@ -635,6 +646,36 @@ async function reviewScreenAfterStep(run, step, workflow, probe = null) {
   const caption = screenReviewCaption(step);
   const check = screenReviewCheck(step, { variables: run.variables || {} });
   const target = judgeTargetFor(step, run);
+  // A static frame cannot show a caret, so asking the vision model to confirm a
+  // click on a text field only ever produced “no visible focus” mismatches on
+  // clicks that had landed. The focused element proves it instead.
+  const caret = await caretAfterClick(step, probe);
+  if (caret) {
+    const entry = {
+      stepId: step.id,
+      stepName: step.name,
+      type: step.type,
+      at: now(),
+      question: check.question,
+      title: target.title || '',
+      app: target.process || '',
+      evidenceId: null,
+      path: null,
+      simulated: false,
+      status: 'pass',
+      verdict: 'pass',
+      attempts: 0,
+      retried: false,
+      detail: `The click landed: ${caret}.`,
+      mismatch: '',
+      judgement: null,
+    };
+    run.screenReviews = [...(run.screenReviews || []), entry].slice(-200);
+    step.screenReview = { at: entry.at, evidenceId: null, status: entry.status, attempts: 0, detail: entry.detail };
+    pushLog(run, 'info', `Screen check after “${step.name}” passed: ${entry.detail}`, step.id);
+    persist();
+    return entry;
+  }
   const limit = screenReviewAttempts(cfg);
   const checkStep = {
     id: uid('chk'),

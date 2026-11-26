@@ -13,6 +13,7 @@ import {
   repeatsSideEffect,
   corroboratesNoChange,
   lookupWindowFor,
+  clickLandedOnInput,
 } from '../server/step-effects.js';
 
 test('typing, clicking and mutating keys must change the screen', () => {
@@ -76,6 +77,25 @@ test('a no-change screen passes when something else confirms the action', () => 
     /already focused or selected/
   );
   assert.equal(corroboratesNoChange({ step: { type: 'click', params: { name: 'Buy' } }, focused: { name: 'Cancel' } }), '');
+});
+
+test('a click that leaves the caret in the target field has landed', () => {
+  const step = { type: 'click', params: { name: 'Username', window: 'Sightline Accounts' } };
+  // A Tk entry often exposes a generic name, so the caret itself is the proof.
+  const field = { found: true, name: 'Entry 1', controlType: 'Edit', window: 'Sightline Accounts' };
+  assert.match(clickLandedOnInput({ step, focused: field }), /Entry 1/);
+  assert.match(corroboratesNoChange({ step, focused: field }), /caret/);
+  assert.match(
+    corroboratesNoChange({ step, focused: { ...field, name: 'Username' } }),
+    /already focused or selected/
+  );
+  // A caret in another window proves nothing about this click.
+  assert.equal(clickLandedOnInput({ step, focused: { ...field, window: 'Sightline Profile' } }), '');
+  // A focused button is not proof either: a button click has to change the screen.
+  assert.equal(clickLandedOnInput({ step, focused: { ...field, controlType: 'Button' } }), '');
+  // Typing is judged by its text, not by the caret.
+  assert.equal(clickLandedOnInput({ step: { type: 'type', params: { text: 'dana' } }, focused: field }), '');
+  assert.equal(clickLandedOnInput({ step, focused: { found: false, reason: 'nothing is focused' } }), '');
 });
 
 test('the identical-text lookup uses the foreground window when there is no guard', () => {

@@ -60,6 +60,29 @@ export function resumeSteps(steps, failedStepId) {
 
 const norm = (value) => String(value ?? '').replace(/\s+/g, ' ').trim().toLowerCase();
 
+// Controls that hold a caret. A click that leaves one of these focused in the
+// window it aimed at has landed, even though the frame itself does not change.
+const EDITABLE_CONTROLS = /^(edit|document|text|combobox)$/i;
+
+/**
+ * The caret a click left behind, in words, or '' when the focused control does
+ * not prove the click landed. Fact-based: it reads the focused element Windows
+ * reports, not the step's own claim and not the pixels.
+ */
+export function clickLandedOnInput({ step, focused = null } = {}) {
+  if (String(step?.type || '') !== 'click') return '';
+  if (!focused || focused.found === false) return '';
+  const params = step?.params || {};
+  const target = norm(params.window || params.title || params.foreground || '');
+  const seen = norm(focused.window);
+  if (!target || !seen) return '';
+  if (!(seen.includes(target) || target.includes(seen))) return '';
+  const control = String(focused.controlType || focused.localizedControlType || '').trim();
+  if (focused.editable !== true && !EDITABLE_CONTROLS.test(control)) return '';
+  const name = String(focused.name || '').trim().slice(0, 60);
+  return name ? `the caret is in the “${name}” field` : 'the caret is in an editable control';
+}
+
 /**
  * Reasons a step can still be trusted when the screen did not visibly change:
  * a follow-up check passed, the field already holds the text, or the clicked
@@ -85,6 +108,8 @@ export function corroboratesNoChange({ step, checks = [], focused = null, textFo
     const label = norm(params.name ?? params.text ?? params.value);
     const focusedName = norm(focused?.name);
     if (label && focusedName && focusedName.includes(label)) return 'the control is already focused or selected';
+    const caret = clickLandedOnInput({ step, focused });
+    if (caret) return caret;
   }
   return '';
 }
