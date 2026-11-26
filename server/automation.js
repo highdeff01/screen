@@ -5335,10 +5335,13 @@ try {
         const x = Math.round(visual.x);
         const y = Math.round(visual.y);
         el = { ...el, name: requested };
+        // Say why the text locator did not answer: a silent drop to the model
+        // looks exactly like a control that carries no text at all.
+        const why = ocrReason ? `, after OCR found nothing (${ocrReason})` : '';
         return clickFound(
           x,
           y,
-          `vision ${Math.round((visual.confidence || 0) * 100)}%`,
+          `vision ${Math.round((visual.confidence || 0) * 100)}%${why}`,
           visual.shot ? [visual.shot] : []
         );
       }
