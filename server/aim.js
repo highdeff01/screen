@@ -16,13 +16,15 @@
  */
 
 import { db, now, persist, uid } from './store.js';
-import { executeStep, findUiElement, readPresence, elementLabels } from './automation.js';
+import { executeStep, findUiElement, readPresence, readCursor as readCursorPoint, elementLabels } from './automation.js';
 
 /** The person at the desk must be still: this is not a race for the pointer. */
 export const AIM_MIN_IDLE_MS = 1200;
 /** Re-aiming the same control every step is pointless. */
 export const AIM_SAME_TARGET_MS = 5000;
 const MAX_AIMS = 12;
+/** Close enough that moving the pointer would change nothing worth waiting for. */
+export const AIM_NEAR_PX = 6;
 
 const state = new Map();
 
@@ -79,11 +81,43 @@ export function aimTargetForChoice(choice) {
  * a desktop: a simulated run, an operator who is typing, a window this run does
  * not own in front, or a pointer already on the control all say no.
  */
+/** Why this run may not aim at all, or '' when it may. */
+export function aimDisabledReason(run, target) {
+  if (!target) return 'this step names no control to aim at';
+  if (!run) return 'the run is not running';
+  if (run.dryRun) return 'the run is simulated';
+  if (run.shadow) return 'the run is a shadow run';
+  if (run.pointerAim === false) return 'aiming is off for this run';
+  return '';
+}
+
+/**
+ * A point this target has without asking the desktop: an explicit coordinate, or
+ * where the control was clicked last time. Aiming at either is a hover, so if
+ * the pointer is already there nothing has to be resolved or moved.
+ */
+export function knownAimPoint(target) {
+  if (!target) return null;
+  if (target.kind === 'point') return { x: Math.round(Number(target.x)), y: Math.round(Number(target.y)) };
+  const x = Number(target.fallback?.x);
+  const y = Number(target.fallback?.y);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+  return { x: Math.round(x), y: Math.round(y) };
+}
+
+/** Whether the pointer is close enough that moving it would change nothing. */
+export function pointerIsOnTarget(point, cursor, tolerance = AIM_NEAR_PX) {
+  if (!point || !cursor) return false;
+  const dx = Number(point.x) - Number(cursor.x);
+  const dy = Number(point.y) - Number(cursor.y);
+  if (!Number.isFinite(dx) || !Number.isFinite(dy)) return false;
+  const limit = Math.max(0, Number(tolerance) || 0);
+  return Math.sqrt(dx * dx + dy * dy) <= limit;
+}
+
 export function shouldAim({ run = null, presence = null, target = null, last = null, at = Date.now() } = {}) {
-  if (!target) return { ok: false, reason: 'this step names no control to aim at' };
-  if (!run || run.dryRun) return { ok: false, reason: 'the run is simulated' };
-  if (run.shadow) return { ok: false, reason: 'the run is a shadow run' };
-  if (run.pointerAim === false) return { ok: false, reason: 'aiming is off for this run' };
+  const disabled = aimDisabledReason(run, target);
+  if (disabled) return { ok: false, reason: disabled };
   if (!presence || presence.idleMs == null) return { ok: false, reason: 'the operator activity could not be read' };
   // The run's own clicks and keystrokes are input too, and they reset the idle
   // timer the presence guard reads. Input that happened at or after this run's
@@ -144,15 +178,48 @@ async function movePointer(run, point, label) {
   );
 }
 
+/** Record what an aim did on the run: the point, whether it moved, and its cost. */
+function recordAim(run, target, point, { moved, ms, log, tracker }) {
+  run.aimNote = '';
+  tracker.last = { label: target.label, at: Date.now(), x: point.x, y: point.y };
+  run.aims = [
+    ...(run.aims || []),
+    {
+      at: now(),
+      target: target.label,
+      x: point.x,
+      y: point.y,
+      window: target.window || '',
+      stepId: target.stepId || run.currentStepId || null,
+      moved,
+      ms,
+    },
+  ].slice(-MAX_AIMS);
+  persist();
+  if (typeof log === 'function') {
+    log(
+      moved
+        ? `Aimed the pointer at “${target.label}” (${point.x}, ${point.y}) while the step is being prepared.`
+        : `The pointer was already on “${target.label}” (${point.x}, ${point.y}); the step starts without waiting for a move.`
+    );
+  }
+  return { ok: true, point, moved, ms, reason: '' };
+}
+
 /**
  * Aim at a target. Returns what happened; never throws at the caller, because a
  * pointer that could not be placed is a note, not a failed step.
  */
-export async function aimAt(run, target, { log = null, find = findUiElement, presence = readPresence, move = movePointer } = {}) {
+export async function aimAt(
+  run,
+  target,
+  { log = null, find = findUiElement, presence = readPresence, move = movePointer, cursor = readCursorPoint, tolerance = AIM_NEAR_PX } = {}
+) {
   if (!run?.id || !target) return { ok: false, reason: 'nothing to aim at' };
   const tracker = runState(run.id);
   if (tracker.inflight) return { ok: false, reason: 'an aim is already in flight' };
   tracker.inflight = true;
+  const startedAt = Date.now();
   try {
     // Say why once per reason, so a pointer that stays still is explained on
     // the run instead of looking like aiming is switched off.
@@ -163,23 +230,36 @@ export async function aimAt(run, target, { log = null, find = findUiElement, pre
       }
       return { ok: false, reason };
     };
+    const safeCursor = async () => {
+      try {
+        return await cursor();
+      } catch {
+        return null;
+      }
+    };
+    const disabled = aimDisabledReason(run, target);
+    if (disabled) return pause(disabled);
+    // A target that already has its point needs no presence read and no UI
+    // Automation query: if the pointer is there, the step starts now. This is
+    // the case that repeats most — a control clicked a moment ago.
+    const known = knownAimPoint(target);
+    const cursorAtStart = known ? await safeCursor() : null;
+    if (known && pointerIsOnTarget(known, cursorAtStart, tolerance)) {
+      return recordAim(run, target, known, { moved: false, ms: Date.now() - startedAt, log, tracker });
+    }
     const activity = await presence();
     const check = shouldAim({ run, presence: activity, target, last: tracker.last });
     if (!check.ok) return pause(check.reason);
     const point = await resolveAimPoint(target, { find });
     if (!point) return pause(`“${target.label}” could not be located on screen`);
-    run.aimNote = '';
-    await move(run, point, target.label);
-    tracker.last = { label: target.label, at: Date.now(), x: point.x, y: point.y };
-    run.aims = [
-      ...(run.aims || []),
-      { at: now(), target: target.label, x: point.x, y: point.y, window: target.window || '', stepId: run.currentStepId || null },
-    ].slice(-MAX_AIMS);
-    persist();
-    if (typeof log === 'function') {
-      log(`Aimed the pointer at “${target.label}” (${point.x}, ${point.y}) while the step is being prepared.`);
+    // Where the pointer is comes free with the presence read; a target resolved
+    // by UI Automation can land on the pointer without any further work.
+    const here = activity?.cursor || cursorAtStart || (await safeCursor());
+    if (pointerIsOnTarget(point, here, tolerance)) {
+      return recordAim(run, target, point, { moved: false, ms: Date.now() - startedAt, log, tracker });
     }
-    return { ok: true, point, reason: '' };
+    await move(run, point, target.label);
+    return recordAim(run, target, point, { moved: true, ms: Date.now() - startedAt, log, tracker });
   } catch (err) {
     if (typeof log === 'function') log(`Could not aim the pointer at “${target.label}”: ${err.message}`);
     return { ok: false, reason: err.message };
@@ -216,6 +296,8 @@ export async function aimWithin(promise, { timeoutMs = 2500, log = null } = {}) 
 export function aimBeforeStep(run, step, options = {}) {
   const target = aimTargetFor(step);
   if (!target) return Promise.resolve({ ok: false, reason: 'this step names no control to aim at' });
+  // The run keeps the aim under the step it was for, so its cost is attributable.
+  target.stepId = String(step?.id || options.stepId || '') || null;
   // Where this control was clicked last time is the best point a toolkit with no
   // UI Automation tree can offer. It is only a hover target, never a click.
   const remembered = options.workflow?.clickPoints?.[step?.id];

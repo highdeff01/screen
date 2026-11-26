@@ -2647,7 +2647,17 @@ async function executeRun(runId) {
       // The pointer is aimed at the control this step names while the step is
       // being prepared. It hovers, never clicks, and it stands still while the
       // operator is still using the mouse or keyboard.
-      if (!probe) await aimWithin(aimBeforeStep(run, step, { workflow, log: (message) => pushLog(run, 'info', message) }), { log: (message) => pushLog(run, 'info', message, step.id) });
+      if (!probe) {
+        const aimStartedAt = Date.now();
+        const aimResult = await aimWithin(
+          aimBeforeStep(run, step, { workflow, log: (message) => pushLog(run, 'info', message), stepId: step.id }),
+          { log: (message) => pushLog(run, 'info', message, step.id) }
+        );
+        // What the step waited for the pointer is a fact about the step, so the
+        // cost is visible instead of hiding inside the step's own duration.
+        const aimMs = Date.now() - aimStartedAt;
+        if (aimResult?.point || aimMs >= 5) step.aimMs = aimMs;
+      }
       try {
         const context = await applyStepContext(step, run, workflow, probe);
         if (context?.skipReason) {

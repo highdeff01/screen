@@ -2577,6 +2577,33 @@ try {
 }
 
 /**
+ * Where the pointer is, in physical screen pixels. Aiming reads this before it
+ * moves: a pointer already on the control a step names costs the step nothing,
+ * and a hover that would change no pixels is not worth a wait. The script is
+ * deliberately small — no UI Automation, no capture — because it runs inside
+ * the gap before a step.
+ */
+export async function readCursor() {
+  if (!IS_WINDOWS) return null;
+  const script = `Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+public static class SightlineCursor {
+  [StructLayout(LayoutKind.Sequential)] public struct POINT { public int X; public int Y; }
+  [DllImport("user32.dll")] public static extern bool GetCursorPos(out POINT point);
+  [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
+}
+"@
+[void][SightlineCursor]::SetProcessDPIAware()
+$p = New-Object SightlineCursor+POINT
+if (-not [SightlineCursor]::GetCursorPos([ref]$p)) { Write-Output '' } else { Write-Output ("$($p.X),$($p.Y)") }`;
+  const res = await runPowerShell(script, 8000);
+  if (!res.ok) return null;
+  const [x, y] = String(res.stdout || '').trim().split(',').map(Number);
+  return Number.isFinite(x) && Number.isFinite(y) ? { x: Math.round(x), y: Math.round(y) } : null;
+}
+
+/**
  * How long the person at the keyboard has been still, and what they are looking
  * at. A step that steals focus reads this first so it can wait for the desktop
  * to settle instead of yanking a window away mid-keystroke.
@@ -2609,7 +2636,13 @@ if ($fg -ne [IntPtr]::Zero) {
   [void][SightlineInput]::GetWindowThreadProcessId($fg, [ref]$fgPid)
   if ($fgPid) { try { $proc = (Get-Process -Id $fgPid -ErrorAction Stop).ProcessName } catch { } }
 }
-[pscustomobject]@{ idleMs = [int]$idle; title = $title; process = $proc } | ConvertTo-Json -Compress`;
+$cursor = New-Object SightlineInput+POINT
+$cursorX = -1
+$cursorY = -1
+# The pointer's place comes from this same read: aiming asks presence where the
+# mouse is, so an aim that would move nothing costs no extra process.
+if ([SightlineInput]::GetCursorPos([ref]$cursor)) { $cursorX = [int]$cursor.X; $cursorY = [int]$cursor.Y }
+[pscustomobject]@{ idleMs = [int]$idle; title = $title; process = $proc; cursorX = $cursorX; cursorY = $cursorY } | ConvertTo-Json -Compress`;
   const res = await runPowerShell(script, 15000);
   if (!res.ok) return { ...empty, error: res.stderr || res.stdout };
   try {
@@ -2617,6 +2650,10 @@ if ($fg -ne [IntPtr]::Zero) {
     return {
       idleMs: Math.max(0, Number(parsed?.idleMs) || 0),
       foreground: parsed?.title ? { title: str(parsed.title), process: str(parsed.process) } : null,
+      cursor:
+        Number(parsed?.cursorX) >= 0 && Number(parsed?.cursorY) >= 0
+          ? { x: Math.round(Number(parsed.cursorX)), y: Math.round(Number(parsed.cursorY)) }
+          : null,
       at: new Date().toISOString(),
     };
   } catch {
