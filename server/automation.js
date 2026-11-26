@@ -1563,8 +1563,13 @@ $best | ConvertTo-Json -Compress`;
  * label's dark pixels give the anchor, because a Windows OCR box is a line box
  * and its centre sits about half a line low on a small button. Chrome above the
  * client area is ignored, so a title bar's "Profile" cannot outrank the button.
+ *
+ * restore:false leaves a minimized window as it is. A minimized window still
+ * reports a small rectangle, so the capture succeeds and reads nothing — the
+ * failure this guard prevents, reproducible on demand for the comparison test.
+ * Production callers never pass it.
  */
-export async function findUiElementByOcr({ window = '', name = '', names = null, timeoutMs = 20000 } = {}) {
+export async function findUiElementByOcr({ window = '', name = '', names = null, timeoutMs = 20000, restore = true } = {}) {
   const wanted = (Array.isArray(names) && names.length ? names : [name]).map((item) => str(item).trim()).filter(Boolean);
   if (!wanted.length) throw new Error('An element name is required.');
   if (!IS_WINDOWS) return { found: false, reason: 'reading a label with OCR requires Windows' };
@@ -1588,7 +1593,8 @@ $handle = $target.MainWindowHandle
 # A minimized window has no screen area to read: the capture below would grab an
 # off-screen rectangle, OCR would find no text and a named control would quietly
 # fall through to the vision model. Restore it first, the way the vision path does.
-if ([SightlineInput]::IsIconic($handle)) {
+$restoreWindow = ${restore ? '$true' : '$false'}
+if ($restoreWindow -and [SightlineInput]::IsIconic($handle)) {
   [void][SightlineInput]::ShowWindow($handle, 9)
   Start-Sleep -Milliseconds 250
 }
@@ -5215,7 +5221,7 @@ try {
     }
     if (!el.found && waitMs) el.reason = `${el.reason}; waited ${waitMs}ms for the control`;
 
-    const clickFound = async (x, y, method, evidence = [], surroundings = null) => {
+    const clickFound = async (x, y, method, evidence = [], surroundings = null, note = '') => {
       const clicks = Math.max(1, Math.min(2, Number(p.clicks) || 1));
       // A deliberate approach: the pointer passes just above-left of the target
       // instead of teleporting, which also makes hover menus render.
@@ -5238,7 +5244,11 @@ try {
       const around = surroundings?.summary ? ` Nearby: ${surroundings.summary}.` : '';
       const caution = surroundings?.caution ? ` ${surroundings.caution}` : '';
       return {
-        output: `Clicked “${el.name || requested}” via ${method} at ${x},${y}.${around}${caution}`,
+        output: `Clicked “${el.name || requested}” via ${method} at ${x},${y}.${note ? ` ${note}.` : ''}${around}${caution}`,
+        // Why the earlier locators did not answer, when the click came from a
+        // fallback. Kept as a field too, so a run's record can be reviewed
+        // without re-reading the sentence.
+        ...(note ? { locateNote: note } : {}),
         // Where the click actually landed, as a fact rather than a sentence: a
         // vision-fallback click, a preview-corrected one and a plain UIA match
         // all report the same shape, so the point is always learnable.
@@ -5301,7 +5311,12 @@ try {
     // the window in 19–46 ms and the label sits inside the control, so this runs
     // before the vision fallback and answers most of what the model used to.
     let ocrReason = '';
+    // The failed read keeps its capture as evidence: a reason in words alone
+    // cannot show that OCR ran over a blank or off-screen window.
+    let ocrEvidence = [];
+    let ocrNote = '';
     if (p.ocr !== false) {
+      const ocrStarted = Date.now();
       try {
         const read = await findUiElementByOcr({ window: title, names: labels });
         if (read.found) {
@@ -5314,15 +5329,24 @@ try {
           );
         }
         ocrReason = read.reason || 'no label read';
+        if (read.shot) {
+          ocrEvidence = [{ ...read.shot, caption: `OCR found nothing — ${ocrReason}` }];
+        }
       } catch (err) {
         ocrReason = err.message;
       }
+      ocrNote = `OCR did not answer (${ocrReason}, ${Date.now() - ocrStarted}ms${
+        ocrEvidence.length ? ', the read is attached' : ', no capture was written'
+      })`;
+    } else {
+      ocrNote = 'OCR was disabled for this step (ocr:false)';
     }
 
     // Last-resort element search: ask the vision model where the target is on a
     // fresh full-screen capture. This covers controls that carry no text at all
     // — an icon, a toolbar glyph — while the confidence threshold prevents blind
     // clicks.
+    let visionNote = '';
     if (p.visionFallback !== false && p.vision !== false) {
       const visual = await findVisualElement({
         description: requested,
@@ -5337,19 +5361,32 @@ try {
         el = { ...el, name: requested };
         // Say why the text locator did not answer: a silent drop to the model
         // looks exactly like a control that carries no text at all.
-        const why = ocrReason ? `, after OCR found nothing (${ocrReason})` : '';
         return clickFound(
           x,
           y,
-          `vision ${Math.round((visual.confidence || 0) * 100)}%${why}`,
-          visual.shot ? [visual.shot] : []
+          `vision ${Math.round((visual.confidence || 0) * 100)}%`,
+          [...ocrEvidence, ...(visual.shot ? [visual.shot] : [])],
+          null,
+          ocrNote
         );
       }
+      visionNote = `vision did not answer (${visual.reason || 'no confident match'})`;
+    } else {
+      visionNote = 'the vision fallback was disabled for this step';
     }
 
     if (p.fallbackX != null && p.fallbackY != null) {
+      // A blind coordinate click reports both reasons: without them the run looks
+      // like a successful locate instead of two failed ones.
       el = { ...el, name: requested };
-      return clickFound(Number(p.fallbackX), Number(p.fallbackY), 'fallback coordinates');
+      return clickFound(
+        Number(p.fallbackX),
+        Number(p.fallbackY),
+        'fallback coordinates',
+        ocrEvidence,
+        null,
+        `${ocrNote}. ${visionNote}`
+      );
     }
     throw new Error(
       `UI element not found: “${requested}” in ${title || 'the foreground window'} after trying [${labels.join(' | ')}], an OCR read${ocrReason ? ` (${ocrReason})` : ''} and a vision fallback (${el.reason || 'not present'}).`
