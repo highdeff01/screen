@@ -2147,7 +2147,12 @@ async function runHandoff(run, workflow, { probe = null, getTool = () => undefin
   const steps = Array.isArray(handoff?.steps) ? handoff.steps.filter((step) => step?.type) : [];
   if (!handoff?.enabled || !steps.length) return;
   if (probe || run.dryRun || run.shadow || run.status === 'cancelled') return;
+  // The verdict is already recorded, so a client polling the run can see
+  // "passed" while the desk is still being put back. The pending flag is what
+  // tells a reader — and the operator — that the hand-back is not finished yet.
+  run.handoffPending = true;
   run.handoff = { at: now(), ok: true, steps: [] };
+  persist();
   pushLog(run, 'info', `Hand-off: returning to the hand-off screen (${steps.length} step${steps.length === 1 ? '' : 's'}).`);
   for (const raw of steps) {
     const step = {
@@ -2167,6 +2172,7 @@ async function runHandoff(run, workflow, { probe = null, getTool = () => undefin
     }
   }
   run.handoff.finishedAt = now();
+  run.handoffPending = false;
   persist();
 }
 
