@@ -8,7 +8,7 @@ import { chat, parseJsonLoose } from './llm.js';
 import { findSetupCommand, runSetupCommand, setupSummary } from './setup-commands.js';
 import { executePortableStep, portableLiveScreenshot } from './portable.js';
 import { mapVisionPoint } from './vision-map.js';
-import { matchOcrLine, ocrContentTop, ocrLineAnchor, ocrLines, ocrScreenPoint, lineInk } from './ocr-locate.js';
+import { lineInk, matchOcrLine, ocrLineAnchor, ocrLines, ocrScreenPoint } from './ocr-locate.js';
 import { decidePreview, describeSurroundings } from './step-context.js';
 import { judgeMode, judgeTargetFor, mergeJudgement, recordJudgement, windowFacts } from './judgement.js';
 import {
@@ -1689,7 +1689,9 @@ $bmp.Dispose()
     height: Number(parsed.height) || null,
   };
   if (!parsed.ok) return { found: false, reason: str(parsed.reason, 'no OCR result'), shot };
-  const lines = ocrLines(parsed.words, { minY: ocrContentTop({ windowRect: { top: 0 }, clientRect: { top: Number(parsed.contentTop) || 0 } }) });
+  // The client area starts below the title bar; the capture starts at the
+  // window's corner, so the difference is where chrome ends in capture pixels.
+  const lines = ocrLines(parsed.words, { minY: Math.max(0, Number(parsed.contentTop) || 0) });
   const best = matchOcrLine(lines, wanted);
   if (!best) {
     return {

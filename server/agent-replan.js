@@ -75,7 +75,7 @@ const TYPE_GUIDE = `Allowed step types (params):
 - openUrl {url,app?} — open a page; app may be chrome.exe
 - focusWindow {title,process?} — bring a specific window forward
 - windowAction {action:"minimize|maximize|restore|close",title?,process?} — control a popup or window by title/process
-- clickElement {window,name,controlType?,fallbackX?,fallbackY?,visionFallback?,verifyAfter?,preview?,humanize?,expect?} — find and click a named visible control; preview reads the screen first (skips when the expected state already exists, lists nearby elements, can correct the position); humanize moves the pointer through the area for hover menus
+- clickElement {window,name,controlType?,fallbackX?,fallbackY?,ocr?,visionFallback?,verifyAfter?,preview?,humanize?,expect?} — find and click a named visible control (UI Automation, then a desktop OCR read of the label, then a vision locator for controls with no text); preview reads the screen first (skips when the expected state already exists, lists nearby elements, can correct the position); humanize moves the pointer through the area for hover menus
 - click {x,y,button?,foreground?} | doubleClick {x,y} | rightClick {x,y}
 - move {x,y}
 - drag {x1,y1,x2,y2,foreground?} — press, move, release
