@@ -5302,7 +5302,7 @@ try {
           return clickFound(
             read.x,
             read.y,
-            `OCR “${read.text}”${read.ink ? ' (ink-centred)' : ''} in ${read.ms}ms`,
+            `OCR “${read.text}”${read.ink ? ' (ink-centred)' : ''}, read in ${read.ms}ms`,
             read.shot ? [read.shot] : []
           );
         }
