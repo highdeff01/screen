@@ -87,6 +87,21 @@ let tickTimer = null;
 
 const MAX_RUNS = 120;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+// Steps that send input into the desktop themselves.
+const INPUT_STEPS = new Set([
+  'type',
+  'key',
+  'clipboard',
+  'click',
+  'doubleClick',
+  'rightClick',
+  'clickElement',
+  'drag',
+  'dragCopy',
+  'scroll',
+  'playMedia',
+  'windowAction',
+]);
 
 // Retry backoff is a control boundary, not an uninterruptible sleep. Paused
 // time does not consume the delay, and cancellation must prevent another try.
@@ -2669,6 +2684,10 @@ async function executeRun(runId) {
           break;
         }
         step.attempts = attempt;
+        // Remember when this run last sent input itself: its own clicks reset
+        // the idle timer, and the pointer-aim guard must not read them as the
+        // operator working.
+        if (INPUT_STEPS.has(step.type)) run.lastActionAt = Date.now();
         try {
           const ctx = {
             live: !run.dryRun,
