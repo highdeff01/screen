@@ -40,3 +40,50 @@ test('a step that is not a click, or that reports no point, teaches nothing', ()
   engine.rememberClickPoint(workflow, { id: 'b', type: 'clickElement', params: { name: 'Save' }, output: 'Clicked via Enter' });
   assert.equal(workflow.clickPoints, undefined, 'nothing was learned, so nothing was written');
 });
+
+test('every successful click teaches its point, including a vision-fallback click', () => {
+  const workflow = { id: 'wf_points_c', steps: [] };
+  const steps = [
+    // A plain coordinate click: its output is only the word "clicked".
+    { id: 'a', type: 'click', params: { x: 100, y: 200 }, output: 'clicked' },
+    // A click found by the vision fallback, which reports its point in prose.
+    { id: 'b', type: 'clickElement', params: { name: 'Dan' }, output: 'Clicked “Dan” via vision 81% at 640,300.' },
+    // A click whose point is carried structurally, with no coordinates in text.
+    {
+      id: 'c',
+      type: 'clickElement',
+      params: { name: 'Address bar' },
+      clickPoint: { x: 900, y: 120, method: 'vision 74%', name: 'Address bar', window: 'Chrome' },
+      output: 'Clicked “Address bar” via vision 74%.',
+    },
+  ];
+  for (const step of steps) engine.rememberClickPoint(workflow, step);
+  assert.deepEqual(Object.keys(workflow.clickPoints).sort(), ['a', 'b', 'c'], 'three clicks leave three points');
+  assert.deepEqual([workflow.clickPoints.a.x, workflow.clickPoints.a.y], [100, 200]);
+  assert.equal(workflow.clickPoints.a.method, 'coordinates');
+  assert.deepEqual([workflow.clickPoints.b.x, workflow.clickPoints.b.y], [640, 300]);
+  assert.equal(workflow.clickPoints.c.method, 'vision 74%');
+  assert.equal(workflow.clickPoints.c.name, 'Address bar');
+});
+
+test('a right click or a play-control click also teaches where it landed', () => {
+  const workflow = { id: 'wf_points_d', steps: [] };
+  engine.rememberClickPoint(workflow, { id: 'r', type: 'rightClick', params: { x: 30, y: 40 }, output: 'clicked' });
+  engine.rememberClickPoint(workflow, {
+    id: 'p',
+    type: 'playMedia',
+    params: { title: 'YouTube', x: 1, y: 1 },
+    output: 'Paused player detected; clicked the play control inside the player at 700,420.',
+  });
+  assert.deepEqual([workflow.clickPoints.r.x, workflow.clickPoints.r.y], [30, 40]);
+  assert.deepEqual([workflow.clickPoints.p.x, workflow.clickPoints.p.y], [700, 420], 'the play control, not the stale stored point');
+});
+
+test('a run working from a snapshot still teaches the saved workflow', () => {
+  const saved = { id: 'wf_points_saved', steps: [] };
+  store.db().workflows.push(saved);
+  const snapshot = JSON.parse(JSON.stringify(saved));
+  engine.rememberClickPoint(snapshot, { id: 's', type: 'click', params: { x: 5, y: 6 }, output: 'clicked' });
+  assert.equal(saved.clickPoints.s.x, 5, 'the stored workflow keeps the point for the next run');
+  assert.equal(snapshot.clickPoints.s.y, 6, 'and this run can aim with it too');
+});

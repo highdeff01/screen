@@ -135,3 +135,42 @@ test('a prepared thinking choice is aimed at only when it names a control', () =
   assert.equal(target.name, 'Submit');
   assert.equal(target.window, 'Accounts');
 });
+
+test('a control with no UI Automation tree is aimed at the point it was clicked at last time', async () => {
+  const run = liveRun();
+  const moves = [];
+  const result = await aim.aimBeforeStep(
+    run,
+    { id: 's1', type: 'clickElement', params: { window: 'Sightline Profile', name: 'Dan' } },
+    {
+      workflow: { clickPoints: { s1: { x: 300, y: 240, name: 'Dan' } } },
+      presence: async () => presenceAt(4000, 'Sightline Profile'),
+      find: async () => ({ found: false, reason: 'no UI Automation tree' }),
+      move: async (_run, point) => moves.push(point),
+    }
+  );
+  assert.equal(result.ok, true, 'the remembered point is a real aim target');
+  assert.deepEqual(moves, [{ x: 300, y: 240 }]);
+  assert.equal(run.aims[0].target, 'Dan');
+});
+
+test('a control that was never clicked and is not in the tree is reported, not guessed', async () => {
+  const run = liveRun();
+  const messages = [];
+  const moves = [];
+  const result = await aim.aimBeforeStep(
+    run,
+    { id: 's2', type: 'clickElement', params: { window: 'Sightline Profile', name: 'Settings' } },
+    {
+      workflow: { clickPoints: {} },
+      presence: async () => presenceAt(4000, 'Sightline Profile'),
+      find: async () => ({ found: false, reason: 'no UI Automation tree' }),
+      move: async (_run, point) => moves.push(point),
+      log: (message) => messages.push(message),
+    }
+  );
+  assert.equal(result.ok, false);
+  assert.match(result.reason, /could not be located/);
+  assert.equal(moves.length, 0, 'no guess is made at a control nobody has located');
+  assert.match(messages[0], /Aiming paused/);
+});
