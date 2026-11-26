@@ -23,7 +23,7 @@ import { enqueueFrameJob, drainFrameQueue, clearFrameQueue, markReaderBlind, rea
 import { aimBeforeStep, aimAt, aimTargetForChoice, resetAimState } from './aim.js';
 import { registerActiveStep, clearActiveStep } from './nudge.js';
 import { assessStep, launchProducedNewWindow, looksLikeSavedDocument, reviewPrevious } from './step-context.js';
-import { classifyPresence, holdDecision, learnHold, completionFor, isFocusStealing, isQuickStep, silentChecksFor } from './presence.js';
+import { classifyPresence, holdDecision, learnHold, completionFor, isFocusStealing, isQuickStep, silentChecksFor, isOwnInput } from './presence.js';
 import { recordAction } from './action-log.js';
 import { sendContinuation } from './agent-awareness.js';
 import { enqueue } from './pipeline.js';
@@ -1319,7 +1319,16 @@ async function awaitUserSettle(step, run, probe = null) {
       return;
     }
     if (presence?.error) return;
-    const classified = classifyPresence({ idleMs: presence.idleMs, foreground: presence.foreground, target, holdMs });
+    // The run's own typing and clicking reset the same idle timer the operator
+    // does. Input that is no later than the run's last action is the run's own:
+    // the desktop is quiet as far as this hold is concerned.
+    const ownOnly = isOwnInput({ idleMs: presence.idleMs, lastActionEndAt: run.lastActionEndAt });
+    const classified = classifyPresence({
+      idleMs: ownOnly ? Math.max(holdMs, Number(presence.idleMs) || 0) : presence.idleMs,
+      foreground: presence.foreground,
+      target,
+      holdMs,
+    });
     // The window this run opened, in front, means the operator is steering the
     // same task rather than working somewhere else.
     const ownTitle = String(run.lastWindow?.title || '').trim().toLowerCase();
@@ -2719,6 +2728,7 @@ async function executeRun(runId) {
             getTool,
           };
           result = probe?.executeStep ? await probe.executeStep(step, ctx) : await executeStep(step, ctx);
+          if (INPUT_STEPS.has(step.type)) run.lastActionEndAt = Date.now();
           const focusClaim = await confirmLaunchFocus(step, result, run, probe);
           if (!focusClaim.ok) {
             const err = new Error(focusClaim.message);

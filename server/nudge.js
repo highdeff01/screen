@@ -25,6 +25,23 @@ import { readPresence } from './automation.js';
 import { IS_WINDOWS } from './platform.js';
 import { addSuggestion } from './planner.js';
 
+// Steps that send input into the desktop themselves, so their input is the run's
+// own and must not be read as the operator asking for something.
+const INPUT_STEPS = new Set([
+  'type',
+  'key',
+  'clipboard',
+  'click',
+  'doubleClick',
+  'rightClick',
+  'clickElement',
+  'drag',
+  'dragCopy',
+  'scroll',
+  'playMedia',
+  'windowAction',
+]);
+
 const POLL_MS = 2500;
 const FRESH_MS = 2500; // input happened within the last poll window
 const DEBOUNCE_MS = 12000;
@@ -162,8 +179,10 @@ function applyNudge(run, presence) {
   if (run.status === 'running' && !run.paused && !run.presence?.holding) {
     const entry = activeSteps.get(run.id);
     if (!entry?.reread) return;
-    // The run's own clicks and keystrokes are input too. Input that landed at or
-    // just after this run's last action is its own, not the operator asking.
+    // The run's own clicks and keystrokes are input too, and a typing step keeps
+    // sending them for as long as it runs. While the step that is working is an
+    // input step, the input belongs to the run, not to the operator.
+    if (INPUT_STEPS.has(String(entry.step?.type || '')) && entry.step?.status === 'running') return;
     const inputAt = Date.now() - Number(presence.idleMs || 0);
     const ourInput =
       run.lastActionAt && inputAt >= Number(run.lastActionAt) - 3000 && inputAt <= Number(run.lastActionAt) + 5000;

@@ -9,7 +9,18 @@ import {
   isQuickStep,
   silentChecksFor,
   continuationMode,
+  isOwnInput,
 } from '../server/presence.js';
+
+test('the run’s own keystrokes are not the operator, so they never hold a step', () => {
+  const at = Date.now();
+  // The action ended 200 ms ago and the idle timer says input 100 ms ago: ours.
+  assert.equal(isOwnInput({ idleMs: 100, lastActionEndAt: at - 200, at }), true);
+  // The action ended long ago and input just happened: someone else typed.
+  assert.equal(isOwnInput({ idleMs: 100, lastActionEndAt: at - 9000, at }), false);
+  // Nothing this run did is known: never assume input is ours.
+  assert.equal(isOwnInput({ idleMs: 100, lastActionEndAt: 0, at }), false);
+});
 
 test('steps that move the pointer, type or change windows take focus', () => {
   for (const type of ['type', 'key', 'clickElement', 'launchApp', 'focusWindow', 'installApp', 'playMedia']) {

@@ -114,6 +114,28 @@ test('input while a run is working asks for a fresh read instead of waiting for 
   nudge.clearActiveStep(run.id);
 });
 
+test('a typing step’s own keystrokes are not counted as operator input', async () => {
+  const d = store.db();
+  const run = { id: 'r6', workflowId: 'wf1', workflowName: 'Typing probe', status: 'running', paused: false, log: [], createdAt: new Date().toISOString() };
+  d.runs.unshift(run);
+  store.persist();
+  const calls = [];
+  nudge.registerActiveStep(
+    run,
+    { id: 'stp2', type: 'type', name: 'Type the email', status: 'running' },
+    (payload) => calls.push(payload)
+  );
+
+  nudge.setNudgeSource(async () => ({ idleMs: 9000 }));
+  await nudge.__tick?.();
+  nudge.setNudgeSource(async () => ({ idleMs: 150 }));
+  await nudge.__tick?.();
+
+  assert.equal(calls.length, 0, 'the run’s own typing did not ask for a re-read');
+  assert.equal(run.inputReviews, undefined);
+  nudge.clearActiveStep(run.id);
+});
+
 test('quiet desktops produce nothing', async () => {
   const d = store.db();
   const run = { id: 'r4', workflowId: 'wf1', workflowName: 'Quiet probe', status: 'needs_review', endedAt: new Date().toISOString(), log: [], createdAt: new Date().toISOString() };

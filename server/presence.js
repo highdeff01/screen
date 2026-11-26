@@ -142,6 +142,21 @@ export function classifyPresence({ idleMs = 0, foreground = null, target = '', h
 }
 
 /**
+ * Was the last input this run's own action?
+ *
+ * A run's clicks and keystrokes reset the same idle timer the operator does, so
+ * a hold that reads them as the operator waits on the run itself — the console
+ * sitting still between two of its own steps. Input no later than the moment
+ * the run's own action ended is the run's; anything after it is someone else.
+ */
+export function isOwnInput({ idleMs = 0, lastActionEndAt = 0, at = Date.now() } = {}) {
+  const end = Number(lastActionEndAt) || 0;
+  if (!end) return false;
+  const inputAt = Number(at) - Math.max(0, Number(idleMs) || 0);
+  return inputAt <= end + 750;
+}
+
+/**
  * Decide whether a step may take focus now, should wait for the user to settle,
  * or should run as a silent (non-focusing) continuation instead.
  */
