@@ -162,6 +162,12 @@ function applyNudge(run, presence) {
   if (run.status === 'running' && !run.paused && !run.presence?.holding) {
     const entry = activeSteps.get(run.id);
     if (!entry?.reread) return;
+    // The run's own clicks and keystrokes are input too. Input that landed at or
+    // just after this run's last action is its own, not the operator asking.
+    const inputAt = Date.now() - Number(presence.idleMs || 0);
+    const ourInput =
+      run.lastActionAt && inputAt >= Number(run.lastActionAt) - 3000 && inputAt <= Number(run.lastActionAt) + 5000;
+    if (ourInput) return;
     run.inputReviews = (Number(run.inputReviews) || 0) + 1;
     pushNudgeLog(
       run,
