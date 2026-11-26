@@ -3101,6 +3101,10 @@ async function executeRun(runId) {
 
     if (succeeded) {
       step.output = result?.output || '';
+      // Where the click really landed belongs on the run's own step record, not
+      // only in the sentence the step wrote: the run then shows the point and how
+      // it was found (UIA, preview, vision 81%, coordinates) as data.
+      if (result?.clickPoint) step.clickPoint = result.clickPoint;
       if (!run.shadow) rememberClickPoint(workflow, { ...step, clickPoint: result?.clickPoint || step.clickPoint });
       if (!run.shadow) rememberStepReference(workflow, step);
       if (result?.judgement) step.judgement = result.judgement;
