@@ -26,6 +26,7 @@ import { addNote } from './handoff.js';
 import { liveControl } from './platform.js';
 import { autoRepairSettings } from './auto-repair.js';
 import { STEP_TYPES } from './automation.js';
+import { parseJsonLoose } from './llm.js';
 
 const MAX_ROUNDS = 12;
 
@@ -265,7 +266,7 @@ async function rethink(run, focus, deps = {}) {
     return `Round ${round.index}:\nAvailability: ${promptValue(state.availability, 600)}\nForeground: ${promptValue(state.foreground, 800)}\nFocused/caret: ${promptValue(state.focused, 800)}\nWindows: ${promptValue(state.windows, 800)}\nReflexes: ${promptValue(state.reflexes, 1000)}`;
   }).join('\n');
   try {
-    const reply = await ask([
+    const messages = [
       {
         role: 'system',
         content:
@@ -276,15 +277,30 @@ async function rethink(run, focus, deps = {}) {
         content: `Platform facts (the truth about this machine — never contradict them): running on ${process.platform}${process.platform === 'win32' ? ' (Windows) with live desktop control available' : ''}; live backend ${(() => { let c = { available: false, label: 'none' }; try { c = liveControl(); } catch { /* report unavailable */ } return `${c.label}, ${c.available ? 'available' : 'unavailable (runs continue simulated)'}`; })()}. Do not diagnose other operating systems; errors naming Linux/X11/xdotool on a Windows host are stale or from a different host — ignore them.
 Goal: ${promptValue(goal, 2000)}\nRun error: ${promptValue(run.errorSummary, 1000)}\nPrior steps (most recent 10):\n${history || 'none'}\nRemaining steps (including failed):\n${remaining || 'none'}${omitted ? `\n[${omitted} remaining steps omitted]` : ''}\nObservations:\n${observations || 'none'}`,
       },
-    ], { kind: 'deep-focus', timeoutMs: 240000 });
+    ];
+    const reply = await ask(messages, { kind: 'deep-focus', timeoutMs: 240000 });
     if (!reply?.ok) {
       focus.rethinkStatus = 'model request failed';
       focus.rethinkError = String(reply?.error || '').slice(0, 240);
       return null;
     }
     const text = String(reply.content || '').trim();
-    const json = text.slice(text.indexOf('{'), text.lastIndexOf('}') + 1);
-    const parsed = JSON.parse(json);
+    let parsed = parseJsonLoose(text);
+    if (!parsed) {
+      // A model that wrapped or malformed its JSON gets one terse second chance
+      // instead of silently losing the reshape.
+      const fix = await ask([
+        ...messages,
+        { role: 'assistant', content: text.slice(0, 4000) },
+        { role: 'user', content: 'That reply was not valid JSON. Reply again with ONLY one compact JSON object: double quotes, no code fence, no comments, no trailing commas, no prose.' },
+      ], { kind: 'deep-focus-repair', timeoutMs: 240000 });
+      parsed = fix?.ok ? parseJsonLoose(fix.content) : null;
+      if (!parsed) {
+        focus.rethinkStatus = 'model reply was not JSON';
+        focus.rethinkError = `reply: ${text.slice(0, 160)}`;
+        return null;
+      }
+    }
     // Proposing nothing is an answer; proposing only steps that cannot run is not.
     const proposed = Array.isArray(parsed.reshaped) ? parsed.reshaped : [];
     const executable = executableReshape(proposed, run);
