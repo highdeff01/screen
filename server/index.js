@@ -23,7 +23,8 @@ import {
 } from './store.js';
 import { executeStep, runPowerShell, STEP_TYPES, IS_WINDOWS, describe, findUiElement, findUiElementByOcr, readFocusedElement, readForegroundWindow, readScreenContext } from './automation.js';
 import { liveControl, probeLiveBackend } from './platform.js';
-import { agentGoal, checkGoal, recordGoalCheck, shouldCheckScreen } from './goal-check.js';
+import { agentGoal, checkGoal, recordGoalCheck } from './goal-check.js';
+import { createScreenGoalChecker } from './goal-screen.js';
 import {
   cancelDownload,
   downloadModel,
@@ -577,7 +578,7 @@ function buildState() {
     proposalStats: { count: proposalState.count, pending: proposalState.pending },
     visualTester: visualTesterStatus(),
     judgement: judgementSummary(d.settings),
-    agents: d.agents,
+    agents: d.agents.map(agentStateView),
     recoveryPacks: listRecoveryPacks(20),
     recoveryTelemetry: recoveryTelemetrySummary(),
     presenter: activePresenter(),
@@ -1826,20 +1827,11 @@ async function readGoalScreen() {
 /**
  * The screen changed: check every agent that declared a goal, at most once per
  * gap. One label read is shared by all of them, so N agents still cost one OCR
- * pass; an agent without a declared goal costs nothing at all.
+ * pass; an agent without a declared goal costs nothing at all. The checks are
+ * deferred past the sample's response — the read can take four seconds and the
+ * panel polls faster than that.
  */
-async function checkGoalsOnScreenChange(sample) {
-  const due = db().agents.filter((agent) => shouldCheckScreen(agent, sample));
-  if (!due.length) return [];
-  const screen = await readGoalScreen();
-  const at = now();
-  const checks = due.map((agent) => {
-    agent.screenCheckedAt = at;
-    return recordGoalCheck(agent, checkGoal({ goal: agentGoal(agent), trigger: 'screen', screen, at }));
-  });
-  persist();
-  return checks;
-}
+const screenGoalChecker = createScreenGoalChecker({ readScreen: readGoalScreen, persist, now });
 
 // The live map: a short history of cheap screen reads, with the movement and
 // change measured between each pair. GET never touches the desktop; POST
@@ -1856,15 +1848,11 @@ route('POST', /^\/api\/live-map$/, async (req, res) => {
   if (action === 'reset') return sendJson(res, 200, { ok: true, map: liveMap.reset() });
   if (action !== 'sample') return fail(res, 400, 'action must be sample or reset');
   const result = await liveMap.sample({ force: body?.force === true });
-  // A changed screen is the other moment the goal is re-read. A failed label
-  // read must not break the map, so the checks are advisory here too.
-  let goalChecks = [];
-  try {
-    goalChecks = await checkGoalsOnScreenChange(result.sample);
-  } catch {
-    goalChecks = [];
-  }
-  return sendJson(res, 200, { ok: true, reused: result.reused, sample: result.sample, map: result.map, goalChecks });
+  // A changed screen is the other moment the goal is re-read, but the answer is
+  // the sample: the label read runs after this response is written, so a slow
+  // OCR pass cannot hold up the live map.
+  screenGoalChecker.trigger(result.sample, db().agents);
+  return sendJson(res, 200, { ok: true, reused: result.reused, sample: result.sample, map: result.map });
 });
 
 route('GET', /^\/api\/live\/monitor$/, async (req, res) => sendJson(res, 200, { ok: true, monitor: monitorState(), observer: observerState() }));
@@ -4613,6 +4601,16 @@ route('PATCH', /^\/api\/settings$/, async (req, res) => {
 });
 
 /* ---------------- Agents ---------------- */
+/**
+ * The polled state carries an agent's latest goal check, not its history: the
+ * panel shows one record, and every poll would otherwise ship the whole trace
+ * (eight full records per agent) that nothing on the page reads.
+ */
+function agentStateView(agent) {
+  const { goalChecks, ...rest } = agent;
+  return rest;
+}
+
 route('PATCH', /^\/api\/agents\/([^/]+)$/, async (req, res, [id]) => {
   const agent = db().agents.find((a) => a.id === id);
   if (!agent) return fail(res, 404, 'Agent not found');

@@ -331,7 +331,7 @@ test('the goal is saved on the agent and the check is recorded and served', { ti
     const agent = state.agents.find((entry) => entry.id === agentId);
     assert.equal(agent.goal, 'Save the profile.', 'the state view carries the goal');
     assert.equal(agent.goalCheck.status, 'unknown', 'and the latest check');
-    assert.equal(agent.goalChecks.length, 1);
+    assert.equal('goalChecks' in agent, false, 'the polled state leaves the trace out');
 
     const failed = await request(base, `/api/agents/${agentId}/goal-check`, 'POST', {
       command: { name: 'save-profile', ok: false, code: 1, stderr: 'access denied' },
