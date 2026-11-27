@@ -1607,6 +1607,7 @@ foreach ($e in $all) {
     if ($e.Current.IsOffscreen) { continue }
     if (-not $e.Current.IsKeyboardFocusable) { continue }
     $r = $e.Current.BoundingRectangle
+    if ([double]::IsNaN($r.Width) -or [double]::IsNaN($r.Height)) { continue }
     if ($r.Width -lt 40 -or $r.Height -lt 12) { continue }
     $readonly = $false
     try {
@@ -1898,6 +1899,17 @@ try {
 if ($readonly) { $editable = $false }
 if (-not $focused.Current.IsKeyboardFocusable) { $editable = $false }
 $r = $focused.Current.BoundingRectangle
+$rx = [double]$r.X
+$ry = [double]$r.Y
+$rw = [double]$r.Width
+$rh = [double]$r.Height
+# A control with no screen rectangle reports NaN or infinity, which ConvertTo-Json
+# writes as NaN and no JSON parser accepts; one unreadable control must not make
+# the whole focused-element read fail.
+if ([double]::IsNaN($rx) -or $rx -gt 1e12 -or $rx -lt -1e12) { $rx = 0 }
+if ([double]::IsNaN($ry) -or $ry -gt 1e12 -or $ry -lt -1e12) { $ry = 0 }
+if ([double]::IsNaN($rw) -or $rw -gt 1e12 -or $rw -lt -1e12) { $rw = 0 }
+if ([double]::IsNaN($rh) -or $rh -gt 1e12 -or $rh -lt -1e12) { $rh = 0 }
 [pscustomobject]@{
   found = $true
   name = $name
@@ -1906,10 +1918,10 @@ $r = $focused.Current.BoundingRectangle
   value = $value
   window = $window
   process = $procName
-  x = [math]::Round($r.X + ($r.Width / 2))
-  y = [math]::Round($r.Y + ($r.Height / 2))
-  width = [math]::Round($r.Width)
-  height = [math]::Round($r.Height)
+  x = [math]::Round($rx + ($rw / 2))
+  y = [math]::Round($ry + ($rh / 2))
+  width = [math]::Round($rw)
+  height = [math]::Round($rh)
   editable = $editable
   readonly = $readonly
 } | ConvertTo-Json -Compress`;
