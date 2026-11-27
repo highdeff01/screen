@@ -7016,7 +7016,8 @@ function renderAutoRepairCard(run) {
   const auto = run.autoRepair;
   const monitor = run.monitor;
   const focus = Number(run.focusLevel || 1);
-  if (!auto && !monitor && focus <= 1) return '';
+  const didWork = Number(auto?.appended) > 0 || auto?.analyzed || auto?.error;
+  if (!didWork && !monitor && focus <= 1) return '';
   const bits = [];
   if (focus > 1) bits.push(`focus level ${focus}/5`);
   if (Number(monitor?.reads) > 0) bits.push(`${Number(monitor.reads)} screen read(s)`);
