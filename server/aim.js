@@ -17,6 +17,7 @@
 
 import { db, now, persist, uid } from './store.js';
 import { executeStep, findUiElement, findUiElementByOcr, readPresence, readCursor as readCursorPoint, readWindowRect, elementLabels } from './automation.js';
+import { adjustPoint, describeMotion, motionBetween, workableZone } from './motion.js';
 
 /** The person at the desk must be still: this is not a race for the pointer. */
 export const AIM_MIN_IDLE_MS = 1200;
@@ -347,13 +348,35 @@ export async function aimBeforeStep(run, step, options = {}) {
     }
     if (pointMatchesWindow(remembered, rect)) {
       target.fallback = { x: Number(remembered.x), y: Number(remembered.y) };
-    } else if (remembered.window && typeof options.log === 'function') {
+    } else if (remembered.window) {
+      // The window is not where the point was recorded, so the coordinates no
+      // longer name the same place. Carry the point across the move instead of
+      // either trusting it blind or dropping what the click taught us: the
+      // control keeps its place in the window, so translate by the movement and
+      // scale by any resize, then keep the result inside the window itself.
       const saved = remembered.window;
-      options.log(
-        `The point remembered for “${target.label}” was recorded in a window at ${saved.left},${saved.top}${
-          rect ? ` and the window is at ${rect.left},${rect.top} now` : ' and the window could not be found'
-        }; it is not used, so the control is located afresh.`
-      );
+      const motion = rect?.found ? motionBetween(saved, rect) : null;
+      const carried = motion ? adjustPoint(remembered, saved, rect) : null;
+      const zone = carried ? workableZone(carried, rect) : null;
+      if (zone) {
+        target.fallback = { x: zone.x, y: zone.y };
+        target.remapped = {
+          from: { x: Number(remembered.x), y: Number(remembered.y) },
+          to: { x: zone.x, y: zone.y },
+          motion,
+        };
+        if (typeof options.log === 'function') {
+          options.log(
+            `The point remembered for “${target.label}” was recorded at ${remembered.x},${remembered.y} in a window at ${saved.left},${saved.top}; ${describeMotion(
+              motion
+            )}, so it was carried to ${zone.x},${zone.y}. The control is still located afresh first; the carried point is used only if that fails.`
+          );
+        }
+      } else if (typeof options.log === 'function') {
+        options.log(
+          `The point remembered for “${target.label}” was recorded in a window at ${saved.left},${saved.top} and the window could not be found now; it is not used, so the control is located afresh.`
+        );
+      }
     }
   }
   return aimAt(run, target, options);
