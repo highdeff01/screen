@@ -355,7 +355,9 @@ export async function aimBeforeStep(run, step, options = {}) {
       // control keeps its place in the window, so translate by the movement and
       // scale by any resize, then keep the result inside the window itself.
       const saved = remembered.window;
-      const motion = rect?.found ? motionBetween(saved, rect) : null;
+      // `motionBetween` is the validity check too: an unreadable or minimized
+      // window has no usable rect, so it yields null and nothing is carried.
+      const motion = motionBetween(saved, rect);
       const carried = motion ? adjustPoint(remembered, saved, rect) : null;
       const zone = carried ? workableZone(carried, rect) : null;
       if (zone) {

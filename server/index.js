@@ -175,6 +175,7 @@ import { activePresenter, listPositionMemory, presenterUserInput } from './foreg
 import { latestMonitorSuggestions, monitorState, startLiveMonitor, stopLiveMonitor } from './live-monitor.js';
 import { observerState } from './app-observer.js';
 import { livePreview } from './live-preview.js';
+import { liveMap } from './live-map.js';
 import { findSimulation, listSimulations, simulationSummary, startSimulation } from './screenshot-sim.js';
 import { buildTestReview, SORTS as TEST_REVIEW_SORTS } from './test-review.js';
 import { replicateRun } from './alt-env.js';
@@ -1774,6 +1775,24 @@ route('POST', /^\/api\/live\/preview$/, async (req, res) => {
   } catch {
     return fail(res, 400, 'intervalMs must be a finite number');
   }
+});
+
+// The live map: a short history of cheap screen reads, with the movement and
+// change measured between each pair. GET never touches the desktop; POST
+// samples, so a closed panel costs nothing.
+route('GET', /^\/api\/live-map$/, async (req, res) => sendJson(res, 200, { ok: true, map: liveMap.state() }));
+route('POST', /^\/api\/live-map$/, async (req, res) => {
+  let body;
+  try {
+    body = await readBody(req);
+  } catch {
+    return fail(res, 400, 'Invalid request body');
+  }
+  const action = String(body?.action || 'sample').toLowerCase();
+  if (action === 'reset') return sendJson(res, 200, { ok: true, map: liveMap.reset() });
+  if (action !== 'sample') return fail(res, 400, 'action must be sample or reset');
+  const result = await liveMap.sample({ force: body?.force === true });
+  return sendJson(res, 200, { ok: true, reused: result.reused, sample: result.sample, map: result.map });
 });
 
 route('GET', /^\/api\/live\/monitor$/, async (req, res) => sendJson(res, 200, { ok: true, monitor: monitorState(), observer: observerState() }));

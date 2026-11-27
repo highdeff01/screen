@@ -281,7 +281,7 @@ test('a control that was never clicked and is not in the tree is reported, not g
   assert.match(messages[0], /Aiming paused/);
 });
 
-test('a point recorded in a window that has since moved is not aimed at blindly', async () => {
+test('a point recorded in a window that has since moved is carried across the move, never trusted as-is', async () => {
   const run = liveRun();
   const moves = [];
   const messages = [];
@@ -289,8 +289,8 @@ test('a point recorded in a window that has since moved is not aimed at blindly'
     run,
     { id: 's5', type: 'clickElement', params: { window: 'Sightline Profile', name: 'Notifications' } },
     {
-      // Learned at 156,156; the window is at 52,52 now, so the coordinates are
-      // pointing at whatever happens to be there.
+      // Learned at 156,156; the window is at 52,52 now, so the same coordinates
+      // would point at whatever happens to be there.
       workflow: {
         clickPoints: {
           s5: { x: 325, y: 448, name: 'Notifications', window: { left: 156, top: 156, width: 776, height: 559 } },
@@ -306,8 +306,60 @@ test('a point recorded in a window that has since moved is not aimed at blindly'
   );
   assert.equal(result.ok, true);
   assert.deepEqual(moves, [{ x: 221, y: 344 }], 'the fresh read, not the point from the old window position');
-  assert.match(messages.join(' '), /recorded in a window at 156,156/);
-  assert.match(messages.join(' '), /located afresh/);
+  assert.match(messages.join(' '), /recorded at 325,448 in a window at 156,156/);
+  assert.match(messages.join(' '), /moved 104 px left and 104 px up/, 'the movement is measured and named');
+  assert.match(messages.join(' '), /carried to 221,344/, 'the point is re-adjusted into the window’s new place');
+  assert.match(messages.join(' '), /located afresh first/);
+});
+
+test('when the control cannot be found fresh, the carried point is the aim', async () => {
+  const run = liveRun();
+  const moves = [];
+  const result = await aim.aimBeforeStep(
+    run,
+    { id: 's7', type: 'clickElement', params: { window: 'Sightline Profile', name: 'Notifications' } },
+    {
+      workflow: {
+        clickPoints: {
+          s7: { x: 325, y: 448, name: 'Notifications', window: { left: 156, top: 156, width: 776, height: 559 } },
+        },
+      },
+      windowRect: async () => ({ left: 52, top: 52, width: 776, height: 559 }),
+      presence: async () => presenceAt(4000, 'Sightline Profile'),
+      find: async () => ({ found: false, reason: 'no UI Automation tree' }),
+      readText: async () => ({ found: false, reason: 'no text read' }),
+      move: async (_run, point) => moves.push(point),
+      cursor: async () => ({ x: 900, y: 700 }),
+    }
+  );
+  assert.equal(result.ok, true);
+  assert.deepEqual(moves, [{ x: 221, y: 344 }], 'the recorded point, translated by the window’s movement');
+});
+
+test('a carried point is scaled when the window was resized, and kept inside the window', async () => {
+  const run = liveRun();
+  const moves = [];
+  const result = await aim.aimBeforeStep(
+    run,
+    { id: 's8', type: 'clickElement', params: { window: 'Sightline Profile', name: 'Notifications' } },
+    {
+      workflow: {
+        clickPoints: {
+          // 325,448 in a 700x500 window at 100,100 is 225,348 into it; in the
+          // window's new 1400x1000 size that is twice as far from its corner.
+          s8: { x: 325, y: 448, name: 'Notifications', window: { left: 100, top: 100, width: 700, height: 500 } },
+        },
+      },
+      windowRect: async () => ({ left: 100, top: 100, width: 1400, height: 1000 }),
+      presence: async () => presenceAt(4000, 'Sightline Profile'),
+      find: async () => ({ found: false, reason: 'no UI Automation tree' }),
+      readText: async () => ({ found: false, reason: 'no text read' }),
+      move: async (_run, point) => moves.push(point),
+      cursor: async () => ({ x: 900, y: 700 }),
+    }
+  );
+  assert.equal(result.ok, true);
+  assert.deepEqual(moves, [{ x: 550, y: 796 }]);
 });
 
 test('a point is trusted while its window is where it was recorded', async () => {
