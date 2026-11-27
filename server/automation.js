@@ -1613,7 +1613,9 @@ foreach ($e in $all) {
       $vp = $e.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
       $readonly = [bool]$vp.Current.IsReadOnly
     } catch { }
-    if ($readonly) { continue }
+    # A read-only control is reported, not dropped: Chromium exposes a whole
+    # page (and Kiro its editor) as a read-only Document, and knowing the
+    # surface exists is what lets the step say why it did not click.
     $list += [pscustomobject]@{
       name = [string]$e.Current.Name
       controlType = $ct
