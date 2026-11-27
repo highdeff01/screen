@@ -8,6 +8,7 @@ import { chat, parseJsonLoose } from './llm.js';
 import { findSetupCommand, runSetupCommand, setupSummary } from './setup-commands.js';
 import { executePortableStep, portableLiveScreenshot } from './portable.js';
 import { mapVisionPoint } from './vision-map.js';
+import { caretNote, placeCaret } from './caret.js';
 import { lineInk, matchOcrLine, ocrLineAnchor, ocrLines, ocrScreenPoint } from './ocr-locate.js';
 import { decidePreview, describeSurroundings } from './step-context.js';
 import { judgeMode, judgeTargetFor, mergeJudgement, recordJudgement, windowFacts } from './judgement.js';
@@ -1569,6 +1570,102 @@ $best | ConvertTo-Json -Compress`;
  * failure this guard prevents, reproducible on demand for the comparison test.
  * Production callers never pass it.
  */
+/**
+ * The controls in a window that can hold a caret, as Windows reports them.
+ *
+ * Only focusable, on-screen, not-read-only Edit, Document and ComboBox
+ * descendants are returned. The window's own rectangle comes back too, because
+ * where a control sits in its window is what tells a chat box (low, small) from
+ * an editor surface (the whole pane).
+ */
+export async function findEditableControls({ window = '', limit = 40 } = {}) {
+  if (!IS_WINDOWS) return { found: false, controls: [], reason: 'UI Automation requires Windows' };
+  const windowNeedle = str(window).trim();
+  const pattern = windowNeedle ? '*' + windowNeedle + '*' : '*';
+  const cap = Math.max(1, Math.min(60, Number(limit) || 40));
+  const script = `${BASE_PRELUDE}
+Add-Type -AssemblyName UIAutomationClient
+$pattern = ${psQuote(pattern)}
+if ($pattern -eq '*') {
+  $fg = [SightlineInput]::GetForegroundWindow()
+  $target = Get-Process | Where-Object { $_.MainWindowHandle -ne 0 -and $_.MainWindowHandle -eq $fg } | Select-Object -First 1
+} else {
+  $target = Get-Process | Where-Object { $_.MainWindowHandle -ne 0 -and $_.ProcessName -like $pattern } | Sort-Object Id | Select-Object -First 1
+  if (-not $target) {
+    $target = Get-Process | Where-Object { $_.MainWindowHandle -ne 0 -and $_.MainWindowTitle -like $pattern } | Sort-Object Id | Select-Object -First 1
+  }
+}
+if (-not $target) { Write-Output '{"found":false,"controls":[],"reason":"window not found"}'; exit 0 }
+$win = [System.Windows.Automation.AutomationElement]::FromHandle($target.MainWindowHandle)
+$wr = $win.Current.BoundingRectangle
+$list = @()
+$all = $win.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
+foreach ($e in $all) {
+  try {
+    $ct = ([string]$e.Current.ControlType.ProgrammaticName) -replace '^ControlType\.',''
+    if ($ct -notmatch '^(Edit|Document|ComboBox)$') { continue }
+    if ($e.Current.IsOffscreen) { continue }
+    if (-not $e.Current.IsKeyboardFocusable) { continue }
+    $r = $e.Current.BoundingRectangle
+    if ($r.Width -lt 40 -or $r.Height -lt 12) { continue }
+    $readonly = $false
+    try {
+      $vp = $e.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
+      $readonly = [bool]$vp.Current.IsReadOnly
+    } catch { }
+    if ($readonly) { continue }
+    $list += [pscustomobject]@{
+      name = [string]$e.Current.Name
+      controlType = $ct
+      x = [math]::Round($r.X + ($r.Width / 2))
+      y = [math]::Round($r.Y + ($r.Height / 2))
+      width = [math]::Round($r.Width)
+      height = [math]::Round($r.Height)
+      keyboardFocusable = [bool]$e.Current.IsKeyboardFocusable
+      readonly = $readonly
+      window = [string]$target.MainWindowTitle
+    }
+    if ($list.Count -ge ${cap}) { break }
+  } catch { }
+}
+if (-not $list.Count) { Write-Output '{"found":false,"controls":[],"reason":"no editable control in the window"}'; exit 0 }
+[pscustomobject]@{
+  found = $true
+  window = [string]$target.MainWindowTitle
+  windowTop = [math]::Round($wr.Y)
+  windowHeight = [math]::Round($wr.Height)
+  controls = $list
+} | ConvertTo-Json -Depth 4 -Compress`;
+  const res = await runPowerShell(script, 20000);
+  if (!res.ok) throw new Error(res.stderr || res.stdout || 'Could not inspect editable controls.');
+  const line = res.stdout.split(/\r?\n/).filter(Boolean).pop();
+  let parsed;
+  try {
+    parsed = JSON.parse(line);
+  } catch {
+    throw new Error(`Editable control inspection was not JSON: ${res.stdout.slice(0, 300)}`);
+  }
+  if (!parsed.found) return { found: false, controls: [], reason: str(parsed.reason, 'not present'), window: str(parsed.window) };
+  const controls = (Array.isArray(parsed.controls) ? parsed.controls : []).map((item) => ({
+    name: str(item.name),
+    controlType: str(item.controlType),
+    x: Number(item.x) || 0,
+    y: Number(item.y) || 0,
+    width: Number(item.width) || 0,
+    height: Number(item.height) || 0,
+    keyboardFocusable: item.keyboardFocusable !== false,
+    readonly: item.readonly === true,
+    window: str(item.window),
+  }));
+  return {
+    found: true,
+    window: str(parsed.window),
+    windowTop: Number(parsed.windowTop) || 0,
+    windowHeight: Number(parsed.windowHeight) || 0,
+    controls,
+  };
+}
+
 export async function findUiElementByOcr({ window = '', name = '', names = null, timeoutMs = 20000, restore = true, labelsOnly = false } = {}) {
   const wanted = (Array.isArray(names) && names.length ? names : [name]).map((item) => str(item).trim()).filter(Boolean);
   if (!wanted.length && !labelsOnly) throw new Error('An element name is required.');
@@ -1789,6 +1886,15 @@ try {
   $vp = $focused.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
   $value = [string]$vp.Current.Value
 } catch { }
+$editable = $false
+$readonly = $false
+if ($ct -eq 'Edit' -or $ct -eq 'Document') { $editable = $true }
+try {
+  $vpRead = $focused.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
+  $readonly = [bool]$vpRead.Current.IsReadOnly
+} catch { }
+if ($readonly) { $editable = $false }
+if (-not $focused.Current.IsKeyboardFocusable) { $editable = $false }
 $r = $focused.Current.BoundingRectangle
 [pscustomobject]@{
   found = $true
@@ -1802,6 +1908,8 @@ $r = $focused.Current.BoundingRectangle
   y = [math]::Round($r.Y + ($r.Height / 2))
   width = [math]::Round($r.Width)
   height = [math]::Round($r.Height)
+  editable = $editable
+  readonly = $readonly
 } | ConvertTo-Json -Compress`;
   const res = await runPowerShell(script, 20000);
   if (!res.ok) throw new Error(res.stderr || res.stdout || 'Could not read the focused element.');
@@ -1819,6 +1927,8 @@ $r = $focused.Current.BoundingRectangle
     value: str(parsed.value).slice(0, 4000),
     controlType: str(parsed.controlType),
     localizedControlType: str(parsed.localizedControlType),
+    editable: parsed.editable === true,
+    readonly: parsed.readonly === true,
     window: str(parsed.window),
     process: str(parsed.process),
     x: Number(parsed.x) || 0,
@@ -3506,6 +3616,52 @@ export async function captureScreenFrame({ step = null, run = null, runId = null
   return { ok: true, target, shot, foreground, windowText };
 }
 
+/**
+ * Put the caret where the text is meant to go, before a type or paste step.
+ *
+ * SendKeys and ctrl+V go to whatever holds the caret. A chat pane in a
+ * web-style app (Kiro, Slack, VS Code) holds no caret until it is clicked, so
+ * the text went nowhere and the step still reported "Pasted 17 characters".
+ * The field is the one the step names (params.field, found by UI Automation
+ * then by OCR), else the only editable control that is confidently a text
+ * field. When neither exists the step still types — but its output says the
+ * text went to the window in front instead of pretending it landed.
+ */
+async function placeCaretForTyping(step, ctx) {
+  const p = step.params || {};
+  const guard = str(p.foreground || p.window || p.title);
+  let window = guard;
+  if (!window) {
+    try {
+      window = String((await readForegroundWindow()).title || '');
+    } catch {
+      window = '';
+    }
+  }
+  const result = await placeCaret({
+    step,
+    window,
+    deps: {
+      readFocused: readFocusedElement,
+      findControls: (options) => findEditableControls(options),
+      findNamed: (options) => findUiElement(options),
+      findNamedByOcr: (options) => findUiElementByOcr({ ...options, timeoutMs: 8000 }),
+      clickAt: async (x, y, name) => {
+        await executeStep(
+          {
+            type: 'click',
+            name: `Click into ${name || 'the text field'}`,
+            params: { x, y, ...(guard ? { foreground: guard } : {}) },
+            timeoutMs: 10000,
+          },
+          ctx
+        );
+      },
+    },
+  });
+  return caretNote(result);
+}
+
 export async function executeStep(step, ctx) {
   let p = step.params || {};
   const live = Boolean(ctx.live);
@@ -4325,8 +4481,12 @@ try {
     if (action === 'paste') {
       const text = p.textVar ? ctx.run?.variables?.[p.textVar] : p.text;
       if (text != null) await writeClipboardText(String(text));
+      const caretLine = await placeCaretForTyping(step, ctx);
       await send('^v');
-      return { output: text != null ? `Pasted ${String(text).length} characters from the clipboard.` : 'Pasted the current clipboard.', evidence: [] };
+      return {
+        output: `${text != null ? `Pasted ${String(text).length} characters from the clipboard.` : 'Pasted the current clipboard.'}${caretLine ? ` | ${caretLine}` : ''}`,
+        evidence: [],
+      };
     }
     if (action === 'selectall') {
       await send('^a');
@@ -5589,6 +5749,13 @@ try {
     }
   }
 
+  // Typing goes wherever the caret is, and a pane that was never clicked holds
+  // no caret at all. Place it first, and say what happened either way.
+  let caretLine = '';
+  if (live && step.type === 'type') {
+    caretLine = await placeCaretForTyping(step, ctx);
+  }
+
   const script = buildScript(step);
   if (!script) throw new Error(`Unsupported step type: ${step.type}`);
   let timeout = step.timeoutMs || 15000;
@@ -5655,7 +5822,7 @@ try {
   }
   const focusContext = step.type === 'focusWindow' ? await readForegroundWindow() : null;
   return {
-    output: res.stdout || describe(step),
+    output: [res.stdout || describe(step), caretLine].filter(Boolean).join(' | '),
     evidence: [],
     ...(appContext || focusContext ? { appContext: focusContext || appContext } : {}),
   };

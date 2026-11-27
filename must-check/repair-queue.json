@@ -1,19 +1,83 @@
 {
   "version": 1,
   "by": "sentinel",
-  "updatedAt": "2026-11-27T10:26:32.964Z",
-  "head": "a1ff2a8d0d49",
+  "updatedAt": "2026-11-27T10:40:56.226Z",
+  "head": "6cbfdebca3e5",
   "lastRun": {
-    "at": "2026-11-27T10:26:32.963Z",
-    "ok": true,
+    "at": "2026-11-27T10:40:56.055Z",
+    "ok": false,
     "tests": 891,
-    "pass": 884,
-    "fail": 0,
+    "pass": 878,
+    "fail": 6,
     "isolated": true,
-    "failingTests": []
+    "failingTests": [
+      "a mismatch that survives the retry flags the step and sends the run to review (13930.3513ms)",
+      "a check that could not read the frame is unverified, not a contradiction (14117.0189ms)",
+      "an unreadable frame is recorded as unverified, never as a failure (15151.3395ms)",
+      "the review is pinned to the run window, not to a title the step renames (14267.4584ms)",
+      "a frame that could not be captured is unverified, not a mismatch (15549.9267ms)",
+      "the retry budget is respected when retries are turned off (15498.3819ms)"
+    ]
   },
-  "open": 12,
+  "open": 13,
   "items": [
+    {
+      "id": "sent_mwyup4vra06b37",
+      "at": "2026-11-27T10:40:56.055Z",
+      "status": "queued",
+      "attempts": 1,
+      "fail": 6,
+      "pass": 878,
+      "tests": [
+        "a mismatch that survives the retry flags the step and sends the run to review (13930.3513ms)",
+        "a check that could not read the frame is unverified, not a contradiction (14117.0189ms)",
+        "an unreadable frame is recorded as unverified, never as a failure (15151.3395ms)",
+        "the review is pinned to the run window, not to a title the step renames (14267.4584ms)",
+        "a frame that could not be captured is unverified, not a mismatch (15549.9267ms)",
+        "the retry budget is respected when retries are turned off (15498.3819ms)"
+      ],
+      "details": [
+        {
+          "name": "a mismatch that survives the retry flags the step and sends the run to review",
+          "file": "",
+          "line": null,
+          "message": ""
+        },
+        {
+          "name": "a check that could not read the frame is unverified, not a contradiction",
+          "file": "",
+          "line": null,
+          "message": ""
+        },
+        {
+          "name": "an unreadable frame is recorded as unverified, never as a failure",
+          "file": "",
+          "line": null,
+          "message": ""
+        },
+        {
+          "name": "the review is pinned to the run window, not to a title the step renames",
+          "file": "",
+          "line": null,
+          "message": ""
+        },
+        {
+          "name": "a frame that could not be captured is unverified, not a mismatch",
+          "file": "",
+          "line": null,
+          "message": ""
+        },
+        {
+          "name": "the retry budget is respected when retries are turned off",
+          "file": "",
+          "line": null,
+          "message": ""
+        }
+      ],
+      "plan": "",
+      "planError": "",
+      "report": "must-check/2026-11-27T10-40-56-a-mismatch-that-survives-the-retry-flags.md"
+    },
     {
       "id": "sent_mwylgoo60c433a",
       "at": "2026-11-27T06:22:25.254Z",

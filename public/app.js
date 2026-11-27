@@ -410,6 +410,7 @@ const FIELDS = {
   type: [
     { key: 'text', label: 'Text to type', type: 'textarea', rows: 4, placeholder: 'Hello from Sightline' },
     { key: 'textVar', label: 'Use variable instead (optional)', type: 'text', placeholder: 'extractedText' },
+    { key: 'field', label: 'Click into this field first (optional)', type: 'text', placeholder: 'Ask Kiro', help: 'Finds the control by its label (UI Automation, then OCR), clicks it so the caret is really there, then types. Without a name, only a control that is confidently a text box is clicked.' },
     { key: 'foreground', label: 'Require foreground window contains', type: 'text', placeholder: 'Kiro' },
   ],
   key: [
@@ -424,6 +425,7 @@ const FIELDS = {
     { key: 'textVar', label: 'Use variable (optional)', type: 'text', placeholder: 'extractedText' },
     { key: 'outputVar', label: 'Save clipboard to variable', type: 'text', placeholder: 'clipboardText' },
     { key: 'minChars', label: 'Minimum characters', type: 'number', placeholder: '1', help: 'A copy with fewer characters fails instead of silently passing.' },
+    { key: 'field', label: 'Click into this field before pasting (optional)', type: 'text', placeholder: 'Ask Kiro', help: 'Paste lands wherever the caret is. Naming the field clicks it first, by label (UI Automation, then OCR).' },
     { key: 'foreground', label: 'Require foreground window contains', type: 'text', placeholder: 'Kiro' },
   ],
   aiExtract: [
