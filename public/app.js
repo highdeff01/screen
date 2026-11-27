@@ -7025,7 +7025,8 @@ function renderAutoRepairCard(run) {
   if (Number(auto?.appended) > 0) bits.push(`${Number(auto.appended)} step(s) appended automatically`);
   if (auto?.analyzed) bits.push('incomplete steps analysed');
   if (auto?.error) bits.push(auto.error);
-  return `<div class="hint-box" style="margin-top:8px;border-color:rgba(56,189,248,.35)"><strong>Automatic repair</strong><div class="small" style="margin-top:3px">${esc(bits.join(' · ') || 'nothing to do')}</div>${(auto?.notes || []).length ? `<div class="small dim" style="margin-top:3px">${auto.notes.map((note) => esc(note)).join(' · ')}</div>` : ''}</div>`;
+  const moves = (run.reorders || []).slice(-2);
+  return `<div class="hint-box" style="margin-top:8px;border-color:rgba(56,189,248,.35)"><strong>Automatic repair</strong><div class="small" style="margin-top:3px">${esc(bits.join(' · ') || 'nothing to do')}</div>${moves.map((move) => `<div class="small" style="margin-top:3px"><b>Moved ${esc(move.movedName || 'a step')}</b> ahead of ${esc(move.aheadOfName || 'the next step')}${(move.labels || []).length ? ` <span class="dim">— on screen: ${esc((move.labels || []).slice(0, 6).join(' · '))}</span>` : ''}</div>`).join('')}${(auto?.notes || []).length ? `<div class="small dim" style="margin-top:3px">${auto.notes.map((note) => esc(note)).join(' · ')}</div>` : ''}</div>`;
 }
 
 /** Follow a background re-plan until it queues a retry or says why it did not. */

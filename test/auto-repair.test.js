@@ -308,6 +308,10 @@ test('monitor ticks obey the checkbox, the read budget and the live-run rule', a
   assert.equal(entry.monitor.reads, 1);
   assert.equal(entry.monitor.reorders, 1);
   assert.equal(entry.steps.map((step) => step.id).join(','), 'a,c,b');
+  const move = entry.reorders[0];
+  assert.equal(move.movedName, 'Notifications');
+  assert.equal(move.aheadOfName, 'Continue');
+  assert.deepEqual(move.labels, ['Notifications'], 'the evidence that justified the move is kept');
   const second = await repair.monitorTick({ read: async () => ['Notifications'] });
   assert.equal(second.results[0].skipped, 'read budget spent');
   assert.equal(entry.monitor.reads, 1);

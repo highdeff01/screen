@@ -390,6 +390,11 @@ export async function monitorTick({ read = null } = {}) {
     if (decision) {
       const record = reorderPending(run, decision.ids);
       if (record) {
+        // The evidence travels with the move: which control was visible, which
+        // one was not, and how the queue changed.
+        record.movedName = String(decision.moved.name || decision.moved.type || '');
+        record.aheadOfName = String(decision.aheadOf.name || decision.aheadOf.type || '');
+        record.labels = labels.slice(0, 12);
         monitor.reorders = Number(monitor.reorders || 0) + 1;
         monitor.lastNote = `moved “${decision.moved.name || decision.moved.type}” ahead of “${decision.aheadOf.name || decision.aheadOf.type}”`;
         logActivity('auto-repair', `Monitor reordered “${run.workflowName}”: ${monitor.lastNote}`, { runId: run.id });
