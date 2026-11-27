@@ -1810,7 +1810,7 @@ async function readGoalScreen() {
   const processName = String(context?.foreground?.process || '').trim();
   if (!title) return { title, process: processName, labels: [], error: 'there is no foreground window to read' };
   try {
-    const read = await findUiElementByOcr({ window: title, labelsOnly: true, timeoutMs: 8000 });
+    const read = await findUiElementByOcr({ window: title, labelsOnly: true, timeoutMs: 4000 });
     return {
       title,
       process: processName,
