@@ -286,8 +286,20 @@ function summarizeValue(value) {
  * @param {object|null} [input.screen]   { title, process, labels, elements, error }
  * @param {object|null} [input.run]      a run whose steps are the evidence
  * @param {string|null} [input.at]       ISO timestamp; the caller owns the clock
+ * @param {boolean} [input.allowInference] may covering every requirement by the
+ *   evidence mean the goal is complete? False for an agent tick, whose result is
+ *   one partial pass over a possibly larger queue: only the agent's own
+ *   `goalComplete` may settle it there.
  */
-export function checkGoal({ goal = '', trigger = 'command', command = null, screen = null, run = null, at = null } = {}) {
+export function checkGoal({
+  goal = '',
+  trigger = 'command',
+  command = null,
+  screen = null,
+  run = null,
+  at = null,
+  allowInference = true,
+} = {}) {
   const statedGoal = tidy(goal, 600);
   const requirements = goalRequirements(statedGoal);
   // Only what the action produced counts as evidence that a requirement
@@ -322,7 +334,7 @@ export function checkGoal({ goal = '', trigger = 'command', command = null, scre
   else if (settledRun) complete = run.status === 'passed' && run.presenter?.summary?.goalMet !== false;
   // A screen read shows what could be done next, never that it was done: a
   // visible Save button is not a saved form.
-  else if (trigger === 'command' && checked.length && !uncovered.length && evidence) complete = true;
+  else if (allowInference && trigger === 'command' && checked.length && !uncovered.length && evidence) complete = true;
   const status = complete === true ? 'complete' : complete === false ? 'incomplete' : 'unknown';
 
   // A tick that found nothing to do has nothing outstanding right now: the goal
@@ -400,10 +412,16 @@ export function checkGoal({ goal = '', trigger = 'command', command = null, scre
     : status === 'complete'
       ? `Goal proved by the last command (${proven}/${checked.length} requirement(s)).`
       : status === 'incomplete'
-        ? `Goal not met: ${wentWrong[0]?.what || 'the last action failed'}.`
+        ? wentWrong[0]
+          ? `Goal not met: ${wentWrong[0].what}.`
+          : 'Goal not met: the agent reported it as not finished.'
         : skipped
           ? `Nothing to do: ${skipped}.`
-          : `${proven}/${checked.length} goal requirement(s) have evidence; ${remaining.length} remain.`;
+          : !allowInference
+            ? proven
+              ? `${proven}/${checked.length} requirement(s) have evidence, but the tick did not report the goal finished.`
+              : `${remaining.length} goal requirement(s) remain; the tick did not report the goal finished.`
+            : `${proven}/${checked.length} goal requirement(s) have evidence; ${remaining.length} remain.`;
 
   return {
     at: at || new Date().toISOString(),
@@ -468,6 +486,11 @@ export function agentGoal(agent) {
  * A tick that had nothing to do is recorded as unknown, not as a failure: the
  * agent did its job by finding no work, and claiming the goal is complete from
  * an empty tick would be a guess.
+ *
+ * The same rule covers a tick that did *some* of the work. A supervisor handles
+ * two failed runs per tick by design, and its result only names those two; the
+ * words match the goal, but the third run is still queued. So completion here
+ * comes from one place only: the agent saying `goalComplete` itself.
  */
 export function checkAgentAction(agent, result, { at = null } = {}) {
   if (!agent) return null;
@@ -481,7 +504,10 @@ export function checkAgentAction(agent, result, { at = null } = {}) {
     skipped: skipped || undefined,
     complete: result?.goalComplete === true ? true : result?.goalComplete === false ? false : undefined,
   };
-  return recordGoalCheck(agent, checkGoal({ goal: agentGoal(agent), trigger: 'command', command, at }));
+  return recordGoalCheck(
+    agent,
+    checkGoal({ goal: agentGoal(agent), trigger: 'command', command, at, allowInference: false })
+  );
 }
 
 /**

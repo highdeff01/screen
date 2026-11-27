@@ -105,6 +105,31 @@ test('a tick with nothing to do is unknown, with nothing outstanding', () => {
   assert.equal(agent.goalChecks.length, 1);
 });
 
+test('a tick settles the goal only when the agent says it is finished', () => {
+  const finished = checkAgentAction(
+    { id: 'agent_done', name: 'Done', kind: 'watchdog', goal: 'Triage every failed run' },
+    { triaged: ['run_a', 'run_b'], goalComplete: true }
+  );
+  assert.equal(finished.status, 'complete', 'the agent reported the queue emptied');
+  assert.equal(finished.complete, true);
+
+  const partial = checkAgentAction(
+    { id: 'agent_partial', name: 'Partial', kind: 'watchdog', goal: 'Triage every failed run' },
+    { triaged: ['run_a', 'run_b'] }
+  );
+  assert.equal(partial.status, 'unknown', 'matching words in a partial result are not proof the queue is empty');
+  assert.equal(partial.complete, null);
+  assert.match(partial.note, /did not report the goal finished/);
+
+  const stopped = checkAgentAction(
+    { id: 'agent_stopped', name: 'Stopped', kind: 'watchdog', goal: 'Triage every failed run' },
+    { triaged: ['run_a'], goalComplete: false }
+  );
+  assert.equal(stopped.status, 'incomplete');
+  assert.equal(stopped.complete, false);
+  assert.match(stopped.note, /reported it as not finished/);
+});
+
 test('a run settles the goal: a pass proves it, a failed step disproves it', () => {
   const passed = checkGoal({
     goal: 'Play the clip.',
