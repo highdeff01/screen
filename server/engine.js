@@ -43,6 +43,7 @@ import { expectsScreenChange, windowChecksFor, resumePlan, corroboratesNoChange,
 const runProbes = new Map();
 import { deliberateStep } from './deliberation.js';
 import { beginStepThink, recordThinkOutcome, stepThinkSettings, thinkBlocked, thinkRepairCandidates } from './step-think.js';
+import { checkAgentAction, describeGoalCheck } from './goal-check.js';
 import { carryCompletedSteps, normalizeRecheckSettings, runPendingRecheck, markRunInterrupted } from './pending-recheck.js';
 import {
   normalizeScreenReviewSettings,
@@ -4525,6 +4526,17 @@ async function tickAgent(agent) {
       const { watchPresentationDecks } = await import('./presentation-watch.js');
       result = await watchPresentationDecks(agent);
     } else result = { skipped: 'unknown agent kind' };
+    // Where the goal stands after this action. The check is a record, never a
+    // reason to fail a tick, so a bad screen or goal cannot break the loop; a
+    // tick that changed the answer is logged once rather than every time.
+    try {
+      const check = checkAgentAction(agent, result);
+      if (check && (check.previousStatus !== check.status || check.wentWrong.length)) {
+        agentLog(agent, describeGoalCheck(check));
+      }
+    } catch {
+      // The goal check is advisory; the tick result stands on its own.
+    }
   } finally {
     agent.status = agent.enabled ? 'idle' : 'paused';
     agent.lastResult = result;

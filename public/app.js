@@ -6099,6 +6099,26 @@ function renderJudgementCard(j) {
   </div>`;
 }
 
+function renderAgentGoalCheck(a) {
+  const check = a.goalCheck;
+  const button = `<button class="btn btn-sm" data-act="agent-goal-check" data-id="${esc(a.id)}">Check now</button>`;
+  if (!check) {
+    return `<div class="hint-box small"><strong>Goal check</strong><div class="dim">No check recorded yet. Set a goal above, then run the agent or open the live map: the check runs after every action and every screen change.</div><div class="row" style="margin-top:6px">${button}</div></div>`;
+  }
+  const label = check.status === 'complete' ? 'complete' : check.status === 'incomplete' ? 'not complete' : 'unproven';
+  const badge = check.status === 'complete' ? 'okbadge' : check.status === 'incomplete' ? 'warnbadge' : '';
+  const list = (items) => `<ul class="small" style="margin:2px 0 0 16px">${items.map((item) => `<li>${esc(item)}</li>`).join('')}</ul>`;
+  return `<div class="hint-box small">
+    <div class="row" style="justify-content:space-between;align-items:center"><strong>Goal check</strong><span class="row" style="gap:6px;align-items:center"><span class="badge ${badge}">${label}</span><span class="dim">${fmtTime(check.at)}</span></span></div>
+    <div class="dim" style="margin-top:4px">${esc(check.note || '')}</div>
+    ${check.remaining?.length ? `<div style="margin-top:6px"><span class="dim">Remains</span>${list(check.remaining.slice(0, 4).map((item) => item.text))}</div>` : ''}
+    ${check.wentWrong?.length ? `<div style="margin-top:6px"><span class="dim">Went wrong</span>${list(check.wentWrong.slice(0, 3).map((item) => `${item.what}${item.detail ? ` — ${item.detail}` : ''}`))}</div>` : ''}
+    ${check.tryNext?.length ? `<div style="margin-top:6px"><span class="dim">Try next</span>${list(check.tryNext.slice(0, 4))}</div>` : ''}
+    ${check.helpfulElements?.length ? `<div style="margin-top:6px"><span class="dim">On screen</span><div class="row wrap" style="gap:5px;margin-top:2px">${check.helpfulElements.map((element) => `<span class="badge" title="${esc(element.why || '')}">${esc(element.label)}</span>`).join('')}</div></div>` : ''}
+    <div class="row" style="margin-top:7px">${button}</div>
+  </div>`;
+}
+
 function renderAgents() {
   const d = ui.data;
   if (!ui.settingsDraft) ui.settingsDraft = { ...d.settings };
@@ -6152,6 +6172,10 @@ function renderAgents() {
             ? `<div class="field"><span>Scope</span><p class="small muted">Learns repeat apps, files, questions and typed inputs from completed runs, then proposes new-file, research, backup, cleanup and continuation help. Notifications stay bounded by the companion preferences.</p></div>`
             : `<div class="field"><span>Scope</span><p class="small muted">Watches every failed or needs-review run, once each.</p></div>`
         }
+        <label class="field"><span>Goal — checked after every action and screen change</span>
+          <textarea rows="2" data-scope="agent" data-id="${a.id}" data-key="goal" placeholder="What must this agent get done? For example: triage every failed run and leave a note with the next step.">${esc(a.goal || '')}</textarea>
+        </label>
+        ${renderAgentGoalCheck(a)}
         <div class="agent-stats">
           <span>last tick ${fmtTime(a.lastTickAt)}</span>
           <span>last run ${fmtTime(a.lastRunAt)}</span>
@@ -9333,6 +9357,17 @@ async function runAction(name, ds, el) {
       });
       if (!res.ok) return toast(res.error, 'error');
       toast(`Agent ${ds.enabled === 'true' ? 'enabled' : 'paused'}`, 'ok');
+      await refresh();
+      break;
+    }
+    case 'agent-goal-check': {
+      const res = await api(`/api/agents/${encodeURIComponent(ds.id)}/goal-check`, { method: 'POST', body: {} });
+      if (!res.ok) return toast(res.error, 'error');
+      const check = res.check || {};
+      toast(
+        `Goal check: ${check.status || 'unknown'}${check.remaining?.length ? ` — ${check.remaining.length} item(s) remain` : ''}`,
+        check.status === 'incomplete' ? 'error' : 'ok'
+      );
       await refresh();
       break;
     }

@@ -23,6 +23,7 @@ import {
 } from './store.js';
 import { executeStep, runPowerShell, STEP_TYPES, IS_WINDOWS, describe, findUiElement, findUiElementByOcr, readFocusedElement, readForegroundWindow, readScreenContext } from './automation.js';
 import { liveControl, probeLiveBackend } from './platform.js';
+import { agentGoal, checkGoal, recordGoalCheck, shouldCheckScreen } from './goal-check.js';
 import {
   cancelDownload,
   downloadModel,
@@ -1623,7 +1624,32 @@ route('DELETE', /^\/api\/commands\/([^/]+)$/, async (req, res, [id]) => {
 route('POST', /^\/api\/commands\/([^/]+)\/run$/, async (req, res, [id]) => {
   try {
     const body = await readBody(req);
-    sendJson(res, 200, { ok: true, ...(await runCommand(id, { timeoutMs: body.timeoutMs })) });
+    const result = await runCommand(id, { timeoutMs: body.timeoutMs });
+    // A command can run on an agent's behalf: the check then records where that
+    // agent's goal stands after this command, from the command's own output.
+    if (body?.agentId) {
+      const agent = db().agents.find((entry) => entry.id === body.agentId);
+      if (agent) {
+        recordGoalCheck(
+          agent,
+          checkGoal({
+            goal: agentGoal(agent),
+            trigger: 'command',
+            command: {
+              name: result.command?.name || id,
+              command: result.command?.command,
+              ok: result.ok,
+              code: result.code,
+              stdout: result.stdout,
+              stderr: result.stderr,
+            },
+            at: now(),
+          })
+        );
+        persist();
+      }
+    }
+    sendJson(res, 200, { ok: true, ...result });
   } catch (err) {
     fail(res, 400, err.message);
   }
@@ -1777,6 +1803,43 @@ route('POST', /^\/api\/live\/preview$/, async (req, res) => {
   }
 });
 
+/** Labels on the foreground window, for the goal checker. Best-effort. */
+async function readGoalScreen() {
+  const context = await readScreenContext();
+  const title = String(context?.foreground?.title || '').trim();
+  const processName = String(context?.foreground?.process || '').trim();
+  if (!title) return { title, process: processName, labels: [], error: 'there is no foreground window to read' };
+  try {
+    const read = await findUiElementByOcr({ window: title, labelsOnly: true, timeoutMs: 8000 });
+    return {
+      title,
+      process: processName,
+      labels: Array.isArray(read?.labels) ? read.labels.slice(0, 80) : [],
+      error: read?.reason || '',
+    };
+  } catch (err) {
+    return { title, process: processName, labels: [], error: err.message };
+  }
+}
+
+/**
+ * The screen changed: check every agent that declared a goal, at most once per
+ * gap. One label read is shared by all of them, so N agents still cost one OCR
+ * pass; an agent without a declared goal costs nothing at all.
+ */
+async function checkGoalsOnScreenChange(sample) {
+  const due = db().agents.filter((agent) => shouldCheckScreen(agent, sample));
+  if (!due.length) return [];
+  const screen = await readGoalScreen();
+  const at = now();
+  const checks = due.map((agent) => {
+    agent.screenCheckedAt = at;
+    return recordGoalCheck(agent, checkGoal({ goal: agentGoal(agent), trigger: 'screen', screen, at }));
+  });
+  persist();
+  return checks;
+}
+
 // The live map: a short history of cheap screen reads, with the movement and
 // change measured between each pair. GET never touches the desktop; POST
 // samples, so a closed panel costs nothing.
@@ -1792,7 +1855,15 @@ route('POST', /^\/api\/live-map$/, async (req, res) => {
   if (action === 'reset') return sendJson(res, 200, { ok: true, map: liveMap.reset() });
   if (action !== 'sample') return fail(res, 400, 'action must be sample or reset');
   const result = await liveMap.sample({ force: body?.force === true });
-  return sendJson(res, 200, { ok: true, reused: result.reused, sample: result.sample, map: result.map });
+  // A changed screen is the other moment the goal is re-read. A failed label
+  // read must not break the map, so the checks are advisory here too.
+  let goalChecks = [];
+  try {
+    goalChecks = await checkGoalsOnScreenChange(result.sample);
+  } catch {
+    goalChecks = [];
+  }
+  return sendJson(res, 200, { ok: true, reused: result.reused, sample: result.sample, map: result.map, goalChecks });
 });
 
 route('GET', /^\/api\/live\/monitor$/, async (req, res) => sendJson(res, 200, { ok: true, monitor: monitorState(), observer: observerState() }));
@@ -4552,6 +4623,13 @@ route('PATCH', /^\/api\/agents\/([^/]+)$/, async (req, res, [id]) => {
   if (body.intervalMs !== undefined) agent.intervalMs = Math.max(5000, Math.min(86400000, Number(body.intervalMs) || 60000));
   if (body.workflowId !== undefined) agent.workflowId = body.workflowId || null;
   if (body.stopOnFailure !== undefined) agent.stopOnFailure = Boolean(body.stopOnFailure);
+  if (body.goal !== undefined) {
+    agent.goal = String(body.goal || '').replace(/\s+/g, ' ').trim().slice(0, 600);
+    // A new goal invalidates the old verdict and the screen-check gap; the
+    // earlier checks stay in the trace as history.
+    agent.goalCheck = null;
+    agent.screenCheckedAt = null;
+  }
   persist();
   logActivity('agent', `${agent.name} ${agent.enabled ? 'enabled' : 'disabled'}`);
   sendJson(res, 200, { ok: true, agent });
@@ -4561,6 +4639,30 @@ route('POST', /^\/api\/agents\/([^/]+)\/tick$/, async (req, res, [id]) => {
   if (!db().agents.some((a) => a.id === id)) return fail(res, 404, 'Agent not found');
   const result = await tickAgentNow(id);
   sendJson(res, 200, { ok: true, result, agent: db().agents.find((a) => a.id === id) });
+});
+
+// Check one agent's goal now. The screen is read here (labels only) unless the
+// caller supplies the read, so the operator's button, a test and any future
+// caller go through the same evaluation and write the same record.
+route('POST', /^\/api\/agents\/([^/]+)\/goal-check$/, async (req, res, [id]) => {
+  const agent = db().agents.find((a) => a.id === id);
+  if (!agent) return fail(res, 404, 'Agent not found');
+  let body = {};
+  try {
+    body = await readBody(req);
+  } catch {
+    body = {};
+  }
+  const screen = body?.screen && typeof body.screen === 'object' ? body.screen : await readGoalScreen();
+  const command = body?.command && typeof body.command === 'object' ? body.command : null;
+  const check = recordGoalCheck(
+    agent,
+    checkGoal({ goal: agentGoal(agent), trigger: command ? 'command' : 'screen', command, screen, at: now() })
+  );
+  if (screen) agent.screenCheckedAt = now();
+  persist();
+  logActivity('agent', `${agent.name} goal checked: ${check.status}`, { agentId: agent.id });
+  sendJson(res, 200, { ok: true, check, agent });
 });
 
 /* ---------------- Suggestions ---------------- */
