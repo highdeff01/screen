@@ -8041,6 +8041,7 @@ async function runAction(name, ds, el) {
       ui.view = 'builder';
       ui.selectedWorkflow = ds.id;
       ui.selectedStep = null;
+      ui.handoffDraft = null;
       ui.draft = null;
       ui.paletteAt = null;
       ui.runDetail = null;
