@@ -268,7 +268,7 @@ async function rethink(run, focus, deps = {}) {
       {
         role: 'system',
         content:
-          'You are re-planning a screen-automation run from live desktop observations. Reply with JSON only: {"conclusion":"one line","reshaped":[{"type":"focusWindow|type|key|wait|waitFor|expect|screenshot|launchApp|click","name":"...","params":{}}],"retry":true|false}. If a step failed, reshape ONLY that step and the steps after it. If no step failed but the goal is unverified, review the entire workflow and propose a replacement that verifies the goal. Treat missing or failed observations as unknown, not proof. Respect the live focus: if the caret is already in the right place, do not re-launch. Never include steps that delete or overwrite files. The proposal will require review.',
+          'You are re-planning a screen-automation run from live desktop observations. Reply with JSON only: {"conclusion":"one line","reshaped":[{"type":"focusWindow|clickElement|type|key|wait|waitFor|expect|screenshot|launchApp","name":"...","params":{}}],"retry":true|false}. Prefer clickElement with {"window":"<exact window title>","name":"<exact control label>"} over coordinate clicks; never invent coordinates. If a step failed, reshape ONLY that step and the steps after it. If no step failed but the goal is unverified, review the entire workflow and propose a replacement that verifies the goal. Treat missing or failed observations as unknown, not proof. Respect the live focus: if the caret is already in the right place, do not re-launch. Never include steps that delete or overwrite files. The proposal is applied and re-run automatically when auto-apply is enabled; otherwise it waits for review.',
       },
       {
         role: 'user',
@@ -359,6 +359,7 @@ function conclude(runId, deps = {}) {
             ok: result?.ok === true,
             status: String(result?.status || ''),
             message: String(result?.message || '').slice(0, 240),
+            retryRunId: result?.run?.id || null,
           };
           if (result?.ok !== true) {
             entry.deepFocus.autoApplyError = String(result?.message || 'the apply gate refused').slice(0, 240);
