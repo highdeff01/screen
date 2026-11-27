@@ -128,14 +128,17 @@ async function applyReshapedToRun(runId, reshapedSteps, focus) {
  * It restores nothing and clicks nothing; the monitor only reorders steps whose
  * own control it could actually see.
  */
-async function readMonitorLabels() {
-  let window = '';
+async function readMonitorLabels({ run } = {}) {
+  // The run's own window, never whatever happens to be in front: reading an
+  // unrelated app's labels is how a proof step got moved ahead of its focus.
+  const title = String(run?.lastWindow?.title || '').split(' — ')[0].trim();
+  if (!title) return [];
   try {
-    const front = await readForegroundWindow();
-    window = String(front?.process || front?.title || '').slice(0, 60);
-  } catch { /* fall back to the foreground window */ }
-  const read = await findUiElementByOcr({ window, labelsOnly: true, timeoutMs: 4000 });
-  return Array.isArray(read?.labels) ? read.labels : [];
+    const read = await findUiElementByOcr({ window: title, labelsOnly: true, timeoutMs: 4000 });
+    return Array.isArray(read?.labels) ? read.labels : [];
+  } catch {
+    return [];
+  }
 }
 import {
   dismissFailure,
