@@ -1,23 +1,16 @@
 {
   "version": 1,
   "by": "sentinel",
-  "updatedAt": "2026-11-27T10:40:56.226Z",
-  "head": "6cbfdebca3e5",
+  "updatedAt": "2026-11-27T11:39:57.434Z",
+  "head": "75702c55ec0e",
   "lastRun": {
-    "at": "2026-11-27T10:40:56.055Z",
-    "ok": false,
-    "tests": 891,
-    "pass": 878,
-    "fail": 6,
+    "at": "2026-11-27T11:39:57.433Z",
+    "ok": true,
+    "tests": 903,
+    "pass": 896,
+    "fail": 0,
     "isolated": true,
-    "failingTests": [
-      "a mismatch that survives the retry flags the step and sends the run to review (13930.3513ms)",
-      "a check that could not read the frame is unverified, not a contradiction (14117.0189ms)",
-      "an unreadable frame is recorded as unverified, never as a failure (15151.3395ms)",
-      "the review is pinned to the run window, not to a title the step renames (14267.4584ms)",
-      "a frame that could not be captured is unverified, not a mismatch (15549.9267ms)",
-      "the retry budget is respected when retries are turned off (15498.3819ms)"
-    ]
+    "failingTests": []
   },
   "open": 13,
   "items": [
