@@ -15,6 +15,7 @@ import {
   captureScreenFrame,
   readPresence,
   readForegroundWindow,
+  readWindowRect,
   readWindowText,
   silentCheck,
   resolveCheckFile,
@@ -1272,10 +1273,22 @@ export function clickPointOf(step) {
   return { x, y, name: String(params.name || step.name || '').slice(0, 80), method: 'reported output' };
 }
 
-export function rememberClickPoint(workflow, step) {
+export function rememberClickPoint(workflow, step, { windowRect = null } = {}) {
   const point = clickPointOf(step);
   if (!workflow || !point) return;
   const entry = { ...point, at: now() };
+  // A point is only true for the window position it was recorded in. The rect
+  // travels with it so a later aim can tell whether the coordinates still mean
+  // anything: the Profile window came back at 52,52 after a restart, and every
+  // point learned at 156,156 then hovered empty desktop.
+  if (windowRect && Number.isFinite(Number(windowRect.left))) {
+    entry.window = {
+      left: Math.round(Number(windowRect.left)),
+      top: Math.round(Number(windowRect.top)),
+      width: Math.round(Number(windowRect.width)),
+      height: Math.round(Number(windowRect.height)),
+    };
+  }
   // A run can work from a snapshot of the workflow, and a snapshot is not what
   // the store holds: where a control lives is a fact about the workflow, so the
   // saved workflow is taught too, and the run's copy is updated for its own
@@ -3483,7 +3496,29 @@ async function executeRun(runId) {
       // only in the sentence the step wrote: the run then shows the point and how
       // it was found (UIA, preview, vision 81%, coordinates) as data.
       if (result?.clickPoint) step.clickPoint = result.clickPoint;
-      if (!run.shadow) rememberClickPoint(workflow, { ...step, clickPoint: result?.clickPoint || step.clickPoint });
+      if (!run.shadow) {
+        // Where the window stood when this point was learned, so the next aim
+        // can tell whether the point still means anything.
+        const pointWindow = String(
+          step.params?.window ||
+            (typeof step.params?.foreground === 'string' ? step.params.foreground : '') ||
+            step.params?.title ||
+            run.lastWindow?.title ||
+            ''
+        ).trim();
+        let pointRect = null;
+        // A probe stands in for the desktop in tests; nothing there should spawn
+        // a window query. A point stored without a rect is simply not trusted.
+        if (pointWindow && !probe) {
+          try {
+            const read = await readWindowRect(pointWindow);
+            pointRect = read?.found ? read : null;
+          } catch {
+            pointRect = null;
+          }
+        }
+        rememberClickPoint(workflow, { ...step, clickPoint: result?.clickPoint || step.clickPoint }, { windowRect: pointRect });
+      }
       if (!run.shadow) rememberStepReference(workflow, step);
       if (result?.judgement) step.judgement = result.judgement;
       step.completion = completionFor(step, { ...(result || {}), output: step.output });

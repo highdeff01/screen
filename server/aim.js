@@ -16,7 +16,7 @@
  */
 
 import { db, now, persist, uid } from './store.js';
-import { executeStep, findUiElement, findUiElementByOcr, readPresence, readCursor as readCursorPoint, elementLabels } from './automation.js';
+import { executeStep, findUiElement, findUiElementByOcr, readPresence, readCursor as readCursorPoint, readWindowRect, elementLabels } from './automation.js';
 
 /** The person at the desk must be still: this is not a race for the pointer. */
 export const AIM_MIN_IDLE_MS = 1200;
@@ -25,6 +25,8 @@ export const AIM_SAME_TARGET_MS = 5000;
 const MAX_AIMS = 12;
 /** Close enough that moving the pointer would change nothing worth waiting for. */
 export const AIM_NEAR_PX = 6;
+/** A window may drift this far (DPI rounding) before its points stop counting. */
+export const POINT_WINDOW_TOLERANCE_PX = 2;
 
 const state = new Map();
 
@@ -304,17 +306,55 @@ export async function aimWithin(promise, { timeoutMs = 2500, log = null } = {}) 
   }
 }
 
+/**
+ * Whether a remembered point was recorded in the window as it stands now.
+ *
+ * A point is a pair of screen coordinates, not a place in the app: once the
+ * window has moved, the same pair points at whatever happens to be there. A
+ * point with no recorded rect has no provenance at all, so it is not trusted
+ * either — the fresh read is the only thing that knows where the control is.
+ */
+export function pointMatchesWindow(point, rect) {
+  const saved = point?.window;
+  if (!saved || !rect) return false;
+  for (const key of ['left', 'top', 'width', 'height']) {
+    const was = Number(saved[key]);
+    const now = Number(rect[key]);
+    if (!Number.isFinite(was) || !Number.isFinite(now)) return false;
+    if (Math.abs(was - now) > POINT_WINDOW_TOLERANCE_PX) return false;
+  }
+  return true;
+}
+
 /** Aim for the step that is about to run, from the step's own parameters. */
-export function aimBeforeStep(run, step, options = {}) {
+export async function aimBeforeStep(run, step, options = {}) {
   const target = aimTargetFor(step);
-  if (!target) return Promise.resolve({ ok: false, reason: 'this step names no control to aim at' });
+  if (!target) return { ok: false, reason: 'this step names no control to aim at' };
   // The run keeps the aim under the step it was for, so its cost is attributable.
   target.stepId = String(step?.id || options.stepId || '') || null;
   // Where this control was clicked last time is the best point a toolkit with no
-  // UI Automation tree can offer. It is only a hover target, never a click.
+  // UI Automation tree can offer. It is only a hover target, never a click, and
+  // only while the window is still where the point was recorded: a window that
+  // moved turns the same coordinates into empty desktop.
   const remembered = options.workflow?.clickPoints?.[step?.id];
   if (remembered && target.kind === 'element' && Number.isFinite(Number(remembered.x))) {
-    target.fallback = { x: Number(remembered.x), y: Number(remembered.y) };
+    const readRect = typeof options.windowRect === 'function' ? options.windowRect : readWindowRect;
+    let rect = null;
+    try {
+      rect = await readRect(target.window || '');
+    } catch {
+      rect = null;
+    }
+    if (pointMatchesWindow(remembered, rect)) {
+      target.fallback = { x: Number(remembered.x), y: Number(remembered.y) };
+    } else if (remembered.window && typeof options.log === 'function') {
+      const saved = remembered.window;
+      options.log(
+        `The point remembered for “${target.label}” was recorded in a window at ${saved.left},${saved.top}${
+          rect ? ` and the window is at ${rect.left},${rect.top} now` : ' and the window could not be found'
+        }; it is not used, so the control is located afresh.`
+      );
+    }
   }
   return aimAt(run, target, options);
 }

@@ -1952,6 +1952,56 @@ if ([double]::IsNaN($rh) -or $rh -gt 1e12 -or $rh -lt -1e12) { $rh = 0 }
   };
 }
 
+/**
+ * The screen rectangle of a window, by title (contains) or process.
+ *
+ * A learned click point is a pair of screen coordinates, so it only means
+ * anything while the window it was recorded in is still where it was. The
+ * Profile app's window came back at 156,156, then 52,52, then 104,104 across
+ * restarts, and a point from one of those places hovers empty desktop in the
+ * next. Recording the rect with the point is what lets a later aim notice.
+ */
+export async function readWindowRect(title = '') {
+  if (!IS_WINDOWS) return { found: false, reason: 'window rectangles require Windows' };
+  const needle = str(title).trim();
+  if (!needle) return { found: false, reason: 'a window title is required' };
+  const script = `${BASE_PRELUDE}
+$pattern = ${psQuote('*' + needle + '*')}
+$target = Get-Process | Where-Object { $_.MainWindowHandle -ne 0 -and $_.MainWindowTitle -like $pattern } | Sort-Object Id | Select-Object -First 1
+if (-not $target) {
+  $target = Get-Process | Where-Object { $_.MainWindowHandle -ne 0 -and $_.ProcessName -like $pattern } | Sort-Object Id | Select-Object -First 1
+}
+if (-not $target) { Write-Output '{"found":false,"reason":"window not found"}'; exit 0 }
+$r = New-Object SightlineInput+RECT
+if (-not [SightlineInput]::GetWindowRect($target.MainWindowHandle, [ref]$r)) { Write-Output '{"found":false,"reason":"window rectangle unavailable"}'; exit 0 }
+[pscustomobject]@{
+  found = $true
+  left = [int]$r.Left
+  top = [int]$r.Top
+  width = [int]($r.Right - $r.Left)
+  height = [int]($r.Bottom - $r.Top)
+  title = [string]$target.MainWindowTitle
+} | ConvertTo-Json -Compress`;
+  const res = await runPowerShell(script, 15000);
+  if (!res.ok) return { found: false, reason: res.stderr || res.stdout || 'could not read the window rectangle' };
+  const line = res.stdout.split(/\r?\n/).filter(Boolean).pop() || '';
+  let parsed;
+  try {
+    parsed = JSON.parse(line);
+  } catch {
+    return { found: false, reason: 'the window rectangle was not JSON' };
+  }
+  if (!parsed.found) return { found: false, reason: str(parsed.reason, 'window not found') };
+  return {
+    found: true,
+    left: Number(parsed.left) || 0,
+    top: Number(parsed.top) || 0,
+    width: Number(parsed.width) || 0,
+    height: Number(parsed.height) || 0,
+    title: str(parsed.title),
+  };
+}
+
 let appCache = { at: 0, value: null };
 
 /** Running windows and installed Start-menu apps, used to ground the planner. */

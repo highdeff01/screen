@@ -145,7 +145,8 @@ test('a control with no UI Automation tree is aimed at the point it was clicked 
     run,
     { id: 's1', type: 'clickElement', params: { window: 'Sightline Profile', name: 'Dan' } },
     {
-      workflow: { clickPoints: { s1: { x: 300, y: 240, name: 'Dan' } } },
+      workflow: { clickPoints: { s1: { x: 300, y: 240, name: 'Dan', window: { left: 40, top: 60, width: 700, height: 500 } } } },
+      windowRect: async () => ({ left: 40, top: 60, width: 700, height: 500 }),
       presence: async () => presenceAt(4000, 'Sightline Profile'),
       find: async () => ({ found: false, reason: 'no UI Automation tree' }),
       readText: async () => ({ found: false, reason: 'no text read' }),
@@ -168,7 +169,8 @@ test('a pointer already within a few pixels is left alone, with nothing resolved
     run,
     { id: 's3', type: 'clickElement', params: { window: 'Sightline Profile', name: 'Notifications' } },
     {
-      workflow: { clickPoints: { s3: { x: 137, y: 250, name: 'Notifications' } } },
+      workflow: { clickPoints: { s3: { x: 137, y: 250, name: 'Notifications', window: { left: 40, top: 60, width: 700, height: 500 } } } },
+      windowRect: async () => ({ left: 40, top: 60, width: 700, height: 500 }),
       cursor: async () => ({ x: 135, y: 248 }),
       presence: async () => {
         presenceReads += 1;
@@ -240,7 +242,8 @@ test('a control UI Automation cannot see is aimed at where its label is', async 
     { id: 's4', type: 'clickElement', params: { window: 'Sightline Profile', name: 'Profile' } },
     {
       // The remembered point is stale (the window moved); the fresh read wins.
-      workflow: { clickPoints: { s4: { x: 10, y: 10, name: 'Profile' } } },
+      workflow: { clickPoints: { s4: { x: 10, y: 10, name: 'Profile', window: { left: 156, top: 156, width: 776, height: 559 } } } },
+      windowRect: async () => ({ left: 52, top: 52, width: 776, height: 559 }),
       presence: async () => presenceAt(4000, 'Sightline Profile'),
       find: async () => ({ found: false, reason: 'no UI Automation tree' }),
       readText: async (options) => {
@@ -276,4 +279,71 @@ test('a control that was never clicked and is not in the tree is reported, not g
   assert.match(result.reason, /could not be located/);
   assert.equal(moves.length, 0, 'no guess is made at a control nobody has located');
   assert.match(messages[0], /Aiming paused/);
+});
+
+test('a point recorded in a window that has since moved is not aimed at blindly', async () => {
+  const run = liveRun();
+  const moves = [];
+  const messages = [];
+  const result = await aim.aimBeforeStep(
+    run,
+    { id: 's5', type: 'clickElement', params: { window: 'Sightline Profile', name: 'Notifications' } },
+    {
+      // Learned at 156,156; the window is at 52,52 now, so the coordinates are
+      // pointing at whatever happens to be there.
+      workflow: {
+        clickPoints: {
+          s5: { x: 325, y: 448, name: 'Notifications', window: { left: 156, top: 156, width: 776, height: 559 } },
+        },
+      },
+      windowRect: async () => ({ left: 52, top: 52, width: 776, height: 559 }),
+      presence: async () => presenceAt(4000, 'Sightline Profile'),
+      find: async () => ({ found: true, x: 221, y: 344 }),
+      move: async (_run, point) => moves.push(point),
+      cursor: async () => ({ x: 900, y: 700 }),
+      log: (message) => messages.push(message),
+    }
+  );
+  assert.equal(result.ok, true);
+  assert.deepEqual(moves, [{ x: 221, y: 344 }], 'the fresh read, not the point from the old window position');
+  assert.match(messages.join(' '), /recorded in a window at 156,156/);
+  assert.match(messages.join(' '), /located afresh/);
+});
+
+test('a point is trusted while its window is where it was recorded', async () => {
+  const run = liveRun();
+  const moves = [];
+  const rect = { left: 52, top: 52, width: 776, height: 559 };
+  let presenceReads = 0;
+  const result = await aim.aimBeforeStep(
+    run,
+    { id: 's6', type: 'clickElement', params: { window: 'Sightline Profile', name: 'Notifications' } },
+    {
+      workflow: { clickPoints: { s6: { x: 325, y: 448, name: 'Notifications', window: { ...rect } } } },
+      windowRect: async () => ({ ...rect }),
+      cursor: async () => ({ x: 326, y: 449 }),
+      presence: async () => {
+        presenceReads += 1;
+        return presenceAt(4000, 'Sightline Profile');
+      },
+      find: async () => assert.fail('no fresh read is needed when the pointer is already there'),
+      move: async (_run, point) => moves.push(point),
+    }
+  );
+  assert.equal(result.moved, false);
+  assert.deepEqual(moves, [], 'the pointer was already on the point');
+  assert.equal(presenceReads, 0);
+});
+
+test('a window that drifted a couple of pixels is still the same window', () => {
+  const point = { x: 10, y: 10, window: { left: 52, top: 52, width: 776, height: 559 } };
+  assert.equal(aim.pointMatchesWindow(point, { left: 54, top: 51, width: 776, height: 559 }), true);
+  assert.equal(aim.pointMatchesWindow(point, { left: 57, top: 52, width: 776, height: 559 }), false, 'a 5px move is a move');
+  assert.equal(aim.pointMatchesWindow(point, { left: 52, top: 52, width: 900, height: 559 }), false, 'a resize is not the same window');
+  assert.equal(aim.pointMatchesWindow(point, null), false, 'an unreadable window is not a match');
+  assert.equal(
+    aim.pointMatchesWindow({ x: 10, y: 10 }, { left: 52, top: 52, width: 776, height: 559 }),
+    false,
+    'a point with no recorded window has no provenance'
+  );
 });
