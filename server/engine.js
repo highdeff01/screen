@@ -2200,6 +2200,98 @@ async function runHandoff(run, workflow, { probe = null, getTool = () => undefin
   persist();
 }
 
+/**
+ * The controls that lead back from a screen. Only a control the end screen
+ * really shows is a reverse: anything else would be a guess about a route the
+ * run never walked, so it is recorded as “no reverse found” instead.
+ */
+const REVERSE_CONTROLS = ['Back', 'Go back', 'Back to home', 'Home', 'Close', 'Cancel', 'Done', 'Previous'];
+
+/**
+ * The click that moved the screen, if the run recorded one. A click proves it
+ * changed something through its own frame audit; a click that declares the text
+ * its destination shows is evidence too, because the workflow author says the
+ * screen it opens is different. Skipped clicks and coordinate clicks are not:
+ * one never happened, the other names no control to reverse.
+ */
+export function screenChangingClick(run) {
+  const clicks = (run?.steps || []).filter(
+    (step) =>
+      ['clickElement', 'click', 'doubleClick'].includes(step.type) &&
+      step.status === 'passed' &&
+      String(step.params?.name || '').trim()
+  );
+  for (const step of clicks.slice().reverse()) {
+    const changedPct = Number(step.visual?.changedPct);
+    const changed = Number.isFinite(changedPct) && changedPct >= 1;
+    const marker = String(step.params?.skipIfVisible || '').trim();
+    if (changed || marker) return { step, changedPct: changed ? changedPct : null, marker };
+  }
+  return null;
+}
+
+/**
+ * Draft the reverse of the run's screen-changing click when the workflow
+ * declares no hand-off.
+ *
+ * The draft is a proposal stored on the run and shown in the run panel; nothing
+ * executes until the operator accepts it, and accepting only saves it to the
+ * workflow as its hand-off. The route is inferred from the screen the run left —
+ * a Back/Home control — and never invented: when the end screen offers no way
+ * back, the draft says so and carries no steps, because a guessed control would
+ * be worse than no draft at all.
+ */
+export async function deriveHandoffSuggestion(run, workflow, { findControl = findUiElementByOcr } = {}) {
+  if (!run || run.dryRun || run.shadow) return null;
+  if (!['passed', 'failed', 'needs_review'].includes(run.status)) return null;
+  const declared = Array.isArray(workflow?.handoff?.steps) ? workflow.handoff.steps.filter((step) => step?.type) : [];
+  if (declared.length) return null;
+  const found = screenChangingClick(run);
+  if (!found) return null;
+  const step = found.step;
+  const rawWindow = step.params?.window ?? step.params?.title ?? step.params?.foreground;
+  const window = String(typeof rawWindow === 'string' ? rawWindow : '').trim() ||
+    String(step.position?.title || run.lastWindow?.title || '').trim();
+  let read = null;
+  if (window) {
+    try {
+      read = await findControl({ window, names: REVERSE_CONTROLS, timeoutMs: 8000 });
+    } catch {
+      read = null;
+    }
+  }
+  const name = String(read?.found ? read.text || read.name || '' : '').trim();
+  const control = name ? { name, x: Number(read.x) || null, y: Number(read.y) || null, method: String(read.method || 'OCR') } : null;
+  const steps = control
+    ? [
+        {
+          id: 'handoff_suggested_1',
+          type: 'clickElement',
+          name: `Reverse “${step.name}” — return via “${control.name}”`,
+          params: { window, name: control.name },
+          timeoutMs: 20000,
+          optional: true,
+        },
+      ]
+    : [];
+  return {
+    at: now(),
+    stepId: step.id,
+    stepName: step.name,
+    window,
+    marker: found.marker || '',
+    screenChangedPct: found.changedPct,
+    control,
+    steps,
+    complete: steps.length > 0,
+    reason: control
+      ? `The end screen in “${window}” shows “${control.name}”; clicking it is the reverse of “${step.name}”.`
+      : window
+        ? `No Back or Home control was found in “${window}”, so the reverse of “${step.name}” cannot be read from the end screen.`
+        : `The screen-changing click “${step.name}” names no window, so its reverse cannot be read.`,
+  };
+}
+
 async function executeRun(runId) {
   const run = findRun(runId);
   if (!run || run.status !== 'queued') return;
@@ -3579,6 +3671,29 @@ async function executeRun(runId) {
     await runHandoff(run, workflow, { probe, getTool });
   } catch (err) {
     pushLog(run, 'warn', `Hand-off failed: ${err.message}`);
+  }
+
+  // A run with no declared hand-off still moved the desk. Its screen-changing
+  // click is reversed into a draft hand-off on the run, for the operator to
+  // accept in the run panel — this only reads the end screen and writes the
+  // proposal; no drafted step is ever executed from here.
+  try {
+    const suggestion = await deriveHandoffSuggestion(run, workflow, {
+      findControl: probe?.findUiElementByOcr || findUiElementByOcr,
+    });
+    if (suggestion) {
+      run.handoffSuggestion = suggestion;
+      persist();
+      pushLog(
+        run,
+        'info',
+        suggestion.complete
+          ? `Hand-off draft: ${suggestion.reason} Review it in the run panel; nothing runs until you accept it.`
+          : `Hand-off draft: ${suggestion.reason}`
+      );
+    }
+  } catch (err) {
+    pushLog(run, 'warn', `Hand-off draft could not be built: ${err.message}`);
   }
 
   if (runFinishedHook) {

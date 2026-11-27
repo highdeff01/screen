@@ -3237,6 +3237,35 @@ route('GET', /^\/api\/runs\/([^/]+)$/, async (req, res, [id]) => {
   sendJson(res, 200, { ok: true, run, recoveryPack: run.recoveryPackId ? findRecoveryPack(run.recoveryPackId) : null });
 });
 
+// The reverse of a run's screen-changing click, drafted when the workflow declared
+// no hand-off. Accepting only saves the drafted steps as the workflow's hand-off
+// and turns it on; the draft never executes anything on its own, and dismissing
+// it is recorded on the run so the panel stops offering it.
+route('POST', /^\/api\/runs\/([^/]+)\/handoff-suggestion$/, async (req, res, [id]) => {
+  const run = findRun(id);
+  if (!run) return fail(res, 404, 'Run not found');
+  const suggestion = run.handoffSuggestion;
+  if (!suggestion) return fail(res, 400, 'This run has no hand-off draft');
+  if (suggestion.acceptedAt) return fail(res, 400, 'This draft was already accepted');
+  const body = await readBody(req);
+  const action = String(body.action || 'accept').toLowerCase();
+  if (action === 'dismiss') {
+    suggestion.dismissedAt = now();
+    persist();
+    return sendJson(res, 200, { ok: true, run });
+  }
+  if (action !== 'accept') return fail(res, 400, 'action must be accept or dismiss');
+  const steps = Array.isArray(suggestion.steps) ? suggestion.steps.filter((step) => step?.type) : [];
+  if (!steps.length) return fail(res, 400, 'The draft has no steps to accept');
+  const wf = db().workflows.find((entry) => entry.id === run.workflowId);
+  if (!wf) return fail(res, 404, 'Workflow not found');
+  const updated = updateWorkflow(wf.id, { handoff: { enabled: true, steps } });
+  suggestion.acceptedAt = now();
+  persist();
+  logActivity('workflow', `Accepted the suggested hand-off for "${wf.name}"`, { runId: run.id, workflowId: wf.id });
+  sendJson(res, 200, { ok: true, run, workflow: workflowView(updated) });
+});
+
 route('POST', /^\/api\/runs\/([^/]+)\/simulate$/, async (req, res, [id]) => {
   try {
     const record = startSimulation(id);

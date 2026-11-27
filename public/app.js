@@ -1975,6 +1975,28 @@ function clipSentence(text, max) {
   return `${(space > max * 0.6 ? cut.slice(0, space) : cut).replace(/[.,;:]$/, '')}…`;
 }
 
+function renderHandoffDraft(run) {
+  const draft = run.handoffSuggestion;
+  if (!draft || draft.dismissedAt) return '';
+  const steps = Array.isArray(draft.steps) ? draft.steps : [];
+  const accepted = Boolean(draft.acceptedAt);
+  return `<div class="card section-gap" style="border-color:rgba(56,189,248,.28)">
+    <div class="card-head">
+      <h3>Suggested hand-off · draft</h3>
+      <div class="row" style="gap:6px;align-items:center">
+        <span class="badge ${accepted ? 'okbadge' : 'warnbadge'}">${accepted ? 'accepted' : 'not saved'}</span>
+        ${accepted ? '' : `<button class="btn btn-sm" data-act="accept-handoff-draft" data-id="${esc(run.id)}" ${steps.length ? '' : 'disabled'} title="Save these steps as the workflow's hand-off">Accept as hand-off</button>`}
+        ${accepted ? '' : `<button class="btn btn-sm btn-ghost" data-act="dismiss-handoff-draft" data-id="${esc(run.id)}">Dismiss</button>`}
+      </div>
+    </div>
+    <div class="card-body">
+      <p class="small muted" style="margin:0 0 8px">This run declared no hand-off. Its screen-changing step <b>${esc(draft.stepName || 'click')}</b> moved the app${draft.marker ? ` to the screen showing “${esc(draft.marker)}”` : ''}. ${esc(draft.reason || '')}</p>
+      ${steps.length ? `<ul class="small" style="margin:0 0 8px 18px">${steps.map((step) => `<li><span class="type-chip">${esc(step.type)}</span> ${esc(step.name || '')}${step.params?.name ? ` · click “${esc(step.params.name)}” in “${esc(step.params.window || '')}”` : ''}</li>`).join('')}</ul>` : ''}
+      <p class="dim small" style="margin:0">${accepted ? 'Saved as the workflow’s hand-off and turned on. It runs after the workflow’s next live run.' : steps.length ? 'Accepting only saves these steps as the workflow’s hand-off and turns it on — nothing runs now, and nothing here touches the desktop until the next live run.' : 'No step was drafted, so there is nothing to save. Add the reverse yourself in the workflow’s hand-off editor.'}</p>
+    </div>
+  </div>`;
+}
+
 function renderRunDetail(run) {
   const full = run.steps ? run : null;
   if (!full) {
@@ -2080,6 +2102,7 @@ function renderRunDetail(run) {
   }">${full.review?.status === 'reviewed' ? 'Reopen review' : '✓ Mark reviewed'}</button>
       </div>
     </div>
+    ${renderHandoffDraft(full)}
     <div class="card"><div class="card-head"><h3>Screenshot check review</h3>${Number(full.screenReviewMismatches || 0) ? `<span class="badge warnbadge">${full.screenReviewMismatches} mismatch</span>`: Number(full.screenReviewCount || 0) ? `<span class="badge ${Number(full.screenReviewSkipped || 0) ? 'warnbadge' : 'okbadge'}">${Math.max(0, Number(full.screenReviewCount) - Number(full.screenReviewSkipped || 0))} checked${Number(full.screenReviewSkipped || 0) ? ` · ${Number(full.screenReviewSkipped)} unread` : ''}</span>` : ''}<button class="btn btn-sm" data-act="run-simulate" data-id="${esc(full.id)}" ${ui.simBusy ? 'disabled' : ''}>Screenshot check</button></div><div class="card-body">${(full.screenReviews || []).length ? `<ul class="small" style="margin:0 0 10px 18px">${(full.screenReviews || []).slice(-4).reverse().map((entry) => `<li><strong>${esc(entry.stepName || entry.stepId || 'step')}</strong> — ${esc(entry.status || 'captured')}${Number(entry.attempts) > 1 ? ` (${Number(entry.attempts)} reads)` : ''}${entry.mismatch ? `: ${esc(entry.mismatch)}` : ''}</li>`).join('')}</ul>` : ''}${(full.pageReads || []).length ? `<div class="stack" style="gap:4px;margin:0 0 10px"><span class="dim small">Screen reads between steps</span><ul class="small" style="margin:0 0 0 18px">${(full.pageReads || []).slice(-3).reverse().map((read) => `<li><strong>${esc(read.stepName || 'step')}</strong> — ${esc(read.visible || read.page || '')}${(read.blockers || []).length ? ` · in the way: ${esc((read.blockers || []).join('; '))}` : ''}${read.inserted ? ` · added “${esc(read.inserted)}”` : ''}${read.inserted ? '' : read.nextAction && read.nextAction.name ? ` · saw “${esc(read.nextAction.name)}” (not used)` : ''}</li>`).join('')}</ul></div>` : ''}${renderSimulationCard(ui.sim?.runId === full.id ? ui.sim.record : null) || `<p class="muted small">${(full.screenReviews || []).length ? 'No pixel simulation recorded for this run — the screen checks above are the frames the run judged itself.' : 'No screenshot check loaded for this run.'}</p>`}</div></div>
     <div class="card"><div class="card-head"><h3>Test review</h3><div class="row" style="gap:6px;align-items:flex-end"><label class="field" style="margin:0;min-width:130px"><span>Sort</span><select data-scope="review-sort" data-id="${esc(full.id)}" ${ui.reviewBusy ? 'disabled' : ''}>${['risk', 'phase', 'status', 'seq', 'name'].map((mode) => `<option value="${mode}" ${ui.reviewSort === mode ? 'selected' : ''}>${mode}</option>`).join('')}</select></label><button class="btn btn-sm" data-act="run-review" data-id="${esc(full.id)}" ${ui.reviewBusy ? 'disabled' : ''}>${ui.reviewBusy ? 'Reviewing…' : 'Build review'}</button></div></div><div class="card-body">${renderTestReviewCard(ui.review?.runId === full.id ? ui.review.record : null)}</div></div>
 
@@ -7735,6 +7758,27 @@ async function runAction(name, ds, el) {
       ui.selectedWorkflow = null;
       toast('Workflow deleted', 'ok');
       await refresh();
+      break;
+    }
+    case 'accept-handoff-draft': {
+      const res = await api(`/api/runs/${encodeURIComponent(ds.id)}/handoff-suggestion`, {
+        method: 'POST',
+        body: { action: 'accept' },
+      });
+      if (!res.ok) return toast(res.error, 'error');
+      toast('Hand-off saved from the draft — it runs after the next live run.', 'ok');
+      await refresh();
+      await loadRun(ds.id);
+      break;
+    }
+    case 'dismiss-handoff-draft': {
+      const res = await api(`/api/runs/${encodeURIComponent(ds.id)}/handoff-suggestion`, {
+        method: 'POST',
+        body: { action: 'dismiss' },
+      });
+      if (!res.ok) return toast(res.error, 'error');
+      toast('Draft dismissed — nothing was saved to the workflow.', 'ok');
+      await loadRun(ds.id);
       break;
     }
     case 'handoff-toggle': {
