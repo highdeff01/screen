@@ -2175,6 +2175,9 @@ export function pickStartLabel({ labels = [], windowTitle = '' } = {}) {
   const candidates = (Array.isArray(labels) ? labels : [])
     .map((label) => String(label || '').replace(/\s+/g, ' ').trim())
     .filter((label) => label.length >= 4 && label.length <= 120)
+    // A screen's marker must be more than a nav word: a sentence, or a long
+    // enough single word (“Notifications”), can only belong to one screen.
+    .filter((label) => label.includes(' ') || label.length >= 10)
     .filter((label) => /[a-z0-9]/i.test(label))
     .filter((label) => label.toLowerCase() !== title)
     .filter((label) => !GENERIC_START_LABELS.has(label.toLowerCase()));
