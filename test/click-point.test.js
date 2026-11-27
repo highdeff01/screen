@@ -87,3 +87,21 @@ test('a run working from a snapshot still teaches the saved workflow', () => {
   assert.equal(saved.clickPoints.s.x, 5, 'the stored workflow keeps the point for the next run');
   assert.equal(snapshot.clickPoints.s.y, 6, 'and this run can aim with it too');
 });
+
+test('a learned point carries the window rect it was recorded in', () => {
+  const workflow = { id: 'wf_points_rect', steps: [] };
+  engine.rememberClickPoint(
+    workflow,
+    { id: 'r', type: 'click', params: { x: 5, y: 6 }, output: 'clicked' },
+    { windowRect: { left: 117, top: 117, width: 1164, height: 839 } }
+  );
+  assert.deepEqual(workflow.clickPoints.r.window, { left: 117, top: 117, width: 1164, height: 839 });
+  assert.deepEqual([workflow.clickPoints.r.x, workflow.clickPoints.r.y], [5, 6], 'the point itself is unchanged');
+});
+
+test('a point learned without a readable window keeps no rect, so it is not trusted', () => {
+  const workflow = { id: 'wf_points_no_rect', steps: [] };
+  engine.rememberClickPoint(workflow, { id: 'n', type: 'click', params: { x: 5, y: 6 }, output: 'clicked' });
+  assert.equal(workflow.clickPoints.n.window, undefined);
+  assert.equal(workflow.clickPoints.n.x, 5);
+});
