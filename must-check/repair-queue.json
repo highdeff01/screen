@@ -1,19 +1,83 @@
 {
   "version": 1,
   "by": "sentinel",
-  "updatedAt": "2026-11-26T23:20:57.483Z",
-  "head": "7bd3b9949df5",
+  "updatedAt": "2026-11-27T01:05:25.557Z",
+  "head": "ea1eadebc2f6",
   "lastRun": {
-    "at": "2026-11-26T23:20:57.483Z",
-    "ok": true,
-    "tests": 850,
-    "pass": 843,
-    "fail": 0,
+    "at": "2026-11-27T01:05:25.526Z",
+    "ok": false,
+    "tests": 851,
+    "pass": 838,
+    "fail": 6,
     "isolated": true,
-    "failingTests": []
+    "failingTests": [
+      "the engine executes an AI replacement and records the repair (20281.1592ms)",
+      "a repair that opens another app is adopted by the presenter and verifier (25247.1094ms)",
+      "the engine rewrites the remainder after an irreparable action and still passes (45068.3957ms)",
+      "C:\\Users\\Dan\\.config\\freebuff-desktop\\local-projects\\40af3ced-48bf-4a9d-a8b7-cb42815bab8f\\data\\worktrees\\sentinel-1795741181395-43804\\test\\agent-replan.test.js (227.141ms)",
+      "a confident action on screen is added and run before the rest of the plan (13334.0864ms)",
+      "a sign-in wall the reader cannot pass is reported, not clicked through (14115.757ms)"
+    ]
   },
-  "open": 9,
+  "open": 10,
   "items": [
+    {
+      "id": "sent_mwya50xlc7e54e",
+      "at": "2026-11-27T01:05:25.526Z",
+      "status": "queued",
+      "attempts": 1,
+      "fail": 6,
+      "pass": 838,
+      "tests": [
+        "the engine executes an AI replacement and records the repair (20281.1592ms)",
+        "a repair that opens another app is adopted by the presenter and verifier (25247.1094ms)",
+        "the engine rewrites the remainder after an irreparable action and still passes (45068.3957ms)",
+        "C:\\Users\\Dan\\.config\\freebuff-desktop\\local-projects\\40af3ced-48bf-4a9d-a8b7-cb42815bab8f\\data\\worktrees\\sentinel-1795741181395-43804\\test\\agent-replan.test.js (227.141ms)",
+        "a confident action on screen is added and run before the rest of the plan (13334.0864ms)",
+        "a sign-in wall the reader cannot pass is reported, not clicked through (14115.757ms)"
+      ],
+      "details": [
+        {
+          "name": "the engine executes an AI replacement and records the repair",
+          "file": "",
+          "line": null,
+          "message": ""
+        },
+        {
+          "name": "a repair that opens another app is adopted by the presenter and verifier",
+          "file": "",
+          "line": null,
+          "message": ""
+        },
+        {
+          "name": "the engine rewrites the remainder after an irreparable action and still passes",
+          "file": "",
+          "line": null,
+          "message": ""
+        },
+        {
+          "name": "C:\\Users\\Dan\\.config\\freebuff-desktop\\local-projects\\40af3ced-48bf-4a9d-a8b7-cb42815bab8f\\data\\worktrees\\sentinel-1795741181395-43804\\test\\agent-replan.test.js",
+          "file": "",
+          "line": null,
+          "message": ""
+        },
+        {
+          "name": "a confident action on screen is added and run before the rest of the plan",
+          "file": "",
+          "line": null,
+          "message": ""
+        },
+        {
+          "name": "a sign-in wall the reader cannot pass is reported, not clicked through",
+          "file": "",
+          "line": null,
+          "message": ""
+        }
+      ],
+      "plan": "",
+      "planError": "",
+      "report": "must-check/2026-11-27T01-05-25-the-engine-executes-an-ai-replacement-an.md"
+    },
     {
       "id": "sent_mwxdr40c73fef5",
       "at": "2026-11-26T09:58:48.588Z",
