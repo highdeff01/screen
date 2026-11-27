@@ -1,22 +1,43 @@
 {
   "version": 1,
   "by": "sentinel",
-  "updatedAt": "2026-11-27T18:33:03.818Z",
-  "head": "111b7eba3c19",
+  "updatedAt": "2026-11-27T19:32:31.707Z",
+  "head": "b329eb3cd482",
   "lastRun": {
-    "at": "2026-11-27T18:33:03.802Z",
+    "at": "2026-11-27T19:32:31.657Z",
     "ok": false,
     "tests": 945,
-    "pass": 936,
-    "fail": 2,
+    "pass": 937,
+    "fail": 1,
     "isolated": true,
     "failingTests": [
-      "the engine executes an AI replacement and records the repair (27831.8413ms)",
-      "a repair that opens another app is adopted by the presenter and verifier (25091.3428ms)"
+      "a live run runs the declared hand-off steps after its verdict (30231.848ms)"
     ]
   },
-  "open": 15,
+  "open": 16,
   "items": [
+    {
+      "id": "sent_mwzdoroo25ce8f",
+      "at": "2026-11-27T19:32:31.657Z",
+      "status": "queued",
+      "attempts": 1,
+      "fail": 1,
+      "pass": 937,
+      "tests": [
+        "a live run runs the declared hand-off steps after its verdict (30231.848ms)"
+      ],
+      "details": [
+        {
+          "name": "a live run runs the declared hand-off steps after its verdict",
+          "file": "",
+          "line": null,
+          "message": ""
+        }
+      ],
+      "plan": "",
+      "planError": "",
+      "report": "must-check/2026-11-27T19-32-31-a-live-run-runs-the-declared-hand-off-st.md"
+    },
     {
       "id": "sent_mwzbkapm9a0625",
       "at": "2026-11-27T18:33:03.802Z",
