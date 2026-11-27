@@ -33,7 +33,7 @@ import { firewallCheck } from './firewall.js';
 import { addNote } from './handoff.js';
 import { noteStepOutcome, pinStepIntents, similarSolutions, spotIntent } from './step-factoring.js';
 import { closeoutFor, recordCloseout } from './closeout.js';
-import { afterRunAutoRepair, autoRepairSettings, focusLevelFor, importanceOf, incompleteStepEntries } from './auto-repair.js';
+import { afterRunAutoRepair, autoRepairSettings, focusLevelFor, importanceOf, incompleteStepEntries, reorderBeforeStep } from './auto-repair.js';
 import { checkStepMonitor } from './monitors.js';
 import { beginRunObservation, endRunObservation } from './app-observer.js';
 import { liveControl, probeLiveBackend, isPlatformRefusal } from './platform.js';
@@ -2970,7 +2970,8 @@ async function executeRun(runId) {
     return { ok: false, error: lastRepairError, failure };
   };
 
-  for (const step of run.steps) {
+  for (let stepIndex = 0; stepIndex < run.steps.length; stepIndex++) {
+    let step = run.steps[stepIndex];
     await waitWhileRunPaused(run);
     if (run.cancelRequested) {
       step.status = step.status === 'pending' ? 'skipped' : step.status;
@@ -2987,6 +2988,20 @@ async function executeRun(runId) {
     if (step.status === 'passed' && step.carriedFrom) {
       pushLog(run, 'info', `Passed through “${step.name}” — it already completed in ${step.carriedFrom.runId || 'the previous attempt'}.`, step.id);
       continue;
+    }
+    // The window is read here, at the moment this step is about to run: if its
+    // control is not on screen and a later click's control is, that click takes
+    // this slot. A background timer could never win this race — a focus→click
+    // pair finishes faster than one OCR read.
+    if (!probe && !run.dryRun && step.status === 'pending') {
+      try {
+        const moved = await reorderBeforeStep(run, step, {
+          log: (message) => pushLog(run, 'info', message, step.id),
+        });
+        if (moved) step = run.steps[stepIndex];
+      } catch (err) {
+        pushLog(run, 'warn', `Screen check could not reorder the remaining steps: ${err.message}`, step.id);
+      }
     }
     const conditionMet = stepConditionMet(step, run);
     const decision = await deliberateStep({

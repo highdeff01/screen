@@ -351,82 +351,83 @@ export function chooseReorder(run, labels = [], clicks = monitorCandidates(run))
 }
 
 /**
- * One backend tick: read the screen once for the live run and apply at most one
- * reorder. Bounded by `monitorMaxReads` per run so a long run cannot read
- * forever.
+ * The pending steps a check taken *before* `step` runs may permute: `step`
+ * itself, then each following pending click, stopping at the first step that
+ * cannot move (or at a lifecycle guard). Empty when this step cannot move, so a
+ * screen read is never spent on a step that has nothing to reorder.
  */
-
-export async function monitorTick({ read = null } = {}) {
-  const settings = autoRepairSettings();
-  if (!settings.monitorReplan) return { skipped: 'monitor is off' };
-  const running = db().runs.filter((run) => run.status === 'running' && !run.dryRun && !run.shadow);
-  if (!running.length) return { skipped: 'no live run' };
-  const reader = read || readers.read;
-  if (typeof reader !== 'function') return { skipped: 'no screen reader' };
-  const results = [];
-  for (const run of running.slice(0, 1)) {
-    if (Number(run.monitor?.reads || 0) >= settings.monitorMaxReads) {
-      results.push({ runId: run.id, skipped: 'read budget spent' });
-      continue;
+export function reorderCandidates(run, step) {
+  const steps = run?.steps;
+  if (!Array.isArray(steps) || !step || step.status !== 'pending' || !movable(step)) return [];
+  const index = steps.findIndex((entry) => entry.id === step.id);
+  if (index < 0) return [];
+  const candidates = [];
+  for (const entry of steps.slice(index)) {
+    if (entry.id !== step.id) {
+      if (LIFECYCLE_STEPS.has(entry.type)) break;
+      if (entry.status !== 'pending') continue;
+      if (!movable(entry)) break;
     }
-    if (monitorCandidates(run).length < 2) {
-      results.push({ runId: run.id, skipped: 'no reorder is possible' });
-      continue;
-    }
-    const monitor = run.monitor || (run.monitor = { reads: 0, reorders: 0 });
-    let labels = [];
-    try {
-      const value = await reader({ run });
-      labels = Array.isArray(value) ? value : Array.isArray(value?.labels) ? value.labels : [];
-    } catch (err) {
-      monitor.lastError = String(err?.message || err).slice(0, 200);
-      results.push({ runId: run.id, error: monitor.lastError });
-      continue;
-    }
-    monitor.reads = Number(monitor.reads || 0) + 1;
-    monitor.lastReadAt = now();
-    monitor.lastLabels = labels.slice(0, 12);
-    const decision = chooseReorder(run, labels);
-    if (decision) {
-      const record = reorderPending(run, decision.ids);
-      if (record) {
-        // The evidence travels with the move: which control was visible, which
-        // one was not, and how the queue changed.
-        record.movedName = String(decision.moved.name || decision.moved.type || '');
-        record.aheadOfName = String(decision.aheadOf.name || decision.aheadOf.type || '');
-        record.labels = labels.slice(0, 12);
-        monitor.reorders = Number(monitor.reorders || 0) + 1;
-        monitor.lastNote = `moved “${decision.moved.name || decision.moved.type}” ahead of “${decision.aheadOf.name || decision.aheadOf.type}”`;
-        logActivity('auto-repair', `Monitor reordered “${run.workflowName}”: ${monitor.lastNote}`, { runId: run.id });
-      }
-    }
-    persist();
-    results.push({ runId: run.id, labels: labels.length, reordered: Boolean(monitor.lastNote && monitor.reorders) });
+    candidates.push(entry);
   }
-  return { results };
+  return candidates;
 }
 
-let timer = null;
-let ticking = false;
-
-export function startAutoRepairMonitor({ intervalMs = 1500 } = {}) {
-  if (timer) return timer;
-  const period = Math.max(250, Math.min(60000, Number(intervalMs) || 1500));
-  timer = setInterval(() => {
-    if (ticking) return;
-    ticking = true;
-    monitorTick()
-      .catch((err) => console.error('[auto-repair] monitor tick failed:', err.message))
-      .finally(() => {
-        ticking = false;
-      });
-  }, period);
-  timer.unref?.();
-  return timer;
-}
-
-export function stopAutoRepairMonitor() {
-  if (timer) clearInterval(timer);
-  timer = null;
-  ticking = false;
+/**
+ * The check itself: one read of the window, taken just before `step` runs.
+ *
+ * It is the same decision the old background monitor made — a later click whose
+ * control is already on screen takes the slot of one whose control is not — but
+ * taken inside the run loop, where a fast focus→click pair cannot outrun it, and
+ * anchored at the step about to run so the moved click lands in this slot.
+ *
+ * Guards are unchanged: only a live run, only click steps that name a control
+ * and carry no skip rule of their own, never across a lifecycle step, at most
+ * two moves per run, and a read budget per run. Nothing here types or clicks.
+ */
+export async function reorderBeforeStep(run, step, { read = null, log = null } = {}) {
+  if (!run || !step || run.dryRun || run.shadow) return null;
+  const candidates = reorderCandidates(run, step);
+  if (candidates.length < 2) return null;
+  if ((run.reorders || []).length >= MAX_REORDERS_PER_RUN) return null;
+  const settings = autoRepairSettings();
+  const monitor = run.monitor || (run.monitor = { reads: 0, reorders: 0 });
+  if (Number(monitor.reads || 0) >= settings.monitorMaxReads) return null;
+  const reader = read || readers.read;
+  if (typeof reader !== 'function') return null;
+  let labels = [];
+  try {
+    const value = await reader({ run });
+    labels = Array.isArray(value) ? value : Array.isArray(value?.labels) ? value.labels : [];
+  } catch (err) {
+    monitor.lastError = String(err?.message || err).slice(0, 200);
+    persist();
+    return null;
+  }
+  monitor.reads = Number(monitor.reads || 0) + 1;
+  monitor.lastReadAt = now();
+  monitor.lastLabels = labels.slice(0, 12);
+  const decision = chooseReorder(run, labels, candidates);
+  if (!decision) {
+    persist();
+    return null;
+  }
+  const record = reorderPending(run, decision.ids, { fromId: step.id });
+  if (!record) {
+    persist();
+    return null;
+  }
+  // The evidence travels with the move: which control was visible, which one was
+  // not, and how the queue changed.
+  record.movedName = String(decision.moved.name || decision.moved.type || '');
+  record.aheadOfName = String(decision.aheadOf.name || decision.aheadOf.type || '');
+  record.labels = labels.slice(0, 12);
+  monitor.reorders = Number(monitor.reorders || 0) + 1;
+  monitor.lastNote = `moved “${record.movedName}” ahead of “${record.aheadOfName}”`;
+  logActivity('auto-repair', `Screen check reordered “${run.workflowName}”: ${monitor.lastNote}`, { runId: run.id });
+  if (typeof log === 'function') {
+    log(`“${record.movedName}” is on screen and “${record.aheadOfName}” is not, so it takes this slot.`);
+  }
+  persist();
+  return { step: decision.moved, record };
 }

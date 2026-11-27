@@ -90,7 +90,7 @@ import { addFirewallRule, firewallCheck, firewallStatus, firewallTest, removeFir
 import { factoringStatus, pinStepIntents, planRefactoring, pushRefactorToBuilder, similarSolutions } from './step-factoring.js';
 import { normalizeThinkSettings } from './step-think.js';
 import { appendCloseout, closeoutFor, recordCloseout } from './closeout.js';
-import { applyAnalysisSteps, configureAutoRepair, normalizeAutoRepair, startAutoRepairMonitor, stopAutoRepairMonitor } from './auto-repair.js';
+import { applyAnalysisSteps, configureAutoRepair, normalizeAutoRepair } from './auto-repair.js';
 import { monitorsStatus } from './monitors.js';
 
 /**
@@ -4530,8 +4530,8 @@ route('PATCH', /^\/api\/settings$/, async (req, res) => {
   if (body.screenReview !== undefined && body.screenReview && typeof body.screenReview === 'object') {
     s.screenReview = normalizeScreenReviewSettings({ ...(s.screenReview || {}), ...body.screenReview });
   }
-  // Automatic repair: the four checkboxes and their two bounds, normalized here
-  // so a hand-written request cannot exceed them either.
+  // Automatic repair: the three checkboxes and their bounds, normalized here so
+  // a hand-written request cannot exceed them either.
   if (body.autoRepair !== undefined && body.autoRepair && typeof body.autoRepair === 'object') {
     s.autoRepair = normalizeAutoRepair({ ...(s.autoRepair || {}), ...body.autoRepair });
   }
@@ -5074,10 +5074,10 @@ server.listen(PORT, HOST, () => {
     snapshot: (label) => createSnapshot(label),
     applyAndRetry: applyReshapedToRun,
   });
-  // The screen monitor lives in the backend: it reads the window in front on its
-  // own timer and reorders pending steps, so the open tab is never the engine.
+  // The screen check runs inside the engine, just before each pending click: it
+  // reads the window in front through this reader and reorders the queue, so the
+  // open tab is never the engine and no timer has to race the run.
   configureAutoRepair({ read: readMonitorLabels });
-  startAutoRepairMonitor();
   startAmbient();
   // Front the model provider with the local Respan Gateway when it is enabled.
   if (db().settings.gatewayEnabled) ensureGateway().catch((err) => console.warn(`[gateway] ${err.message}`));
@@ -5095,7 +5095,6 @@ function shutdown() {
   livePreview.stop();
   stopVerificationLoop();
   stopAutoSync();
-  stopAutoRepairMonitor();
   stopSentinel();
   stopPipeline();
   stopShare();

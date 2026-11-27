@@ -59,16 +59,12 @@ test('settings default to off and every bound holds', () => {
     appendFixes: 1,
     analyzeIncomplete: 'yes',
     applyReshaped: true,
-    monitorReplan: 'on',
-    monitorIntervalMs: 5,
     monitorMaxReads: 9000,
     maxFocusLevel: 99,
   });
   assert.equal(normalized.appendFixes, false, 'only a real true turns a flag on');
   assert.equal(normalized.analyzeIncomplete, false);
   assert.equal(normalized.applyReshaped, true);
-  assert.equal(normalized.monitorReplan, false);
-  assert.equal(normalized.monitorIntervalMs, 500);
   assert.equal(normalized.monitorMaxReads, 200);
   assert.equal(normalized.maxFocusLevel, 5);
   assert.equal(d.settings.autoRepair.maxFocusLevel, 5);
@@ -311,13 +307,8 @@ test('the monitor stops after two moves in one run', () => {
   assert.equal(repair.chooseReorder(entry, ['Notifications']), null);
 });
 
-test('monitor ticks obey the checkbox, the read budget and the live-run rule', async () => {
-  const d = reset({ monitorReplan: false });
-  d.runs.push(run({ id: 'run_off', status: 'running' }));
-  assert.deepEqual(await repair.monitorTick({ read: async () => ['Notifications'] }), { skipped: 'monitor is off' });
-
-  d.settings.autoRepair.monitorReplan = true;
-  d.runs = d.runs.filter((entry) => entry.id !== 'run_off');
+test('the screen check runs before a pending click, so a fast pair cannot outrun it', async () => {
+  reset();
   const entry = run({
     id: 'run_on',
     status: 'running',
@@ -328,36 +319,77 @@ test('monitor ticks obey the checkbox, the read budget and the live-run rule', a
       { id: 'c', type: 'clickElement', name: 'Notifications', params: { name: 'Notifications' }, status: 'pending' },
     ],
   });
-  d.settings.autoRepair.monitorMaxReads = 1;
-  const first = await repair.monitorTick({ read: async () => ['Notifications'] });
-  assert.equal(first.results[0].reordered, true);
+  const messages = [];
+  const result = await repair.reorderBeforeStep(entry, entry.steps[1], {
+    read: async () => ['Notifications'],
+    log: (message) => messages.push(message),
+  });
+  assert.equal(result.step.id, 'c');
+  assert.equal(entry.steps.map((step) => step.id).join(','), 'a,c,b', 'the visible control takes the slot about to run');
   assert.equal(entry.monitor.reads, 1);
   assert.equal(entry.monitor.reorders, 1);
-  assert.equal(entry.steps.map((step) => step.id).join(','), 'a,c,b');
   const move = entry.reorders[0];
   assert.equal(move.movedName, 'Notifications');
   assert.equal(move.aheadOfName, 'Continue');
   assert.deepEqual(move.labels, ['Notifications'], 'the evidence that justified the move is kept');
-  const second = await repair.monitorTick({ read: async () => ['Notifications'] });
-  assert.equal(second.results[0].skipped, 'read budget spent');
-  assert.equal(entry.monitor.reads, 1);
+  assert.match(messages[0], /takes this slot/);
 });
 
-test('the monitor does not read the screen when no reorder is possible', async () => {
-  const d = reset({ monitorReplan: true });
+test('no read is spent on a step that cannot move', async () => {
+  reset();
+  let reads = 0;
   const entry = run({
     id: 'run_quiet',
     status: 'running',
-    currentStepId: 'a',
     steps: [
-      { id: 'a', type: 'note', name: 'Working', status: 'running' },
       { id: 'b', type: 'clickElement', name: 'Settings', params: { name: 'Settings' }, skipIfVisible: 'Notifications', status: 'pending' },
+      { id: 'c', type: 'clickElement', name: 'Notifications', params: { name: 'Notifications' }, status: 'pending' },
+    ],
+  });
+  const result = await repair.reorderBeforeStep(entry, entry.steps[0], {
+    read: async () => {
+      reads += 1;
+      return ['Notifications'];
+    },
+  });
+  assert.equal(result, null, 'a step with its own skip rule is never moved');
+  assert.equal(reads, 0, 'no OCR read is spent on a step that cannot be reordered');
+  assert.equal(entry.monitor, undefined);
+});
+
+test('the read budget and the live-run rule bound the check', async () => {
+  reset({ monitorMaxReads: 1 });
+  const entry = run({
+    id: 'run_budget',
+    status: 'running',
+    steps: [
+      { id: 'a', type: 'clickElement', name: 'Continue', params: { name: 'Continue' }, status: 'pending' },
+      { id: 'b', type: 'clickElement', name: 'Notifications', params: { name: 'Notifications' }, status: 'pending' },
+    ],
+  });
+  await repair.reorderBeforeStep(entry, entry.steps[0], { read: async () => ['Notifications'] });
+  assert.equal(entry.monitor.reads, 1);
+  const again = await repair.reorderBeforeStep(entry, entry.steps[0], { read: async () => ['Notifications'] });
+  assert.equal(again, null, 'the budget is spent');
+  assert.equal(entry.monitor.reads, 1);
+
+  reset();
+  const simulated = run({
+    id: 'run_sim',
+    status: 'running',
+    dryRun: true,
+    steps: [
+      { id: 'a', type: 'clickElement', name: 'Continue', params: { name: 'Continue' }, status: 'pending' },
+      { id: 'b', type: 'clickElement', name: 'Notifications', params: { name: 'Notifications' }, status: 'pending' },
     ],
   });
   let reads = 0;
-  const result = await repair.monitorTick({ read: async () => { reads += 1; return ['Settings']; } });
-  assert.equal(result.results[0].skipped, 'no reorder is possible');
-  assert.equal(reads, 0, 'no OCR read is spent on a run that cannot be reordered');
-  assert.equal(entry.monitor, undefined);
-  assert.equal(d.settings.autoRepair.monitorReplan, true);
+  const skipped = await repair.reorderBeforeStep(simulated, simulated.steps[0], {
+    read: async () => {
+      reads += 1;
+      return ['Notifications'];
+    },
+  });
+  assert.equal(skipped, null);
+  assert.equal(reads, 0, 'a simulated run never reads the screen');
 });

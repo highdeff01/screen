@@ -5448,9 +5448,7 @@ function settingsFields(s) {
     <label class="check" style="margin-bottom:6px"><input type="checkbox" data-scope="settings" data-key="autoRepairAppendFixes" ${(s.autoRepairAppendFixes ?? s.autoRepair?.appendFixes) ? 'checked' : ''} /> Append the predicted fix steps to the workflow instead of waiting for approval</label>
     <label class="check" style="margin-bottom:6px"><input type="checkbox" data-scope="settings" data-key="autoRepairAnalyzeIncomplete" ${(s.autoRepairAnalyzeIncomplete ?? s.autoRepair?.analyzeIncomplete) ? 'checked' : ''} /> Analyse steps where nothing was detected with AI and append the missing steps automatically</label>
     <label class="check" style="margin-bottom:6px"><input type="checkbox" data-scope="settings" data-key="autoRepairApplyReshaped" ${(s.autoRepairApplyReshaped ?? s.autoRepair?.applyReshaped) ? 'checked' : ''} /> Apply a reshaped plan and re-run automatically (still through the snapshot gate)</label>
-    <label class="check" style="margin-bottom:6px"><input type="checkbox" data-scope="settings" data-key="autoRepairMonitorReplan" ${(s.autoRepairMonitorReplan ?? s.autoRepair?.monitorReplan) ? 'checked' : ''} /> Monitor the screen in the background and move a step ahead when its control is already visible</label>
     <div class="field-row">
-      <label class="field"><span>Monitor interval (ms)</span><input type="number" min="500" max="30000" value="${Number(s.autoRepairMonitorMs ?? s.autoRepair?.monitorIntervalMs ?? 3000)}" data-scope="settings" data-key="autoRepairMonitorMs" /><span class="help">One read of the window in front per tick; only while a live run is active.</span></label>
       <label class="field"><span>Highest focus level</span><input type="number" min="1" max="5" value="${Number(s.autoRepairMaxFocusLevel ?? s.autoRepair?.maxFocusLevel ?? 5)}" data-scope="settings" data-key="autoRepairMaxFocusLevel" /><span class="help">Retries climb from 1; input steps and an unproved goal climb faster.</span></label>
     </div>
     <div class="section-gap"><h3 class="settings-subhead">Pending recheck</h3></div>
@@ -10133,8 +10131,6 @@ async function runAction(name, ds, el) {
           appendFixes: settings.autoRepairAppendFixes ?? settings.autoRepair?.appendFixes ?? false,
           analyzeIncomplete: settings.autoRepairAnalyzeIncomplete ?? settings.autoRepair?.analyzeIncomplete ?? false,
           applyReshaped: settings.autoRepairApplyReshaped ?? settings.autoRepair?.applyReshaped ?? false,
-          monitorReplan: settings.autoRepairMonitorReplan ?? settings.autoRepair?.monitorReplan ?? false,
-          monitorIntervalMs: Number(settings.autoRepairMonitorMs ?? settings.autoRepair?.monitorIntervalMs ?? 3000),
           maxFocusLevel: Number(settings.autoRepairMaxFocusLevel ?? settings.autoRepair?.maxFocusLevel ?? 5),
         },
       };

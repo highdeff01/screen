@@ -96,14 +96,13 @@ function seed() {
       autoRecoverFailures: true,
       recoveryMaxAttempts: 2,
       // Checkbox-driven automatic repair: append fixes instead of waiting for
-      // approval, analyse undetected steps, apply a reshaped plan, and keep a
-      // backend screen monitor that reorders the remaining steps. All off.
+      // approval, analyse undetected steps, apply a reshaped plan. All off. The
+      // screen check that reorders the remaining steps is part of the run loop,
+      // not a switch: it costs one read per pending click.
       autoRepair: {
         appendFixes: false,
         analyzeIncomplete: false,
         applyReshaped: false,
-        monitorReplan: false,
-        monitorIntervalMs: 3000,
         monitorMaxReads: 60,
         maxFocusLevel: 5,
       },
