@@ -143,6 +143,53 @@ test('a probe run never runs the hand-off', async () => {
   assert.deepEqual(handoffLog(finished), [], 'the run log never claims a hand-off');
 });
 
+test('a run with no declared hand-off gets a drafted reverse and executes nothing', async () => {
+  const d = resetDb();
+  const wf = {
+    id: 'wf_handoff_draft',
+    name: 'Draft a hand-off',
+    description: 'Click Settings, declare no hand-off.',
+    status: 'ready',
+    failurePolicy: { onFailure: 'stop', maxRetries: 0 },
+    steps: [
+      {
+        id: 'stp_click_settings',
+        type: 'clickElement',
+        name: 'Click Settings',
+        params: { window: 'Sightline Profile', name: 'Settings', skipIfVisible: 'Notifications' },
+        timeoutMs: 5000,
+      },
+    ],
+    handoff: { enabled: false, steps: [] },
+  };
+  d.workflows = [wf];
+  const probe = stubProbe();
+  const asked = [];
+  probe.findUiElementByOcr = async ({ name, names }) => {
+    asked.push({ name, names });
+    if (names) return { found: true, text: 'Back', x: 40, y: 60, method: 'OCR' };
+    return { found: false, reason: 'not visible' };
+  };
+
+  const run = engine.createRun(wf, { dryRun: false, probe, repair: false, aiReplan: false });
+  const finished = await engine.waitForRun(run.id, { timeoutMs: 30000, intervalMs: 20 });
+
+  assert.equal(finished.status, 'passed');
+  assert.equal(finished.handoff ?? null, null, 'no hand-off was run');
+  const suggestion = finished.handoffSuggestion;
+  assert.ok(suggestion, 'the run carries a draft hand-off');
+  assert.equal(suggestion.complete, true);
+  assert.equal(suggestion.stepName, 'Click Settings');
+  assert.deepEqual(suggestion.steps.map((step) => step.type), ['clickElement']);
+  assert.deepEqual(suggestion.steps[0].params, { window: 'Sightline Profile', name: 'Back' });
+  assert.deepEqual(probe.executed, ['clickElement'], 'only the proof step ran; the draft was never executed');
+  assert.ok(asked.some((entry) => Array.isArray(entry.names) && entry.names.includes('Back')), 'the end screen was read for a back control');
+  assert.ok(
+    (finished.log || []).some((line) => /Hand-off draft: The end screen .* shows “Back”/.test(String(line.message || ''))),
+    'the draft is logged as a proposal'
+  );
+});
+
 test('a failing hand-off step is reported but never changes the verdict', async () => {
   const d = resetDb();
   const wf = workflow('wf_handoff_failure', {
