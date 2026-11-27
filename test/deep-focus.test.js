@@ -281,6 +281,22 @@ test('applying reshaped steps passes the snapshot gate first', async () => {
   assert.equal(deepFocus.deepFocusStatus('run_focus_1').applyGate.snapshot, 'abc123');
 });
 
+test('a reshape is validated before it can be applied', () => {
+  const run = { lastWindow: { title: 'Sightline Profile — home' } };
+  const steps = deepFocus.executableReshape([
+    // A model that copies the prompt's list into "type" must not reach the workflow.
+    { type: 'focusWindow|clickElement|type', name: 'Settings', params: { name: 'Settings' } },
+    { type: 'clickElement', name: 'Click Settings', params: { name: 'Settings' } },
+    { type: 'clickElement', label: 'Notifications', params: {} },
+    { type: 'launchApp', name: 'Open Notepad', params: { target: 'notepad.exe' } },
+    { type: 'dropDatabase', name: 'No such action', params: {} },
+  ], run);
+  assert.deepEqual(steps.map((step) => step.type), ['clickElement', 'clickElement', 'launchApp']);
+  assert.equal(steps[0].params.window, 'Sightline Profile', 'a click gets the window the run was last in');
+  assert.equal(steps[1].params.name, 'Notifications', 'a click gets its control label from the model alias');
+  assert.ok(steps[1].name, 'every step keeps a readable name');
+});
+
 test('without a model the rounds still conclude from the reflexes', async () => {
   seedRun();
   deepFocus.startDeepFocus('run_focus_1', { rounds: 2, reason: 'test' }, liveState);

@@ -25,6 +25,7 @@ import { sendContinuation } from './agent-awareness.js';
 import { addNote } from './handoff.js';
 import { liveControl } from './platform.js';
 import { autoRepairSettings } from './auto-repair.js';
+import { STEP_TYPES } from './automation.js';
 
 const MAX_ROUNDS = 12;
 
@@ -268,7 +269,7 @@ async function rethink(run, focus, deps = {}) {
       {
         role: 'system',
         content:
-          'You are re-planning a screen-automation run from live desktop observations. Reply with JSON only: {"conclusion":"one line","reshaped":[{"type":"focusWindow|clickElement|type|key|wait|waitFor|expect|screenshot|launchApp","name":"...","params":{}}],"retry":true|false}. Prefer clickElement with {"window":"<exact window title>","name":"<exact control label>"} over coordinate clicks; never invent coordinates. If a step failed, reshape ONLY that step and the steps after it. If no step failed but the goal is unverified, review the entire workflow and propose a replacement that verifies the goal. Treat missing or failed observations as unknown, not proof. Respect the live focus: if the caret is already in the right place, do not re-launch. Never include steps that delete or overwrite files. The proposal is applied and re-run automatically when auto-apply is enabled; otherwise it waits for review.',
+          'You are re-planning a screen-automation run from live desktop observations. Reply with JSON only: {"conclusion":"one line","reshaped":[{"type":"clickElement","name":"Click Settings","params":{"window":"<exact window title>","name":"<exact control label>"}}],"retry":true|false}. Each step type must be exactly one of these words, alone: focusWindow, clickElement, type, key, wait, waitFor, expect, screenshot, launchApp. Never put a list or several words in "type". Prefer clickElement with a window and an exact control label over coordinate clicks; never invent coordinates. If a step failed, reshape ONLY that step and the steps after it. If no step failed but the goal is unverified, review the entire workflow and propose a replacement that verifies the goal. Treat missing or failed observations as unknown, not proof. Respect the live focus: if the caret is already in the right place, do not re-launch. Never include steps that delete or overwrite files. The proposal is applied and re-run automatically when auto-apply is enabled; otherwise it waits for review.',
       },
       {
         role: 'user',
@@ -283,7 +284,14 @@ Goal: ${promptValue(goal, 2000)}\nRun error: ${promptValue(run.errorSummary, 100
     const text = String(reply.content || '').trim();
     const json = text.slice(text.indexOf('{'), text.lastIndexOf('}') + 1);
     const parsed = JSON.parse(json);
-    const proposedSteps = (Array.isArray(parsed.reshaped) ? parsed.reshaped : []).filter((step) => step?.type).slice(0, 12);
+    // Proposing nothing is an answer; proposing only steps that cannot run is not.
+    const proposed = Array.isArray(parsed.reshaped) ? parsed.reshaped : [];
+    const executable = executableReshape(proposed, run);
+    if (proposed.length && !executable.length) {
+      focus.rethinkStatus = 'model proposed no executable steps';
+      return null;
+    }
+    const proposedSteps = executable.slice(0, 12);
     focus.rethinkStatus = 'completed';
     return {
       at: now(),
@@ -295,6 +303,32 @@ Goal: ${promptValue(goal, 2000)}\nRun error: ${promptValue(run.errorSummary, 100
     focus.rethinkStatus = 'model request or response failed';
     return null;
   }
+}
+
+/**
+ * A reshape is written into the workflow and re-run, so it is validated here:
+ * a step type the executor does not know would hang the retry, and a click with
+ * no window would act on nothing. Unknown types are dropped, never guessed.
+ */
+export function executableReshape(reshaped, run = null) {
+  const allowed = new Set(STEP_TYPES.map((entry) => entry.type));
+  const window = String(run?.lastWindow?.title || '').split(' — ')[0].trim();
+  return (Array.isArray(reshaped) ? reshaped : [])
+    .filter((step) => step && allowed.has(String(step.type || '').trim()))
+    .map((step) => {
+      const params = step.params && typeof step.params === 'object' && !Array.isArray(step.params) ? { ...step.params } : {};
+      if (step.type === 'clickElement') {
+        if (!params.name && step.label) params.name = String(step.label).trim();
+        if (!params.window && window) params.window = window;
+      }
+      const label = String(params.name || params.title || params.value || step.name || '').trim();
+      return {
+        ...step,
+        type: String(step.type).trim(),
+        name: String(step.name || `${step.type} ${label}`.trim() || step.type).slice(0, 80),
+        params,
+      };
+    });
 }
 
 /** The diff the operator sees: what the higher plan changed and why. */
