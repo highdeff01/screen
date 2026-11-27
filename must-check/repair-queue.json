@@ -1,23 +1,16 @@
 {
   "version": 1,
   "by": "sentinel",
-  "updatedAt": "2026-11-27T01:05:25.557Z",
-  "head": "ea1eadebc2f6",
+  "updatedAt": "2026-11-27T02:25:25.800Z",
+  "head": "153e37e884ca",
   "lastRun": {
-    "at": "2026-11-27T01:05:25.526Z",
-    "ok": false,
-    "tests": 851,
-    "pass": 838,
-    "fail": 6,
+    "at": "2026-11-27T02:25:25.800Z",
+    "ok": true,
+    "tests": 850,
+    "pass": 843,
+    "fail": 0,
     "isolated": true,
-    "failingTests": [
-      "the engine executes an AI replacement and records the repair (20281.1592ms)",
-      "a repair that opens another app is adopted by the presenter and verifier (25247.1094ms)",
-      "the engine rewrites the remainder after an irreparable action and still passes (45068.3957ms)",
-      "C:\\Users\\Dan\\.config\\freebuff-desktop\\local-projects\\40af3ced-48bf-4a9d-a8b7-cb42815bab8f\\data\\worktrees\\sentinel-1795741181395-43804\\test\\agent-replan.test.js (227.141ms)",
-      "a confident action on screen is added and run before the rest of the plan (13334.0864ms)",
-      "a sign-in wall the reader cannot pass is reported, not clicked through (14115.757ms)"
-    ]
+    "failingTests": []
   },
   "open": 10,
   "items": [
