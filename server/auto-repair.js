@@ -14,10 +14,12 @@
  *                      the workflow automatically.
  *   applyReshaped      a deep-focus reshaped plan is applied through the
  *                      snapshot gate and the run re-runs without a click.
- *   monitorReplan      while a live run is in progress the backend keeps
- *                      reading the screen on its own timer; when a later pending
- *                      step's control is already on screen and the next one's is
- *                      not, that step is moved ahead of it.
+ *   reorderBeforeStep  the screen is read once, in the run loop, just before a
+ *                      pending click runs; when that click's control is not on
+ *                      screen and a later click's control is, the later one takes
+ *                      its slot. This is a decision inside the step loop, not a
+ *                      background timer: a focus→click pair finishes faster than
+ *                      one OCR read, so a timer could never win that race.
  *
  * Everything here is best-effort: a failed automatic step is written into the
  * run log and never changes the run's verdict, and nothing types or clicks.
@@ -37,8 +39,6 @@ export const AUTO_REPAIR_DEFAULTS = Object.freeze({
   appendFixes: false,
   analyzeIncomplete: false,
   applyReshaped: false,
-  monitorReplan: false,
-  monitorIntervalMs: 3000,
   monitorMaxReads: 60,
   maxFocusLevel: 5,
 });
@@ -55,8 +55,6 @@ export function normalizeAutoRepair(input = {}) {
     appendFixes: source.appendFixes === true,
     analyzeIncomplete: source.analyzeIncomplete === true,
     applyReshaped: source.applyReshaped === true,
-    monitorReplan: source.monitorReplan === true,
-    monitorIntervalMs: clampInt(source.monitorIntervalMs, 500, 30000, AUTO_REPAIR_DEFAULTS.monitorIntervalMs),
     monitorMaxReads: clampInt(source.monitorMaxReads, 1, 200, AUTO_REPAIR_DEFAULTS.monitorMaxReads),
     maxFocusLevel: clampInt(source.maxFocusLevel, 1, 5, AUTO_REPAIR_DEFAULTS.maxFocusLevel),
   };
@@ -251,11 +249,16 @@ function visible(step, labelSet) {
  * Only the *unvisited tail* is permuted: non-pending steps keep their index and
  * the engine's own iterator still visits every tail slot exactly once.
  */
-export function reorderPending(run, desiredIds = []) {
+export function reorderPending(run, desiredIds = [], { fromId = null } = {}) {
   const steps = run?.steps;
   if (!Array.isArray(steps) || !desiredIds.length) return null;
+  // `fromId` anchors the permutation at the step that is about to run, so the
+  // move lands in the slot the loop is standing on instead of one it has already
+  // passed (which would drop the moved step entirely).
+  const anchorIndex = fromId ? steps.findIndex((step) => step.id === fromId) : -1;
   const currentIndex = run.currentStepId ? steps.findIndex((step) => step.id === run.currentStepId) : -1;
-  const tailStart = currentIndex >= 0 ? currentIndex + 1 : steps.findIndex((step) => step.status === 'pending');
+  const tailStart =
+    anchorIndex >= 0 ? anchorIndex : currentIndex >= 0 ? currentIndex + 1 : steps.findIndex((step) => step.status === 'pending');
   if (tailStart < 0) return null;
   const tail = steps.slice(tailStart);
   const pending = tail.filter((step) => step.status === 'pending');
@@ -281,7 +284,7 @@ export function reorderPending(run, desiredIds = []) {
   run.log.push({
     at: now(),
     level: 'info',
-    message: `Screen monitor moved “${queue[0].name || queue[0].type}” ahead of the queue: its control is on screen now and the step before it was not.`,
+    message: `Screen check moved “${queue[0].name || queue[0].type}” ahead of the queue: its control is on screen now and the step before it was not.`,
     stepId: null,
     source: 'auto-repair',
   });
@@ -337,10 +340,9 @@ export function monitorCandidates(run) {
   return clicks;
 }
 
-export function chooseReorder(run, labels = []) {
+export function chooseReorder(run, labels = [], clicks = monitorCandidates(run)) {
   const labelSet = new Set((labels || []).map(norm).filter(Boolean));
   if (!labelSet.size) return null;
-  const clicks = monitorCandidates(run);
   if (clicks.length < 2) return null;
   const [next, ...later] = clicks;
   if (visible(next, labelSet)) return null; // the next click's own control is already on screen
