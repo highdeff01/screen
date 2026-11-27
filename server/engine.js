@@ -2157,6 +2157,113 @@ async function readPageToUnblock(run, step, workflow, output, probe = null) {
 }
 
 /**
+ * The label that says which screen the run started on.
+ *
+ * The window title is no help — it names the app, not the screen — and a nav
+ * word like “Settings” can be a heading on the next screen too. A sentence or
+ * heading that does not equal the title is the most distinctive thing a Tk-style
+ * window shows, so it is preferred; when only generic chrome is visible, nothing
+ * is chosen rather than a marker that would pass on the wrong screen.
+ */
+const GENERIC_START_LABELS = new Set([
+  'back', 'home', 'close', 'cancel', 'ok', 'done', 'next', 'previous', 'save', 'apply',
+  'minimize', 'maximize', 'restore', 'menu', 'file', 'edit', 'view', 'help', 'search',
+]);
+
+export function pickStartLabel({ labels = [], windowTitle = '' } = {}) {
+  const title = String(windowTitle || '').replace(/\s+/g, ' ').trim().toLowerCase();
+  const candidates = (Array.isArray(labels) ? labels : [])
+    .map((label) => String(label || '').replace(/\s+/g, ' ').trim())
+    .filter((label) => label.length >= 4 && label.length <= 120)
+    .filter((label) => /[a-z0-9]/i.test(label))
+    .filter((label) => label.toLowerCase() !== title)
+    .filter((label) => !GENERIC_START_LABELS.has(label.toLowerCase()));
+  return candidates.sort((a, b) => b.length - a.length)[0] || '';
+}
+
+/**
+ * Record where a live run starts, so the hand-off can be checked against it.
+ *
+ * Read before the presenter or the first step touches the desktop: the point is
+ * the screen the operator left, not the one the run builds. Only runs that will
+ * hand the desk back pay for the read — a workflow without a hand-off has nothing
+ * to verify. One window read plus one OCR pass; the cost is recorded on the run.
+ */
+export async function recordStartScreen(run, workflow, { probe = null } = {}) {
+  const handoff = workflow?.handoff;
+  const steps = Array.isArray(handoff?.steps) ? handoff.steps.filter((step) => step?.type) : [];
+  if (!handoff?.enabled || !steps.length) return null;
+  const readScreen = probe?.readScreenContext || (probe ? null : readScreenContext);
+  const readLabels = probe?.findUiElementByOcr || (probe ? null : findUiElementByOcr);
+  if (!readScreen || !readLabels) return null;
+  const screen = await readScreen();
+  const foreground = screen?.foreground || {};
+  const title = String(foreground.title || '').trim();
+  if (!title) return null;
+  const startedAt = Date.now();
+  let read = null;
+  try {
+    read = await readLabels({ window: title, labelsOnly: true, timeoutMs: 8000 });
+  } catch {
+    read = null;
+  }
+  const label = pickStartLabel({ labels: read?.labels || [], windowTitle: title });
+  return {
+    at: now(),
+    window: {
+      title,
+      process: String(foreground.process || '').trim(),
+      handle: Math.max(0, Number(foreground.handle) || 0),
+    },
+    label,
+    labels: (read?.labels || []).length,
+    readMs: Date.now() - startedAt,
+  };
+}
+
+/**
+ * Is the desk back on the screen the run started from?
+ *
+ * Read-only and honest: the window has to be the recorded one and the recorded
+ * label has to be readable again. A miss is a warning about the hand-off, never a
+ * fact about what the run proved — the caller keeps the verdict.
+ */
+export async function verifyHandoffReturn(
+  run,
+  { findLabel = findUiElementByOcr, readScreen = readScreenContext } = {}
+) {
+  const start = run?.startScreen;
+  if (!start?.window?.title || !start.label) return null;
+  const expectedWindow = String(start.window.title).trim();
+  const screen = await readScreen();
+  const foregroundTitle = String(screen?.foreground?.title || '').trim();
+  const needle = expectedWindow.toLowerCase();
+  const inStartWindow = Boolean(needle) && foregroundTitle.toLowerCase().includes(needle);
+  let read = null;
+  try {
+    read = await findLabel({ window: expectedWindow, name: start.label, timeoutMs: 8000 });
+  } catch {
+    read = null;
+  }
+  const labelFound = Boolean(read?.found);
+  const ok = inStartWindow && labelFound;
+  return {
+    at: now(),
+    ok,
+    expected: { window: expectedWindow, label: start.label },
+    found: {
+      window: foregroundTitle,
+      label: labelFound ? String(read.text || start.label) : '',
+    },
+    note: ok
+      ? `Back on the start screen: “${start.label}” is visible in “${expectedWindow}”.`
+      : !inStartWindow
+        ? `the foreground is “${foregroundTitle || 'unknown'}”, not the start window “${expectedWindow}”`
+        : `“${start.label}” is not visible in “${expectedWindow}” any more`,
+  };
+}
+
+/**
  * Hand the desktop back after a live run.
  *
  * A proof that clicks a navigating control ends on whatever screen the click
@@ -2197,6 +2304,26 @@ async function runHandoff(run, workflow, { probe = null, getTool = () => undefin
   }
   run.handoff.finishedAt = now();
   run.handoffPending = false;
+  // The steps said they ran; this says the desk is where the run began. It is
+  // read-only, best-effort and separate from the verdict: a restore that landed
+  // somewhere else is reported, never turned into a failed run.
+  try {
+    const check = await verifyHandoffReturn(run);
+    if (check) {
+      run.handoffReturn = check;
+      if (check.ok) {
+        pushLog(run, 'info', `Hand-off check: ${check.note}`);
+      } else {
+        pushLog(
+          run,
+          'warn',
+          `Hand-off check failed: ${check.note}. The restore did not bring the start screen back; the run's verdict stands because the hand-off is best-effort.`
+        );
+      }
+    }
+  } catch (err) {
+    pushLog(run, 'warn', `Hand-off check could not run: ${err.message}`);
+  }
   persist();
 }
 
@@ -2370,6 +2497,27 @@ async function executeRun(runId) {
   persist();
   logActivity('run', `Running "${run.workflowName}" (${run.dryRun ? 'simulated' : 'live'})`, { runId: run.id });
   beginRunObservation(run);
+  // Where the desk is before the run touches it. Recorded before the presenter
+  // opens, because the presenter takes the foreground itself; the hand-off is
+  // checked against this when the run hands the desk back.
+  if (!run.dryRun && !run.shadow) {
+    try {
+      const start = await recordStartScreen(run, workflow, { probe });
+      if (start) {
+        run.startScreen = start;
+        persist();
+        pushLog(
+          run,
+          'info',
+          start.label
+            ? `Start screen: “${start.label}” in “${start.window.title}” (read in ${start.readMs}ms); the hand-off will be checked against it.`
+            : `Start screen: “${start.window.title}” shows no distinctive label, so the hand-off return cannot be asserted.`
+        );
+      }
+    } catch (err) {
+      pushLog(run, 'warn', `Start screen could not be recorded: ${err.message}`);
+    }
+  }
   try {
     await presenterStart(run, workflow);
   } catch (err) {

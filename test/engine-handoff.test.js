@@ -112,6 +112,40 @@ test('a live run runs the declared hand-off steps after its verdict', async () =
   assert.ok(handoffAt > verdictAt, 'the hand-off runs after the verdict is recorded');
 });
 
+test('a live run that will hand back records the start screen before its steps', async () => {
+  const d = resetDb();
+  const wf = workflow('wf_handoff_start', { enabled: true, steps: RESTORE_STEPS });
+  d.workflows = [wf];
+  const probe = stubProbe();
+  const reads = [];
+  probe.readScreenContext = async () => ({
+    foreground: { title: 'Sightline Profile', process: 'pythonw', handle: 4242 },
+    windows: [],
+  });
+  probe.findUiElementByOcr = async (query) => {
+    reads.push(query);
+    return {
+      found: false,
+      labels: ['Sightline Profile', 'Open Settings to edit your profile.', 'Settings'],
+      title: 'Sightline Profile',
+    };
+  };
+
+  const run = engine.createRun(wf, { dryRun: false, probe, repair: false, aiReplan: false });
+  const finished = await engine.waitForRun(run.id, { timeoutMs: 30000, intervalMs: 20 });
+
+  assert.equal(finished.status, 'passed');
+  assert.ok(finished.startScreen, 'the start screen is on the run');
+  assert.equal(finished.startScreen.window.title, 'Sightline Profile');
+  assert.equal(finished.startScreen.window.handle, 4242);
+  assert.equal(finished.startScreen.label, 'Open Settings to edit your profile.');
+  assert.equal(reads.length, 1);
+  assert.equal(reads[0].labelsOnly, true, 'one label read, not a control lookup');
+  assert.deepEqual(probe.executed, ['note'], 'recording the start screen executes nothing');
+  const messages = (finished.log || []).map((line) => String(line.message || ''));
+  assert.ok(messages.some((message) => /Start screen: “Open Settings to edit your profile\.”/.test(message)));
+});
+
 test('a simulated run never runs the hand-off', async () => {
   const d = resetDb();
   const wf = workflow('wf_handoff_simulated', { enabled: true, steps: RESTORE_STEPS });

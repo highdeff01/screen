@@ -1975,6 +1975,23 @@ function clipSentence(text, max) {
   return `${(space > max * 0.6 ? cut.slice(0, space) : cut).replace(/[.,;:]$/, '')}…`;
 }
 
+function renderHandoffReturn(run) {
+  const check = run.handoffReturn;
+  if (!check || check.ok !== false) return '';
+  const expected = check.expected || {};
+  const found = check.found || {};
+  return `<div class="card section-gap" style="border-color:rgba(251,191,36,.4)">
+    <div class="card-head">
+      <h3>Hand-off did not restore the start screen</h3>
+      <span class="badge warnbadge">best-effort</span>
+    </div>
+    <div class="card-body">
+      <p class="small" style="margin:0 0 6px">Expected “${esc(expected.label || 'the start screen')}” in “${esc(expected.window || 'the start window')}”. ${check.note ? `${esc(String(check.note).charAt(0).toUpperCase() + String(check.note).slice(1))}.` : ''}${found.window && found.window !== expected.window ? ` Foreground: “${esc(found.window)}”.` : ''}</p>
+      <p class="dim small" style="margin:0">The restore is best-effort: the run’s verdict is unchanged, and the desk needs a look.</p>
+    </div>
+  </div>`;
+}
+
 function renderHandoffDraft(run) {
   const draft = run.handoffSuggestion;
   if (!draft || draft.dismissedAt) return '';
@@ -2102,6 +2119,7 @@ function renderRunDetail(run) {
   }">${full.review?.status === 'reviewed' ? 'Reopen review' : '✓ Mark reviewed'}</button>
       </div>
     </div>
+    ${renderHandoffReturn(full)}
     ${renderHandoffDraft(full)}
     <div class="card"><div class="card-head"><h3>Screenshot check review</h3>${Number(full.screenReviewMismatches || 0) ? `<span class="badge warnbadge">${full.screenReviewMismatches} mismatch</span>`: Number(full.screenReviewCount || 0) ? `<span class="badge ${Number(full.screenReviewSkipped || 0) ? 'warnbadge' : 'okbadge'}">${Math.max(0, Number(full.screenReviewCount) - Number(full.screenReviewSkipped || 0))} checked${Number(full.screenReviewSkipped || 0) ? ` · ${Number(full.screenReviewSkipped)} unread` : ''}</span>` : ''}<button class="btn btn-sm" data-act="run-simulate" data-id="${esc(full.id)}" ${ui.simBusy ? 'disabled' : ''}>Screenshot check</button></div><div class="card-body">${(full.screenReviews || []).length ? `<ul class="small" style="margin:0 0 10px 18px">${(full.screenReviews || []).slice(-4).reverse().map((entry) => `<li><strong>${esc(entry.stepName || entry.stepId || 'step')}</strong> — ${esc(entry.status || 'captured')}${Number(entry.attempts) > 1 ? ` (${Number(entry.attempts)} reads)` : ''}${entry.mismatch ? `: ${esc(entry.mismatch)}` : ''}</li>`).join('')}</ul>` : ''}${(full.pageReads || []).length ? `<div class="stack" style="gap:4px;margin:0 0 10px"><span class="dim small">Screen reads between steps</span><ul class="small" style="margin:0 0 0 18px">${(full.pageReads || []).slice(-3).reverse().map((read) => `<li><strong>${esc(read.stepName || 'step')}</strong> — ${esc(read.visible || read.page || '')}${(read.blockers || []).length ? ` · in the way: ${esc((read.blockers || []).join('; '))}` : ''}${read.inserted ? ` · added “${esc(read.inserted)}”` : ''}${read.inserted ? '' : read.nextAction && read.nextAction.name ? ` · saw “${esc(read.nextAction.name)}” (not used)` : ''}</li>`).join('')}</ul></div>` : ''}${renderSimulationCard(ui.sim?.runId === full.id ? ui.sim.record : null) || `<p class="muted small">${(full.screenReviews || []).length ? 'No pixel simulation recorded for this run — the screen checks above are the frames the run judged itself.' : 'No screenshot check loaded for this run.'}</p>`}</div></div>
     <div class="card"><div class="card-head"><h3>Test review</h3><div class="row" style="gap:6px;align-items:flex-end"><label class="field" style="margin:0;min-width:130px"><span>Sort</span><select data-scope="review-sort" data-id="${esc(full.id)}" ${ui.reviewBusy ? 'disabled' : ''}>${['risk', 'phase', 'status', 'seq', 'name'].map((mode) => `<option value="${mode}" ${ui.reviewSort === mode ? 'selected' : ''}>${mode}</option>`).join('')}</select></label><button class="btn btn-sm" data-act="run-review" data-id="${esc(full.id)}" ${ui.reviewBusy ? 'disabled' : ''}>${ui.reviewBusy ? 'Reviewing…' : 'Build review'}</button></div></div><div class="card-body">${renderTestReviewCard(ui.review?.runId === full.id ? ui.review.record : null)}</div></div>

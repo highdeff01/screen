@@ -1569,9 +1569,9 @@ $best | ConvertTo-Json -Compress`;
  * failure this guard prevents, reproducible on demand for the comparison test.
  * Production callers never pass it.
  */
-export async function findUiElementByOcr({ window = '', name = '', names = null, timeoutMs = 20000, restore = true } = {}) {
+export async function findUiElementByOcr({ window = '', name = '', names = null, timeoutMs = 20000, restore = true, labelsOnly = false } = {}) {
   const wanted = (Array.isArray(names) && names.length ? names : [name]).map((item) => str(item).trim()).filter(Boolean);
-  if (!wanted.length) throw new Error('An element name is required.');
+  if (!wanted.length && !labelsOnly) throw new Error('An element name is required.');
   if (!IS_WINDOWS) return { found: false, reason: 'reading a label with OCR requires Windows' };
   const file = path.join(CAPTURES, `${uid('ocr')}.png`);
   const windowNeedle = str(window).trim();
@@ -1705,6 +1705,17 @@ $bmp.Dispose()
   // The client area starts below the title bar; the capture starts at the
   // window's corner, so the difference is where chrome ends in capture pixels.
   const lines = ocrLines(parsed.words, { minY: Math.max(0, Number(parsed.contentTop) || 0) });
+  // Callers that need to know what a screen says (not where one control is) get
+  // the read text instead of a point: one capture, one OCR pass, same cost.
+  if (labelsOnly) {
+    return {
+      found: false,
+      labels: lines.map((line) => line.text).filter(Boolean),
+      title: str(parsed.title),
+      shot,
+      ms: Number(parsed.ms) || 0,
+    };
+  }
   const best = matchOcrLine(lines, wanted);
   if (!best) {
     return {
