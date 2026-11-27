@@ -1,21 +1,32 @@
 {
   "version": 1,
   "by": "sentinel",
-  "updatedAt": "2026-11-27T19:32:31.707Z",
-  "head": "b329eb3cd482",
+  "updatedAt": "2026-11-27T22:45:49.488Z",
+  "head": "1bfe2914a9ac",
   "lastRun": {
-    "at": "2026-11-27T19:32:31.657Z",
+    "at": "2026-11-27T22:45:49.437Z",
     "ok": false,
-    "tests": 945,
-    "pass": 937,
-    "fail": 1,
+    "tests": null,
+    "pass": null,
+    "fail": null,
     "isolated": true,
-    "failingTests": [
-      "a live run runs the declared hand-off steps after its verdict (30231.848ms)"
-    ]
+    "failingTests": []
   },
-  "open": 16,
+  "open": 17,
   "items": [
+    {
+      "id": "sent_mwzklcl9983635",
+      "at": "2026-11-27T22:45:49.437Z",
+      "status": "queued",
+      "attempts": 1,
+      "fail": null,
+      "pass": null,
+      "tests": [],
+      "details": [],
+      "plan": "",
+      "planError": "",
+      "report": "must-check/2026-11-27T22-45-49-suite.md"
+    },
     {
       "id": "sent_mwzdoroo25ce8f",
       "at": "2026-11-27T19:32:31.657Z",
