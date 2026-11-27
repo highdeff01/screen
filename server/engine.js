@@ -2225,6 +2225,28 @@ export async function recordStartScreen(run, workflow, { probe = null } = {}) {
 }
 
 /**
+ * Is the recorded start label still on screen, in full?
+ *
+ * The control locator is deliberately fuzzy — it has to find “Save” inside
+ * “Save profile” — so a click read can answer with a shorter neighbour label.
+ * An assertion cannot: “Settings” is not the start screen's hint, even though
+ * the fuzzy score matched it. The read has to carry the whole label, allowing
+ * for OCR losing roughly one word in five.
+ */
+export function labelStillVisible(readText, label) {
+  const norm = (value) => String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  const read = norm(readText);
+  const want = norm(label);
+  if (!read || !want) return false;
+  if (read === want || read.includes(want)) return true;
+  if (want.includes(read) && read.length >= want.length * 0.8) return true;
+  const tokens = want.split(' ').filter((token) => token.length > 1);
+  if (!tokens.length) return false;
+  const hits = tokens.filter((token) => read.includes(token)).length;
+  return hits / tokens.length >= 0.8;
+}
+
+/**
  * Is the desk back on the screen the run started from?
  *
  * Read-only and honest: the window has to be the recorded one and the recorded
@@ -2248,7 +2270,7 @@ export async function verifyHandoffReturn(
   } catch {
     read = null;
   }
-  const labelFound = Boolean(read?.found);
+  const labelFound = Boolean(read?.found) && labelStillVisible(read?.text, start.label);
   const ok = inStartWindow && labelFound;
   return {
     at: now(),
