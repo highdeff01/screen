@@ -2014,7 +2014,7 @@ function renderHandoffDraft(run) {
     <div class="card-body">
       <p class="small muted" style="margin:0 0 8px">This run declared no hand-off. Its screen-changing step <b>${esc(draft.stepName || 'click')}</b> moved the app${draft.marker ? ` to the screen showing “${esc(draft.marker)}”` : ''}. ${esc(draft.reason || '')}</p>
       ${steps.length ? `<ul class="small" style="margin:0 0 8px 18px">${steps.map((step) => `<li><span class="type-chip">${esc(step.type)}</span> ${esc(step.name || '')}${step.params?.name ? ` · click “${esc(step.params.name)}” in “${esc(step.params.window || '')}”` : ''}</li>`).join('')}</ul>` : ''}
-      <p class="dim small" style="margin:0">${accepted ? 'Saved as the workflow’s hand-off and turned on. It runs after the workflow’s next live run.' : steps.length ? 'Accepting only saves these steps as the workflow’s hand-off and turns it on — nothing runs now, and nothing here touches the desktop until the next live run.' : 'No step was drafted, so there is nothing to save. Add the reverse yourself in the workflow’s hand-off editor.'}</p>
+      <p class="dim small" style="margin:0">${accepted ? 'Saved as the workflow’s hand-off and turned on. It runs after the workflow’s next live run.' : steps.length ? 'Accepting only saves these steps as the workflow’s hand-off and turns it on — nothing runs now, and nothing here touches the desktop until the next live run.' : 'No step was drafted, so there is nothing to save. The workflow’s hand-off stays empty and its next live run will not restore the start screen; dismiss this card to clear it.'}</p>
     </div>
   </div>`;
 }
