@@ -234,6 +234,32 @@ test('the monitor moves a visible later step ahead of a missing one', () => {
   assert.equal(repair.chooseReorder(entry, ['Continue']), null, 'no move when the next step is already possible');
 });
 
+test('the monitor only ever moves a click that names a control', () => {
+  const entry = run({
+    status: 'running',
+    currentStepId: 'a',
+    steps: [
+      { id: 'a', type: 'note', name: 'Working', status: 'running' },
+      { id: 'b', type: 'clickElement', name: 'Continue', params: { name: 'Continue' }, status: 'pending' },
+      { id: 'c', type: 'type', name: 'Type the note', params: { text: 'hello' }, status: 'pending' },
+      { id: 'd', type: 'clickElement', name: 'Settings', params: { name: 'Settings' }, status: 'pending' },
+    ],
+  });
+  assert.deepEqual(repair.monitorCandidates(entry).map((step) => step.id), ['b'], 'a non-click step ends the candidates');
+  assert.equal(repair.chooseReorder(entry, ['Settings']), null, 'no click is moved over a typing step');
+  const unnamed = run({
+    id: 'run_unnamed',
+    status: 'running',
+    currentStepId: 'a',
+    steps: [
+      { id: 'a', type: 'note', name: 'Working', status: 'running' },
+      { id: 'b', type: 'clickElement', name: 'Continue', params: { name: 'Continue' }, status: 'pending' },
+      { id: 'c', type: 'click', name: 'Click at 300,400', params: { x: 300, y: 400 }, status: 'pending' },
+    ],
+  });
+  assert.equal(repair.chooseReorder(unnamed, ['Click at 300,400']), null, 'a coordinate click names no control');
+});
+
 test('the monitor never rewrites a plan before a step is running', () => {
   const entry = run({
     status: 'running',

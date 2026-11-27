@@ -1,18 +1,16 @@
 {
   "version": 1,
   "by": "sentinel",
-  "updatedAt": "2026-11-27T06:22:25.264Z",
-  "head": "141bf4e04f89",
+  "updatedAt": "2026-11-27T07:44:20.024Z",
+  "head": "1668643e8e1a",
   "lastRun": {
-    "at": "2026-11-27T06:22:25.254Z",
-    "ok": false,
-    "tests": 889,
-    "pass": 881,
-    "fail": 1,
+    "at": "2026-11-27T07:44:20.024Z",
+    "ok": true,
+    "tests": 890,
+    "pass": 883,
+    "fail": 0,
     "isolated": true,
-    "failingTests": [
-      "keep-running continues after an unrepaired failure, up to its cap (16544.4727ms)"
-    ]
+    "failingTests": []
   },
   "open": 12,
   "items": [

@@ -237,17 +237,14 @@ export function configureAutoRepair({ read } = {}) {
 
 const norm = (value) => String(value ?? '').toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim();
 
-/** Labels a step names, from the params a reader can actually check. */
+/** The control label a step names. Only click steps carry one. */
 export function stepLabels(step = {}) {
-  const params = step.params || {};
-  const raw = [step.name, params.name, params.label, params.element, params.control, params.target];
-  return [...new Set(raw.map(norm).filter((label) => label.length >= 3 && label.length <= 60 && !/^\d+$/.test(label)))];
+  const label = norm(step.params?.name);
+  return label.length >= 3 && label.length <= 60 ? [label] : [];
 }
 
 function visible(step, labelSet) {
-  const labels = stepLabels(step);
-  if (!labels.length) return null;
-  return labels.some((label) => [...labelSet].some((seen) => seen.includes(label) || label.includes(seen)));
+  return stepLabels(step).some((label) => [...labelSet].some((seen) => seen.includes(label) || label.includes(seen)));
 }
 
 /**
@@ -304,33 +301,51 @@ export function reorderPending(run, desiredIds = []) {
 const LIFECYCLE_STEPS = new Set(['launchApp', 'focusWindow', 'windowAction', 'closeWindow']);
 const MAX_REORDERS_PER_RUN = 2;
 
+/** Only a click that names a control can move, and never one with its own skip rule. */
 function movable(step) {
-  return Boolean(step) && !LIFECYCLE_STEPS.has(step.type) && !step.skipIfVisible;
+  return Boolean(step) && step.type === 'clickElement' && Boolean(step.params?.name) && !step.skipIfVisible;
+}
+
+/**
+ * The pending steps after the running one, in order, up to the first
+ * focus/launch guard: nothing beyond a guard may jump ahead of it.
+ */
+function pendingTail(run) {
+  const steps = run?.steps || [];
+  const index = run?.currentStepId ? steps.findIndex((step) => step.id === run.currentStepId && step.status === 'running') : -1;
+  if (index < 0) return [];
+  const tail = [];
+  for (const step of steps.slice(index + 1)) {
+    if (LIFECYCLE_STEPS.has(step.type)) break;
+    if (step.status === 'pending') tail.push(step);
+  }
+  return tail;
+}
+
+/**
+ * Whether a reorder is possible at all, checked before reading the screen: the
+ * next pending step must be a click that names a control, and at least one more
+ * such click must follow it with no other kind of step in between.
+ */
+export function monitorCandidates(run) {
+  if ((run?.reorders || []).length >= MAX_REORDERS_PER_RUN) return [];
+  const clicks = [];
+  for (const step of pendingTail(run)) {
+    if (!movable(step)) break;
+    clicks.push(step);
+  }
+  return clicks;
 }
 
 export function chooseReorder(run, labels = []) {
-  if (!run?.currentStepId) return null;
   const labelSet = new Set((labels || []).map(norm).filter(Boolean));
   if (!labelSet.size) return null;
-  if ((run.reorders || []).length >= MAX_REORDERS_PER_RUN) return null;
-  const steps = run?.steps || [];
-  const currentIndex = steps.findIndex((step) => step.id === run.currentStepId && step.status === 'running');
-  if (currentIndex < 0) return null;
-  const tail = steps.slice(currentIndex + 1);
-  const next = tail.find((step) => step.status === 'pending');
-  if (!next || !movable(next)) return null;
-  if (visible(next, labelSet) !== false) return null;
-  const candidates = [];
-  for (const step of tail.slice(tail.indexOf(next) + 1, tail.indexOf(next) + 6)) {
-    if (LIFECYCLE_STEPS.has(step.type)) break; // never jump over a focus/launch guard
-    if (step.status === 'pending' && movable(step)) candidates.push(step);
-  }
-  for (const candidate of candidates) {
-    if (visible(candidate, labelSet) === true) {
-      return { ids: [candidate.id], moved: candidate, aheadOf: next };
-    }
-  }
-  return null;
+  const clicks = monitorCandidates(run);
+  if (clicks.length < 2) return null;
+  const [next, ...later] = clicks;
+  if (visible(next, labelSet)) return null; // the next click's own control is already on screen
+  const pick = later.find((step) => visible(step, labelSet));
+  return pick ? { ids: [pick.id], moved: pick, aheadOf: next } : null;
 }
 
 /**
@@ -338,23 +353,6 @@ export function chooseReorder(run, labels = []) {
  * reorder. Bounded by `monitorMaxReads` per run so a long run cannot read
  * forever.
  */
-/**
- * Whether a reorder is possible at all. Checked before reading the screen: one
- * OCR read is far more expensive than this arithmetic, so a run whose tail holds
- * a single movable step (or a step with its own skip rule) is never read.
- */
-export function monitorCandidates(run) {
-  if (!run?.currentStepId || (run.reorders || []).length >= MAX_REORDERS_PER_RUN) return [];
-  const steps = run?.steps || [];
-  const currentIndex = steps.findIndex((step) => step.id === run.currentStepId && step.status === 'running');
-  if (currentIndex < 0) return [];
-  return steps
-    .slice(currentIndex + 1)
-    .filter((step) => step.status === 'pending' && movable(step))
-    .filter((step, index, all) => all.indexOf(step) === index && !
-      // A lifecycle step in between means nothing after it may jump ahead.
-      steps.slice(currentIndex + 1, steps.indexOf(step)).some((entry) => LIFECYCLE_STEPS.has(entry.type)));
-}
 
 export async function monitorTick({ read = null } = {}) {
   const settings = autoRepairSettings();
