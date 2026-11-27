@@ -67,6 +67,7 @@ import {
   capturePageFrame,
 } from './page-read.js';
 import { analyzeRun, writeRunNote, addSuggestion, suggestionsFor, planSteps, workflowGoal } from './planner.js';
+import { checkRunStep, checkRunGoal } from './goal-check.js';
 import { canRetry, recordRetryOutcome } from './retry-budget.js';
 import { catalogEntry, isInstalledAppWindow } from './app-install.js';
 import { presenterStart, presenterBeginStep, presenterAfterStep, presenterFailStep, presenterFinish, presenterAdoptApp } from './foreground-presenter.js';
@@ -266,6 +267,20 @@ export function summary(run) {
     // What the frame showed between steps, and the steps that reading added.
     pageReads: (run.pageReads || []).slice(-3),
     screenReadSteps: (run.screenReadSteps || []).slice(-4),
+    // The latest goal check, not the trace: the run detail shows one record and
+    // every state poll carries these summaries for every run.
+    goalCheck: run.goalCheck
+      ? {
+          status: run.goalCheck.status,
+          complete: run.goalCheck.complete,
+          note: run.goalCheck.note,
+          stepName: run.goalCheck.stepName || '',
+          at: run.goalCheck.at,
+          remaining: run.goalCheck.remaining,
+          wentWrong: run.goalCheck.wentWrong,
+          tryNext: run.goalCheck.tryNext,
+        }
+      : null,
     status: run.status,
     dryRun: run.dryRun,
     liveFallback: run.liveFallback || null,
@@ -2491,6 +2506,20 @@ export async function deriveHandoffSuggestion(run, workflow, { findControl = fin
   };
 }
 
+/**
+ * Check the run's goal after one of its steps. A long run is not a black box
+ * between ticks: after every step the panel can say what the goal still needs
+ * and what just went wrong. Advisory — a failed check never breaks the step.
+ */
+function recordRunStepGoalCheck(run, workflow, step) {
+  try {
+    checkRunStep(run, step, { goal: workflowGoal(workflow, run) });
+    persist();
+  } catch {
+    // The check is advice; the step's own outcome is the record.
+  }
+}
+
 async function executeRun(runId) {
   const run = findRun(runId);
   if (!run || run.status !== 'queued') return;
@@ -3590,6 +3619,7 @@ async function executeRun(runId) {
       // the frame taken with the step instead of a second look at a later one.
       await readPageAfterStep(run, step, workflow, probe, reviewed?.frame || null);
       recordLedger(run, step);
+      recordRunStepGoalCheck(run, workflow, step);
     } else {
       step.status = 'failed';
       step.error = lastError || 'Step failed';
@@ -3606,6 +3636,7 @@ async function executeRun(runId) {
       } catch (err) {
         pushLog(run, 'warn', `Presenter failure update failed: ${err.message}`, step.id);
       }
+      recordRunStepGoalCheck(run, workflow, step);
 
       // When the step itself cannot be repaired, replace the whole remainder
       // from the current screen. Action steps become superseded (the goal may
@@ -3830,6 +3861,13 @@ async function executeRun(runId) {
       `Run sent to review: an automatic screen check did not match after “${lastMismatch?.stepName || 'a step'}”.`,
       lastMismatch?.stepId || null
     );
+  }
+  // The verdict is part of the goal's story: one last check with the run settled.
+  try {
+    checkRunGoal(run, { goal: workflowGoal(workflow, run) });
+    persist();
+  } catch {
+    // Advisory, like every other goal check.
   }
   // Closeout prediction: the state the run leaves behind, judged once.
   try {

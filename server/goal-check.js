@@ -299,13 +299,19 @@ export function checkGoal({
   run = null,
   at = null,
   allowInference = true,
+  evidenceSteps = null,
+  activity = 'tick',
 } = {}) {
   const statedGoal = tidy(goal, 600);
   const requirements = goalRequirements(statedGoal);
   // Only what the action produced counts as evidence that a requirement
   // happened. A label on screen is not proof: the screen is used for what it
   // offers next (helpful controls), and completion stays unknown there.
-  const evidence = normalize([commandEvidence(command), runEvidence(run)].filter(Boolean).join(' \n '));
+  const evidence = normalize(
+    [commandEvidence(command), runEvidence(run && evidenceSteps ? { ...run, steps: evidenceSteps } : run)]
+      .filter(Boolean)
+      .join(' \n ')
+  );
   const checked = requirements.map((requirement) => ({
     ...requirement,
     // Elements are matched on the verb too: for “save the form”, the Save button
@@ -407,6 +413,7 @@ export function checkGoal({
   }
 
   const proven = checked.filter((requirement) => requirement.covered).length;
+  const actor = activity === 'step' ? 'this step' : 'the tick';
   const note = !statedGoal
     ? 'No goal is set for this agent, so there is nothing to check yet.'
     : status === 'complete'
@@ -419,8 +426,8 @@ export function checkGoal({
           ? `Nothing to do: ${skipped}.`
           : !allowInference
             ? proven
-              ? `${proven}/${checked.length} requirement(s) have evidence, but the tick did not report the goal finished.`
-              : `${remaining.length} goal requirement(s) remain; the tick did not report the goal finished.`
+              ? `${proven}/${checked.length} requirement(s) have evidence, but ${actor} did not report the goal finished.`
+              : `${remaining.length} goal requirement(s) remain; ${actor} did not report the goal finished.`
             : `${proven}/${checked.length} goal requirement(s) have evidence; ${remaining.length} remain.`;
 
   return {
@@ -466,7 +473,7 @@ export function recordGoalCheck(agent, check, { max = GOAL_CHECK_TRACE } = {}) {
   const record = {
     ...check,
     agentId: agent.id || '',
-    agentName: agent.name || '',
+    agentName: agent.name || agent.workflowName || '',
     previousStatus: previous?.status || null,
   };
   agent.goalCheck = record;
@@ -527,6 +534,63 @@ export function shouldCheckScreen(
   if (Math.abs(Number(sample.changedPct) || 0) < minChangePct) return false;
   const last = Date.parse(agent.screenCheckedAt || '') || 0;
   return at - last >= minGapMs;
+}
+
+/**
+ * Check a run's goal after one of its steps.
+ *
+ * The evidence is what the run has actually done so far. Pending steps are left
+ * out of it on purpose: a step named “Click Save” would put the goal's own words
+ * into the evidence before it ran, and a plan that has not run is not a plan that
+ * did. They still appear in `remaining`, which is where the operator wants them.
+ *
+ * Completion is never inferred from a step's covering words, for the same reason
+ * an agent tick does not: one step of a longer plan finishing is not the goal.
+ * A failed step does settle it, in the negative.
+ */
+export function checkRunStep(run, step, { goal = '', at = null } = {}) {
+  if (!run || !step) return null;
+  const settled = (Array.isArray(run.steps) ? run.steps : []).filter((entry) =>
+    ['passed', 'failed', 'skipped', 'superseded', 'unverified'].includes(String(entry?.status || ''))
+  );
+  const command = {
+    name: step.name || step.type || 'step',
+    label: step.type || 'step',
+    ok: String(step.status || '') !== 'failed',
+    error: String(step.status || '') === 'failed' ? tidy(step.error, 300) : '',
+    stdout: tidy([step.output, step.error].filter(Boolean).join(' '), 2000),
+  };
+  return runGoalCheck(run, { goal, at, command, evidenceSteps: settled, step });
+}
+
+/** The verdict's own check: the run is settled, so it can say yes or no. */
+export function checkRunGoal(run, { goal = '', at = null } = {}) {
+  if (!run) return null;
+  return runGoalCheck(run, { goal, at });
+}
+
+function runGoalCheck(run, { goal = '', at = null, command = null, evidenceSteps = null, step = null }) {
+  const record = recordGoalCheck(
+    run,
+    checkGoal({
+      goal: tidy(goal, 600) || tidy(run.goal, 600) || tidy(run.workflowGoal, 600) || tidy(run.workflowName, 600),
+      trigger: 'command',
+      command,
+      run,
+      evidenceSteps,
+      at,
+      allowInference: false,
+      activity: 'step',
+    })
+  );
+  if (record) {
+    record.runId = run.id || '';
+    record.workflowName = run.workflowName || '';
+    record.stepId = step?.id || '';
+    record.stepName = step ? step.name || step.type || '' : '';
+    record.stepStatus = step?.status || '';
+  }
+  return record;
 }
 
 /** One line for a log or a toast. */

@@ -2218,6 +2218,7 @@ function renderRunDetail(run) {
           ${(full.patternTags || []).length ? `<div class="chip-row" style="margin-top:7px">${full.patternTags.map((tag) => `<span class="badge">${esc(tag)}</span>`).join('')}</div>` : ''}
           ${full.failureSignature ? `<p class="dim small mono" style="margin-top:5px">signature: ${esc(full.failureSignature)}</p>` : ''}
           ${full.errorSummary ? `<div class="hint-box" style="margin-top:8px;border-color:rgba(251,113,133,.35)"><strong>${failedSteps.length ? `${failedSteps.length} step${failedSteps.length === 1 ? '' : 's'} failed` : full.screenReviewUnresolved ? 'Screen check needs your review' : 'Needs attention'}</strong><div class="small" style="margin-top:4px">${esc(full.errorSummary)}</div>${full.continuedAfterFailure ? '<div class="small dim" style="margin-top:4px">The run continued with the remaining independent steps after the failure.</div>' : ''}</div>` : ''}
+          ${renderRunGoalCheck(full.goalCheck)}
           ${full.recheck && full.recheck.status !== 'checking' ? `<div class="hint-box" style="margin-top:8px;border-color:${full.recheck.status === 'resolved' ? 'rgba(74,222,128,.3)' : 'rgba(56,189,248,.35)'}"><strong>Pending recheck · ${esc(String(full.recheck.status || '').replace(/_/g, ' '))}</strong><div class="small" style="margin-top:4px">${Number(full.recheck.resolved || 0)} step(s) passed · ${Number(full.recheck.unresolved || 0)} still open · ${Number(full.recheck.needsRun || 0)} to re-run${full.recheck.continued ? ` · continuing as ${esc(full.recheck.retryRunId || 'a new run')}` : ''}</div>${(full.recheck.notes || []).slice(-3).map((note) => `<div class="small dim" style="margin-top:2px">${esc(note)}</div>`).join('')}</div>` : ''}
           ${(full.carriedSteps || []).length ? `<div class="hint-box" style="margin-top:8px;border-color:rgba(74,222,128,.25)"><strong>Passed through ${full.carriedSteps.length} completed step(s)</strong><div class="small dim" style="margin-top:3px">${full.carriedSteps.slice(0, 6).map((step) => esc(step.name || step.type || 'step')).join(' · ')}</div></div>` : ''}
           ${(full.recheckTasks || []).filter((task) => task.status === 'open').length ? `<div class="hint-box" style="margin-top:8px;border-color:rgba(251,191,36,.35)"><strong>Tasks assigned by the recheck</strong>${(full.recheckTasks || []).filter((task) => task.status === 'open').slice(-4).map((task) => `<div class="small" style="margin-top:3px"><b>${esc(task.name || task.type || 'step')}</b> · ${esc(task.reason || '')} <span class="dim">(${esc(task.assignedTo || 'operator')})</span></div>`).join('')}</div>` : ''}
@@ -6096,6 +6097,21 @@ function renderJudgementCard(j) {
         ? `<div class="stack" style="gap:6px">${reviews.map((review) => `<div class="hint-box small"><strong>${esc(review.title)}</strong>${review.count > 1 ? ` <span class="dim">×${review.count}</span>` : ''}<br><span class="dim">${esc(review.detail)}</span><div class="row" style="gap:6px;margin-top:6px"><button class="btn btn-sm" data-act="judge-review" data-id="${esc(review.id)}" data-decision="accept">Accept</button><button class="btn btn-sm btn-ghost" data-act="judge-review" data-id="${esc(review.id)}" data-decision="dismiss">Dismiss</button></div></div>`).join('')}</div>`
         : '<p class="dim small" style="margin:0">No suggestions waiting. A repeated disagreement becomes one for review — nothing changes the switch on its own.</p>'}
     </div>
+  </div>`;
+}
+
+function renderRunGoalCheck(check) {
+  if (!check) return '';
+  const label = check.status === 'complete' ? 'complete' : check.status === 'incomplete' ? 'not complete' : 'unproven';
+  const badge = check.status === 'complete' ? 'okbadge' : check.status === 'incomplete' ? 'warnbadge' : '';
+  const list = (items) => `<ul class="small" style="margin:2px 0 0 16px">${items.map((item) => `<li>${esc(item)}</li>`).join('')}</ul>`;
+  const where = check.stepName ? `after “${check.stepName}”` : 'run verdict';
+  return `<div class="hint-box" style="margin-top:8px">
+    <div class="row wrap" style="gap:6px;align-items:center"><strong>Goal check</strong><span class="badge ${badge}">${label}</span><span class="dim small">${esc(where)} · ${fmtTime(check.at)}</span></div>
+    <div class="small" style="margin-top:4px">${esc(check.note || '')}</div>
+    ${(check.remaining || []).length ? `<div class="small" style="margin-top:4px"><span class="dim">Remains</span>${list(check.remaining.slice(0, 4).map((item) => item.text))}</div>` : ''}
+    ${(check.wentWrong || []).length ? `<div class="small" style="margin-top:4px"><span class="dim">Went wrong</span>${list(check.wentWrong.slice(0, 3).map((item) => `${item.what}${item.detail ? ` — ${item.detail}` : ''}`))}</div>` : ''}
+    ${(check.tryNext || []).length ? `<div class="small" style="margin-top:4px"><span class="dim">Try next</span>${list(check.tryNext.slice(0, 4))}</div>` : ''}
   </div>`;
 }
 
