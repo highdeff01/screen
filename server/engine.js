@@ -3029,6 +3029,8 @@ async function executeRun(runId) {
         if (context?.skipReason) {
           step.status = 'skipped';
           step.output = context.skipReason;
+          // A skipped focus still names the window this run means to work in.
+          rememberWindow(run, step);
           recordLedger(run, step);
           pushLog(run, 'info', `Skipped "${step.name}": ${context.skipReason}`, step.id);
           persist();
