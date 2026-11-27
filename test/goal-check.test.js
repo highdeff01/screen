@@ -128,6 +128,22 @@ test('a tick settles the goal only when the agent says it is finished', () => {
   assert.equal(stopped.status, 'incomplete');
   assert.equal(stopped.complete, false);
   assert.match(stopped.note, /reported it as not finished/);
+
+  // The same evidence would settle a command that finished the whole job; the
+  // tick path must not borrow that inference, because a tick is one pass of a
+  // standing job and its result only names the part it handled.
+  const inferred = checkGoal({
+    goal: 'Save the profile',
+    trigger: 'command',
+    command: { name: 'save-profile', ok: true, stdout: 'profile saved' },
+  });
+  assert.equal(inferred.status, 'complete', 'a finished command can settle this goal');
+  const tickOnly = checkAgentAction(
+    { id: 'agent_inferred', name: 'Inferred', kind: 'watchdog', goal: 'Save the profile' },
+    { saved: 'profile' }
+  );
+  assert.equal(tickOnly.status, 'unknown', 'the identical evidence on a tick settles nothing');
+  assert.equal(tickOnly.complete, null);
 });
 
 test('a run settles the goal: a pass proves it, a failed step disproves it', () => {
