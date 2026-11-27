@@ -9,6 +9,7 @@ const ui = {
   selectedWorkflow: null,
   selectedStep: null,
   workflowLint: null,
+  handoffDraft: null,
   draft: null,
   policy: null,
   policyFor: null,
@@ -1249,7 +1250,6 @@ function renderBuilderMain(wf, lastRun, sim, liveAvailable, liveReason) {
         <span class="badge">${wf.steps.length} steps</span>
         ${wf.stats ? `<span class="badge">complexity ${wf.stats.avgComplexity}</span><span class="badge ${wf.stats.flakinessScore > 30 ? 'warnbadge' : ''}">flaky ${wf.stats.flakinessScore}%</span><span class="badge">${wf.stats.totalFailures7d} failures / 7d</span>${wf.stats.requiresAdvancedPlanning ? '<span class="badge ai">advanced planning</span>' : ''}` : ''}
         <span class="spacer"></span>
-        <label class="check" title="After a live run, run this workflow's hand-off steps so the app is left on the screen you expect."><input type="checkbox" data-act="handoff-toggle" data-id="${wf.id}" ${wf.handoff?.enabled ? 'checked' : ''} /> Return to hand-off state</label>
         <button class="btn" data-act="run-workflow" data-id="${wf.id}" data-mode="${sim ? 'dry' : 'live'}">
           ▶ Run ${sim ? 'simulated' : 'live'}
         </button>
@@ -1269,9 +1269,136 @@ function renderBuilderMain(wf, lastRun, sim, liveAvailable, liveReason) {
       </div>
     </div>
     ${stepsHtml}
+    ${renderHandoffPanel(wf)}
     ${renderWorkflowLint(wf)}
     ${lastRunCard}
   </section>`;
+}
+
+function blankHandoffDraft(workflowId, type = 'focusWindow') {
+  return {
+    workflowId,
+    index: null,
+    type,
+    name: TYPE_META[type]?.label || type,
+    params: { ...(DEFAULTS[type] || {}) },
+    timeoutMs: 20000,
+  };
+}
+
+/** One parameter input of the hand-off editor. Same shapes as the step inspector. */
+function handoffFieldHtml(field, params) {
+  const raw = params?.[field.key];
+  const value = raw == null ? '' : raw;
+  if (field.type === 'textarea') {
+    return `<label class="field"><span>${esc(field.label)}</span><textarea rows="${field.rows || 3}" data-scope="handoff" data-key="${field.key}" placeholder="${esc(field.placeholder || '')}">${esc(value)}</textarea>${field.help ? `<span class="help">${esc(field.help)}</span>` : ''}</label>`;
+  }
+  if (field.type === 'select') {
+    return `<label class="field"><span>${esc(field.label)}</span><select data-scope="handoff" data-key="${field.key}">${(field.options || [])
+      .map((option) => `<option value="${esc(option)}" ${String(value) === String(option) ? 'selected' : ''}>${esc(option)}</option>`)
+      .join('')}</select></label>`;
+  }
+  if (field.type === 'tool') {
+    return `<label class="field"><span>${esc(field.label)}</span><select data-scope="handoff" data-key="${field.key}">${ui.data.tools
+      .map((tool) => `<option value="${tool.id}" ${value === tool.id ? 'selected' : ''}>${esc(tool.name)}${tool.status !== 'approved' ? ' (unapproved)' : ''}</option>`)
+      .join('')}</select></label>`;
+  }
+  return `<label class="field"><span>${esc(field.label)}</span><input type="${field.type === 'number' ? 'number' : 'text'}" value="${esc(value)}" data-scope="handoff" data-key="${field.key}" placeholder="${esc(field.placeholder || '')}" />${
+    field.help ? `<span class="help">${esc(field.help)}</span>` : ''
+  }</label>`;
+}
+
+/**
+ * The hand-off editor.
+ *
+ * The hand-off is a short list of steps that runs after a live run's verdict is
+ * recorded, so the operator finds the app on the screen they left. It is edited
+ * here, next to the workflow's own steps: the same step types, the same fields,
+ * the same order controls. Saving always sends the whole list, because the API
+ * replaces the hand-off rather than patching it one step at a time.
+ */
+function renderHandoffPanel(wf) {
+  const handoff = wf.handoff || {};
+  const steps = Array.isArray(handoff.steps) ? handoff.steps : [];
+  const enabled = handoff.enabled === true;
+  const draft = ui.handoffDraft && ui.handoffDraft.workflowId === wf.id ? ui.handoffDraft : null;
+  const atLimit = steps.length >= 10;
+  const list = steps.length
+    ? `<ul class="step-list">
+        ${steps
+          .map(
+            (step, index) => `<li class="step-card${draft?.index === index ? ' selected' : ''}">
+          <div class="step-order">${index + 1}</div>
+          <div class="step-body">
+            <div class="step-top">
+              <span class="type-chip">${esc(TYPE_META[step.type]?.label || step.type)}</span>
+              <span class="badge">optional</span>
+            </div>
+            <div class="step-name">${esc(step.name || step.type)}</div>
+            <div class="step-params mono">${esc(stepSummary(step))}</div>
+          </div>
+          <div class="step-actions">
+            <button class="btn-icon" data-act="handoff-move" data-id="${esc(wf.id)}" data-index="${index}" data-dir="up" title="Run earlier" ${index === 0 ? 'disabled' : ''}>↑</button>
+            <button class="btn-icon" data-act="handoff-move" data-id="${esc(wf.id)}" data-index="${index}" data-dir="down" title="Run later" ${index === steps.length - 1 ? 'disabled' : ''}>↓</button>
+            <button class="btn-icon" data-act="handoff-edit" data-id="${esc(wf.id)}" data-index="${index}" title="Edit this hand-off step">✎</button>
+            <button class="btn-icon danger" data-act="handoff-remove" data-id="${esc(wf.id)}" data-index="${index}" title="Remove this hand-off step">✕</button>
+          </div>
+        </li>`
+          )
+          .join('')}
+      </ul>`
+    : `<p class="muted small" style="margin:0">No hand-off steps yet, so a live run leaves the app wherever it ends. Add the step that puts it back — a click on “Back”, or a focus on the window it should end in.</p>`;
+  const fields = FIELDS[draft?.type] || [];
+  const editor = draft
+    ? `<div class="hint-box section-gap">
+      <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:8px">
+        <strong class="small">${draft.index == null ? 'New hand-off step' : `Editing hand-off step ${draft.index + 1}`}</strong>
+        <span class="dim small">no run is queued by saving this</span>
+      </div>
+      <label class="field"><span>Step name</span><input type="text" value="${esc(draft.name)}" data-scope="handoff" data-key="name" /></label>
+      <label class="field"><span>Step type</span><select data-scope="handofftype">${ui.data.stepTypes
+        .map((type) => `<option value="${esc(type.type)}" ${draft.type === type.type ? 'selected' : ''}>${esc(type.label)}</option>`)
+        .join('')}</select></label>
+      ${fields.map((field) => handoffFieldHtml(field, draft.params)).join('') || '<p class="muted small">This step takes no parameters.</p>'}
+      <label class="field"><span>Timeout (ms)</span><input type="number" value="${esc(draft.timeoutMs || 20000)}" data-scope="handoff" data-key="timeoutMs" /></label>
+      <div class="row" style="margin-top:4px">
+        <button class="btn btn-primary" data-act="handoff-save" data-id="${esc(wf.id)}">Save step</button>
+        <button class="btn btn-ghost" data-act="handoff-cancel">Cancel</button>
+        <span class="spacer"></span>
+        <span class="dim small">Hand-off steps are always optional.</span>
+      </div>
+    </div>`
+    : '';
+
+  return `<div class="card section-gap" id="handoff-panel">
+    <div class="card-head">
+      <h3>Hand-off · ${steps.length} step${steps.length === 1 ? '' : 's'}</h3>
+      <div class="row" style="gap:6px;align-items:center">
+        <span class="badge ${enabled ? 'okbadge' : ''}">${enabled ? 'on' : 'off'}</span>
+        <label class="check" title="After a live run, run these steps so the app is left on the screen you expect."><input type="checkbox" data-act="handoff-toggle" data-id="${esc(wf.id)}" ${enabled ? 'checked' : ''} /> Return to hand-off state</label>
+        <button class="btn btn-sm" data-act="handoff-add" data-id="${esc(wf.id)}" ${atLimit || draft ? 'disabled' : ''} title="${atLimit ? 'A hand-off has at most 10 steps.' : 'Add a hand-off step'}">＋ Add step</button>
+      </div>
+    </div>
+    <div class="card-body">
+      <p class="small muted" style="margin:0 0 9px">Steps that put the desk back after a live run — the screen you expect to find when the run is over. They run after the verdict is recorded, each one optional, and the restore is best-effort: a step that fails is reported on the run, never written into its result.</p>
+      ${list}
+      ${editor}
+    </div>
+  </div>`;
+}
+
+/**
+ * Save the whole hand-off list. The API replaces it, so every edit sends the full
+ * list; the switch only changes when the list does (adding the first step turns it
+ * on, removing the last turns it off), so an explicit off is not undone by an edit.
+ */
+async function saveHandoff(wf, steps, { enableWhenFirst = false } = {}) {
+  const before = (wf.handoff?.steps || []).length;
+  const enabled = steps.length === 0 ? false : Boolean(wf.handoff?.enabled) || (enableWhenFirst && before === 0);
+  return api(`/api/workflows/${encodeURIComponent(wf.id)}`, {
+    method: 'PATCH',
+    body: { handoff: { enabled, steps } },
+  });
 }
 
 function renderWorkflowLint(wf) {
@@ -2002,6 +2129,8 @@ function renderHandoffDraft(run) {
   if (!draft || draft.dismissedAt) return '';
   const steps = Array.isArray(draft.steps) ? draft.steps : [];
   const accepted = Boolean(draft.acceptedAt);
+  const workflow = (ui.data?.workflows || []).find((w) => w.id === run.workflowId);
+  const workflowName = workflow ? `“${esc(workflow.name)}”` : 'the workflow';
   return `<div class="card section-gap" style="border-color:rgba(56,189,248,.28)">
     <div class="card-head">
       <h3>Suggested hand-off · draft</h3>
@@ -2014,7 +2143,8 @@ function renderHandoffDraft(run) {
     <div class="card-body">
       <p class="small muted" style="margin:0 0 8px">This run declared no hand-off. Its screen-changing step <b>${esc(draft.stepName || 'click')}</b> moved the app${draft.marker ? ` to the screen showing “${esc(draft.marker)}”` : ''}. ${esc(draft.reason || '')}</p>
       ${steps.length ? `<ul class="small" style="margin:0 0 8px 18px">${steps.map((step) => `<li><span class="type-chip">${esc(step.type)}</span> ${esc(step.name || '')}${step.params?.name ? ` · click “${esc(step.params.name)}” in “${esc(step.params.window || '')}”` : ''}</li>`).join('')}</ul>` : ''}
-      <p class="dim small" style="margin:0">${accepted ? 'Saved as the workflow’s hand-off and turned on. It runs after the workflow’s next live run.' : steps.length ? 'Accepting only saves these steps as the workflow’s hand-off and turns it on — nothing runs now, and nothing here touches the desktop until the next live run.' : 'No step was drafted, so there is nothing to save. The workflow’s hand-off stays empty and its next live run will not restore the start screen; dismiss this card to clear it.'}</p>
+      <p class="dim small" style="margin:0">${accepted ? 'Saved as the workflow’s hand-off and turned on. It runs after the workflow’s next live run.' : steps.length ? 'Accepting only saves these steps as the workflow’s hand-off and turns it on — nothing runs now, and nothing here touches the desktop until the next live run.' : `Nothing was drafted automatically, so the hand-off is still empty. Open the hand-off editor in the Builder to add the step that puts ${workflowName} back on its start screen, then tick “Return to hand-off state”.`}</p>
+      ${accepted || steps.length ? '' : `<div class="row" style="margin-top:9px"><button class="btn btn-sm" data-act="open-handoff-editor" data-wf="${esc(run.workflowId || '')}" data-run="${esc(run.id)}">Open hand-off editor</button></div>`}
     </div>
   </div>`;
 }
@@ -7902,6 +8032,7 @@ async function runAction(name, ds, el) {
       ui.selectedWorkflow = res.workflow.id;
       ui.selectedStep = null;
       ui.draft = null;
+      ui.handoffDraft = null;
       ui.paletteAt = 0;
       await refresh();
       break;
@@ -7935,6 +8066,111 @@ async function runAction(name, ds, el) {
       await refresh();
       break;
     }
+    case 'handoff-add': {
+      const wf = d.workflows.find((w) => w.id === ds.id);
+      if (!wf) return;
+      if ((wf.handoff?.steps || []).length >= 10) return toast('A hand-off has at most 10 steps.', 'error');
+      ui.handoffDraft = blankHandoffDraft(wf.id);
+      render();
+      break;
+    }
+    case 'handoff-edit': {
+      const wf = d.workflows.find((w) => w.id === ds.id);
+      const step = (wf?.handoff?.steps || [])[Number(ds.index)];
+      if (!wf || !step) return;
+      ui.handoffDraft = {
+        workflowId: wf.id,
+        id: step.id,
+        index: Number(ds.index),
+        type: step.type,
+        name: step.name || step.type,
+        params: { ...(step.params || {}) },
+        timeoutMs: Number(step.timeoutMs) || 20000,
+      };
+      render();
+      break;
+    }
+    case 'handoff-cancel':
+      ui.handoffDraft = null;
+      render();
+      break;
+    case 'handoff-save': {
+      const wf = d.workflows.find((w) => w.id === ds.id);
+      const draft = ui.handoffDraft;
+      if (!wf || !draft) return;
+      const type = String(draft.type || '').trim();
+      if (!type) return toast('Choose the step type first.', 'error');
+      const step = {
+        id: draft.id || `handoff_${Date.now().toString(36)}`,
+        type,
+        name: String(draft.name || '').trim() || TYPE_META[type]?.label || type,
+        params: coerceParams(draft),
+        timeoutMs: Math.max(1000, Math.min(60000, Number(draft.timeoutMs) || 20000)),
+        optional: true,
+      };
+      const steps = [...(wf.handoff?.steps || [])];
+      if (draft.index == null || draft.index >= steps.length) steps.push(step);
+      else steps[draft.index] = step;
+      const res = await saveHandoff(wf, steps, { enableWhenFirst: true });
+      if (!res.ok) return toast(res.error || 'The hand-off step was not saved', 'error');
+      ui.handoffDraft = null;
+      toast(`Hand-off step “${step.name}” saved — it runs after the next live run.`, 'ok');
+      await refresh();
+      break;
+    }
+    case 'handoff-remove': {
+      const wf = d.workflows.find((w) => w.id === ds.id);
+      if (!wf) return;
+      const steps = [...(wf.handoff?.steps || [])];
+      const index = Number(ds.index);
+      if (!Number.isInteger(index) || index < 0 || index >= steps.length) return;
+      const [removed] = steps.splice(index, 1);
+      const res = await saveHandoff(wf, steps);
+      if (!res.ok) return toast(res.error, 'error');
+      if (ui.handoffDraft?.workflowId === wf.id) ui.handoffDraft = null;
+      toast(
+        steps.length
+          ? `Removed “${removed.name || removed.type}” from the hand-off.`
+          : 'Hand-off step removed — with no steps the hand-off is off.',
+        'ok'
+      );
+      await refresh();
+      break;
+    }
+    case 'handoff-move': {
+      const wf = d.workflows.find((w) => w.id === ds.id);
+      if (!wf) return;
+      const steps = [...(wf.handoff?.steps || [])];
+      const index = Number(ds.index);
+      const target = ds.dir === 'up' ? index - 1 : index + 1;
+      if (!Number.isInteger(index) || index < 0 || index >= steps.length || target < 0 || target >= steps.length) return;
+      [steps[index], steps[target]] = [steps[target], steps[index]];
+      const res = await saveHandoff(wf, steps);
+      if (!res.ok) return toast(res.error, 'error');
+      const open = ui.handoffDraft;
+      if (open?.workflowId === wf.id && open.index != null) {
+        if (open.index === index) open.index = target;
+        else if (open.index === target) open.index = index;
+      }
+      await refresh();
+      break;
+    }
+    case 'open-handoff-editor': {
+      if (ds.wf) ui.selectedWorkflow = ds.wf;
+      ui.view = 'builder';
+      ui.selectedStep = null;
+      ui.draft = null;
+      ui.paletteAt = null;
+      ui.handoffDraft = null;
+      await refresh();
+      const wf = (ui.data?.workflows || []).find((w) => w.id === (ds.wf || ui.selectedWorkflow));
+      // An empty hand-off opens straight into a new step; nothing is saved until
+      // the operator saves it, and saving queues no run.
+      ui.handoffDraft = wf && !(wf.handoff?.steps || []).length ? blankHandoffDraft(wf.id) : null;
+      render();
+      document.getElementById('handoff-panel')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      break;
+    }
     case 'accept-handoff-draft': {
       const res = await api(`/api/runs/${encodeURIComponent(ds.id)}/handoff-suggestion`, {
         method: 'POST',
@@ -7960,7 +8196,9 @@ async function runAction(name, ds, el) {
       const wf = (ui.data?.workflows || []).find((entry) => entry.id === ds.id);
       const enabled = el?.checked === true;
       if (enabled && !(wf?.handoff?.steps || []).length) {
-        toast('No hand-off steps are declared for this workflow, so nothing will run after the run.', 'error');
+        if (el) el.checked = false;
+        render();
+        return toast('No hand-off steps are declared yet — add one below, then turn the hand-off on.', 'error');
       }
       const res = await api(`/api/workflows/${encodeURIComponent(ds.id)}`, {
         method: 'PATCH',
@@ -10593,6 +10831,21 @@ document.addEventListener('change', (event) => {
     render();
     return;
   }
+  if (scope === 'handofftype') {
+    if (!ui.handoffDraft) return;
+    ui.handoffDraft.type = value;
+    ui.handoffDraft.params = { ...(DEFAULTS[value] || {}) };
+    ui.handoffDraft.name = TYPE_META[value]?.label || value;
+    render();
+    return;
+  }
+  if (scope === 'handoff') {
+    if (!ui.handoffDraft) return;
+    if (key === 'name') ui.handoffDraft.name = value;
+    else if (key === 'timeoutMs') ui.handoffDraft.timeoutMs = Number(value);
+    else ui.handoffDraft.params = { ...ui.handoffDraft.params, [key]: value };
+    return;
+  }
   if (scope === 'draft') {
     if (!ui.draft) return;
     if (key === 'timeoutMs') ui.draft.timeoutMs = Number(value);
@@ -10763,6 +11016,10 @@ document.addEventListener('input', (event) => {
     ui.ambientNote = el.value;
   } else if (scope === 'pynew' && ui.pyDraft) {
     ui.pyDraft[key] = el.value;
+  } else if (scope === 'handoff' && ui.handoffDraft) {
+    if (key === 'name') ui.handoffDraft.name = el.value;
+    else if (key === 'timeoutMs') ui.handoffDraft.timeoutMs = Number(el.value);
+    else ui.handoffDraft.params = { ...ui.handoffDraft.params, [key]: el.value };
   } else if (scope === 'draft' && ui.draft) {
     if (key === 'name') ui.draft.name = el.value;
     else ui.draft.params = { ...ui.draft.params, [key]: el.value };
