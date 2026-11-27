@@ -1972,6 +1972,10 @@ if (-not $target) {
   $target = Get-Process | Where-Object { $_.MainWindowHandle -ne 0 -and $_.ProcessName -like $pattern } | Sort-Object Id | Select-Object -First 1
 }
 if (-not $target) { Write-Output '{"found":false,"reason":"window not found"}'; exit 0 }
+# A minimized window reports the same off-screen placeholder rect every time,
+# so it cannot say where the window really is: no rect is better than a false
+# match between two different minimizations.
+if ([SightlineInput]::IsIconic($target.MainWindowHandle)) { Write-Output '{"found":false,"reason":"window is minimized"}'; exit 0 }
 $r = New-Object SightlineInput+RECT
 if (-not [SightlineInput]::GetWindowRect($target.MainWindowHandle, [ref]$r)) { Write-Output '{"found":false,"reason":"window rectangle unavailable"}'; exit 0 }
 [pscustomobject]@{
