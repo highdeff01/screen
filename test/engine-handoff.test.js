@@ -177,6 +177,91 @@ test('a probe run never runs the hand-off', async () => {
   assert.deepEqual(handoffLog(finished), [], 'the run log never claims a hand-off');
 });
 
+test('a hand-off click honours skipIfVisible: it logs a skip and never clicks the lookalike heading', async () => {
+  resetDb();
+  const wf = workflow('wf_handoff_skip', {
+    enabled: true,
+    steps: [
+      {
+        type: 'clickElement',
+        name: 'Return to Settings',
+        params: { window: 'Sightline Profile', name: 'Settings', skipIfVisible: 'Notifications' },
+      },
+      { type: 'move', name: 'Park the cursor on Notifications', params: { x: 195, y: 318 } },
+    ],
+  });
+  const run = {
+    id: 'run_handoff_skip',
+    workflowId: wf.id,
+    workflowName: wf.name,
+    status: 'passed',
+    dryRun: false,
+    shadow: false,
+    steps: [],
+    log: [],
+    visualWarnings: [],
+    handoffPending: false,
+  };
+  const executed = [];
+  const checked = [];
+
+  await engine.runHandoff(run, wf, {
+    execute: async (step) => {
+      executed.push(step.name);
+      return { output: `${step.type} ok` };
+    },
+    skipCheck: async (step, _probe, checkedRun) => {
+      checked.push({ name: step.name, run: checkedRun === run });
+      return step.params?.skipIfVisible
+        ? `“${step.params.skipIfVisible}” is already visible in “${step.params.window}”; the screen this click opens is already showing, so the click was skipped.`
+        : '';
+    },
+  });
+
+  assert.deepEqual(executed, ['Park the cursor on Notifications'], 'the lookalike click never runs');
+  assert.deepEqual(checked.map((entry) => entry.name), ['Return to Settings', 'Park the cursor on Notifications']);
+  assert.ok(checked.every((entry) => entry.run), 'every hand-off step is checked against this run');
+  assert.equal(run.handoff.steps[0].skipped, true);
+  assert.equal(run.handoff.steps[0].ok, true);
+  assert.match(run.handoff.steps[0].output, /already visible/);
+  assert.equal(run.handoff.steps[1].ok, true);
+  assert.equal(run.handoff.steps[1].skipped, undefined);
+  assert.equal(run.handoff.ok, true, 'a skip is a completed hand-off, not a failure');
+  assert.equal(run.handoffPending, false);
+  assert.ok(
+    run.log.some((line) => /Hand-off: skipped “Return to Settings” — “Notifications” is already visible/.test(line.message)),
+    'the skip is logged'
+  );
+});
+
+test('the skip check never blocks a hand-off step it does not know', async () => {
+  resetDb();
+  const wf = workflow('wf_handoff_plain', { enabled: true, steps: RESTORE_STEPS });
+  const run = {
+    id: 'run_handoff_plain',
+    workflowId: wf.id,
+    workflowName: wf.name,
+    status: 'passed',
+    dryRun: false,
+    shadow: false,
+    steps: [],
+    log: [],
+    visualWarnings: [],
+    handoffPending: false,
+  };
+  const executed = [];
+  await engine.runHandoff(run, wf, {
+    execute: async (step) => {
+      executed.push(step.name);
+      return { output: `${step.type} ok` };
+    },
+    skipCheck: async () => '',
+  });
+
+  assert.deepEqual(executed, RESTORE_STEPS.map((step) => step.name), 'both declared steps ran');
+  assert.equal(run.handoff.steps.every((step) => step.ok === true && !step.skipped), true);
+});
+
 test('a run with no declared hand-off gets a drafted reverse and executes nothing', async () => {
   const d = resetDb();
   const wf = {

@@ -2298,7 +2298,11 @@ export async function verifyHandoffReturn(
  * and never rewrites the verdict, because what the run proved is not the same
  * as what the desk looks like afterwards.
  */
-async function runHandoff(run, workflow, { probe = null, getTool = () => undefined } = {}) {
+export async function runHandoff(
+  run,
+  workflow,
+  { probe = null, getTool = () => undefined, execute = executeStep, skipCheck = preStepSkip } = {}
+) {
   const handoff = workflow?.handoff || null;
   const steps = Array.isArray(handoff?.steps) ? handoff.steps.filter((step) => step?.type) : [];
   if (!handoff?.enabled || !steps.length) return;
@@ -2317,8 +2321,28 @@ async function runHandoff(run, workflow, { probe = null, getTool = () => undefin
       optional: true,
       timeoutMs: Math.max(1000, Math.min(60000, Number(raw.timeoutMs) || 20000)),
     };
+    // The run loop checks a step before it acts so a re-run does not repeat an
+    // effect that already exists; the hand-off used to skip that check and click
+    // a lookalike heading on a screen it was already on. Same check, same
+    // declared evidence (params.skipIfVisible), logged as a skip.
+    let skipReason = '';
     try {
-      const result = await executeStep(step, { live: true, runId: run.id, run, workflow, getTool });
+      skipReason = (await skipCheck(step, probe, run)) || '';
+    } catch {
+      skipReason = '';
+    }
+    if (skipReason) {
+      run.handoff.steps.push({
+        name: step.name || step.type,
+        ok: true,
+        skipped: true,
+        output: String(skipReason).slice(0, 300),
+      });
+      pushLog(run, 'info', `Hand-off: skipped “${step.name || step.type}” — ${skipReason}`);
+      continue;
+    }
+    try {
+      const result = await execute(step, { live: true, runId: run.id, run, workflow, getTool });
       run.handoff.steps.push({ name: step.name || step.type, ok: true, output: String(result?.output || '').slice(0, 300) });
       pushLog(run, 'info', `Hand-off: ${result?.output || step.name || step.type}`);
     } catch (err) {
