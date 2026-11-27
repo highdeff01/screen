@@ -24,6 +24,7 @@ import { db, logActivity, now, persist, uid } from './store.js';
 import { sendContinuation } from './agent-awareness.js';
 import { addNote } from './handoff.js';
 import { liveControl } from './platform.js';
+import { autoRepairSettings } from './auto-repair.js';
 
 const MAX_ROUNDS = 12;
 
@@ -342,6 +343,37 @@ function conclude(runId, deps = {}) {
     });
   }
   persist();
+  // The automatic apply: with the checkbox on, the reshaped plan is applied and
+  // the run re-tries without a click — still through the snapshot gate. A gate
+  // that refuses is recorded on the focus, not retried behind the operator.
+  try {
+    if (autoRepairSettings().applyReshaped && focus.reshaped?.steps?.length && !focus.appliedAt && !focus.autoApplyStarted) {
+      focus.autoApplyStarted = now();
+      persist();
+      applyReshaped(runId)
+        .then((result) => {
+          const entry = findRun(runId);
+          if (!entry?.deepFocus) return;
+          entry.deepFocus.autoApply = {
+            at: now(),
+            ok: result?.ok === true,
+            status: String(result?.status || ''),
+            message: String(result?.message || '').slice(0, 240),
+          };
+          if (result?.ok !== true) {
+            entry.deepFocus.autoApplyError = String(result?.message || 'the apply gate refused').slice(0, 240);
+          }
+          persist();
+        })
+        .catch((err) => {
+          const entry = findRun(runId);
+          if (!entry?.deepFocus) return;
+          entry.deepFocus.autoApply = { at: now(), ok: false };
+          entry.deepFocus.autoApplyError = String(err.message || err).slice(0, 240);
+          persist();
+        });
+    }
+  } catch { /* auto-apply never breaks the conclusion */ }
   // What the loop learned travels: continuation to the working agents, a note
   // for the next run, and the lesson itself for workflow memory.
   try {

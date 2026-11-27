@@ -95,6 +95,18 @@ function seed() {
       autoProposeFailures: false,
       autoRecoverFailures: true,
       recoveryMaxAttempts: 2,
+      // Checkbox-driven automatic repair: append fixes instead of waiting for
+      // approval, analyse undetected steps, apply a reshaped plan, and keep a
+      // backend screen monitor that reorders the remaining steps. All off.
+      autoRepair: {
+        appendFixes: false,
+        analyzeIncomplete: false,
+        applyReshaped: false,
+        monitorReplan: false,
+        monitorIntervalMs: 3000,
+        monitorMaxReads: 60,
+        maxFocusLevel: 5,
+      },
       // The AI revision of a failed run: whole-plan rethink, a live desktop read
       // and whether it may plan video and playback work.
       replanAi: true,

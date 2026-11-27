@@ -21,7 +21,7 @@ import {
   resolveInside,
   writeFileDurable,
 } from './store.js';
-import { executeStep, runPowerShell, STEP_TYPES, IS_WINDOWS, describe, findUiElement, readFocusedElement, readForegroundWindow, readScreenContext } from './automation.js';
+import { executeStep, runPowerShell, STEP_TYPES, IS_WINDOWS, describe, findUiElement, findUiElementByOcr, readFocusedElement, readForegroundWindow, readScreenContext } from './automation.js';
 import { liveControl, probeLiveBackend } from './platform.js';
 import {
   cancelDownload,
@@ -90,6 +90,7 @@ import { addFirewallRule, firewallCheck, firewallStatus, firewallTest, removeFir
 import { factoringStatus, pinStepIntents, planRefactoring, pushRefactorToBuilder, similarSolutions } from './step-factoring.js';
 import { normalizeThinkSettings } from './step-think.js';
 import { appendCloseout, closeoutFor, recordCloseout } from './closeout.js';
+import { applyAnalysisSteps, configureAutoRepair, normalizeAutoRepair, startAutoRepairMonitor, stopAutoRepairMonitor } from './auto-repair.js';
 import { monitorsStatus } from './monitors.js';
 
 /**
@@ -120,6 +121,21 @@ async function applyReshapedToRun(runId, reshapedSteps, focus) {
   logActivity('deep-focus', `Reshaped steps written into “${workflow.name}” (${kept.length} kept + ${reshaped.length} new)`, { runId });
   const retried = await retryRun(runId, { replan: false });
   return { ok: true, status: 'applied', kept: kept.length, added: reshaped.length, message: 'Reshaped steps applied (snapshot gate passed); the run is going again.', run: retried };
+}
+
+/**
+ * The background monitor's one read: the labels drawn in the window in front.
+ * It restores nothing and clicks nothing; the monitor only reorders steps whose
+ * own control it could actually see.
+ */
+async function readMonitorLabels() {
+  let window = '';
+  try {
+    const front = await readForegroundWindow();
+    window = String(front?.process || front?.title || '').slice(0, 60);
+  } catch { /* fall back to the foreground window */ }
+  const read = await findUiElementByOcr({ window, labelsOnly: true, timeoutMs: 4000 });
+  return Array.isArray(read?.labels) ? read.labels : [];
 }
 import {
   dismissFailure,
@@ -3440,24 +3456,15 @@ route('POST', /^\/api\/runs\/([^/]+)\/analyze$/, async (req, res, [id]) => {
 route('POST', /^\/api\/runs\/([^/]+)\/apply-suggestions$/, async (req, res, [id]) => {
   const run = findRun(id);
   if (!run) return fail(res, 404, 'Run not found');
-  const wf = db().workflows.find((w) => w.id === run.workflowId);
-  if (!wf) return fail(res, 404, 'Workflow not found');
-  const failureText = (run.steps || [])
-    .filter((step) => step.status === 'failed')
-    .map((step) => `${step.name || ''} ${step.type || ''} ${step.error || ''}`)
-    .join(' ');
-  const timingRelated = /wait|timeout|timed out|loading|dialog|not ready|slow/i.test(failureText);
-  const steps = (run.analysis?.suggestedSteps || []).filter((step) => {
-    if (step.type === 'wait' && !timingRelated) return false;
-    if (step.type === 'writeTextFile' && !step.params?.text && !step.params?.textVar) return false;
-    return true;
-  });
-  if (!steps.length) return fail(res, 400, 'Suggested steps do not address this failure; rebuild the plan from the goal instead');
-  wf.steps.push(...steps.map((s) => ({ ...s, id: s.id || uid('stp') })));
-  wf.updatedAt = now();
-  persist();
-  logActivity('workflow', `Applied ${steps.length} AI step(s) to "${wf.name}"`, { runId: run.id });
-  sendJson(res, 200, { ok: true, workflow: workflowView(wf) });
+  try {
+    // The button and the automatic pass share one implementation, so both apply
+    // the same filter and leave the same record on the run.
+    const applied = applyAnalysisSteps(run);
+    const wf = db().workflows.find((w) => w.id === applied.workflowId);
+    sendJson(res, 200, { ok: true, workflow: workflowView(wf) });
+  } catch (err) {
+    fail(res, err.message === 'Workflow not found' ? 404 : 400, err.message);
+  }
 });
 
 route('POST', /^\/api\/runs\/([^/]+)\/review$/, async (req, res, [id]) => {
@@ -4501,6 +4508,11 @@ route('PATCH', /^\/api\/settings$/, async (req, res) => {
   if (body.screenReview !== undefined && body.screenReview && typeof body.screenReview === 'object') {
     s.screenReview = normalizeScreenReviewSettings({ ...(s.screenReview || {}), ...body.screenReview });
   }
+  // Automatic repair: the four checkboxes and their two bounds, normalized here
+  // so a hand-written request cannot exceed them either.
+  if (body.autoRepair !== undefined && body.autoRepair && typeof body.autoRepair === 'object') {
+    s.autoRepair = normalizeAutoRepair({ ...(s.autoRepair || {}), ...body.autoRepair });
+  }
   persist();
   logActivity('settings', 'Settings updated');
   sendJson(res, 200, { ok: true, settings: s });
@@ -5040,6 +5052,10 @@ server.listen(PORT, HOST, () => {
     snapshot: (label) => createSnapshot(label),
     applyAndRetry: applyReshapedToRun,
   });
+  // The screen monitor lives in the backend: it reads the window in front on its
+  // own timer and reorders pending steps, so the open tab is never the engine.
+  configureAutoRepair({ read: readMonitorLabels });
+  startAutoRepairMonitor();
   startAmbient();
   // Front the model provider with the local Respan Gateway when it is enabled.
   if (db().settings.gatewayEnabled) ensureGateway().catch((err) => console.warn(`[gateway] ${err.message}`));
@@ -5057,6 +5073,7 @@ function shutdown() {
   livePreview.stop();
   stopVerificationLoop();
   stopAutoSync();
+  stopAutoRepairMonitor();
   stopSentinel();
   stopPipeline();
   stopShare();

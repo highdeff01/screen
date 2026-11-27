@@ -2095,6 +2095,7 @@ function renderRunDetail(run) {
           ${full.presence?.fastPath && !full.presence?.holding ? `<div class="hint-box" style="margin-top:8px;border-color:rgba(56,189,248,.35)"><strong>Continued while you were active</strong><div class="small" style="margin-top:3px">${esc(full.presence.reason || 'the step did not need to interrupt you')}${Number(full.presence.rechecked?.pending) > 0 ? ` · re-checked ${Number(full.presence.rechecked.pending)} pending verification check(s) before continuing` : ''}.</div></div>` : ''}
           ${full.liveOffer ? `<div class="hint-box" style="margin-top:8px;border-color:rgba(56,189,248,.35)"><strong>This machine can run it live</strong><div class="small" style="margin-top:4px">The run was downgraded to simulated (“${esc(full.liveOffer.reason || 'no live backend')}”) but a probe answered (${esc(full.liveOffer.detail || 'ok')}). It stayed simulated — switching to real desktop input needs your consent. <button class="btn btn-sm" data-act="run-live-offer" data-id="${esc(full.id)}" style="margin-left:6px">Start it live</button></div></div>` : ''}
           ${renderDeepFocusCard(full)}
+          ${renderAutoRepairCard(full)}
         <div class="row wrap">
           <button class="btn btn-sm" data-act="retry-run" data-id="${full.id}" ${retryBusy ? 'disabled' : ''}>${retryBusy ? 'Re-planning…' : '↻ Re-plan & retry'}</button>
           ${['failed', 'needs_review', 'passed', 'cancelled'].includes(full.status) ? `<button class="btn btn-sm btn-ghost" data-act="recheck-run" data-id="${full.id}" ${full.recheck?.status === 'checking' ? 'disabled' : ''}>${full.recheck?.status === 'checking' ? 'Rechecking…' : '⟳ Recheck & keep progress'}</button>` : ''}
@@ -5323,6 +5324,16 @@ function settingsFields(s) {
       <label class="field"><span>AI mirror rate (ms)</span><input type="number" min="500" max="30000" value="${Number(thinkValue('mirrorIntervalMs', 4000))}" data-scope="settings" data-key="stepThinkMirrorMs" /></label>
     </div>
     <label class="check" style="margin-bottom:6px"><input type="checkbox" data-scope="settings" data-key="stepThinkSideBySide" ${thinkValue('sideBySide', false) ? 'checked' : ''} /> Show the operator preview and the AI mirror side by side</label>
+    <div class="section-gap"><h3 class="settings-subhead">Automatic repair</h3></div>
+    <p class="dim small" style="margin:-2px 0 8px">Each checkbox replaces a click you would otherwise make in the run panel. The work happens in the backend — after the run ends, or while it runs for the monitor — so no tab has to stay open. Every action is recorded on the run, and none of them can change a run's verdict.</p>
+    <label class="check" style="margin-bottom:6px"><input type="checkbox" data-scope="settings" data-key="autoRepairAppendFixes" ${(s.autoRepairAppendFixes ?? s.autoRepair?.appendFixes) ? 'checked' : ''} /> Append the predicted fix steps to the workflow instead of waiting for approval</label>
+    <label class="check" style="margin-bottom:6px"><input type="checkbox" data-scope="settings" data-key="autoRepairAnalyzeIncomplete" ${(s.autoRepairAnalyzeIncomplete ?? s.autoRepair?.analyzeIncomplete) ? 'checked' : ''} /> Analyse steps where nothing was detected with AI and append the missing steps automatically</label>
+    <label class="check" style="margin-bottom:6px"><input type="checkbox" data-scope="settings" data-key="autoRepairApplyReshaped" ${(s.autoRepairApplyReshaped ?? s.autoRepair?.applyReshaped) ? 'checked' : ''} /> Apply a reshaped plan and re-run automatically (still through the snapshot gate)</label>
+    <label class="check" style="margin-bottom:6px"><input type="checkbox" data-scope="settings" data-key="autoRepairMonitorReplan" ${(s.autoRepairMonitorReplan ?? s.autoRepair?.monitorReplan) ? 'checked' : ''} /> Monitor the screen in the background and move a step ahead when its control is already visible</label>
+    <div class="field-row">
+      <label class="field"><span>Monitor interval (ms)</span><input type="number" min="500" max="30000" value="${Number(s.autoRepairMonitorMs ?? s.autoRepair?.monitorIntervalMs ?? 3000)}" data-scope="settings" data-key="autoRepairMonitorMs" /><span class="help">One read of the window in front per tick; only while a live run is active.</span></label>
+      <label class="field"><span>Highest focus level</span><input type="number" min="1" max="5" value="${Number(s.autoRepairMaxFocusLevel ?? s.autoRepair?.maxFocusLevel ?? 5)}" data-scope="settings" data-key="autoRepairMaxFocusLevel" /><span class="help">Retries climb from 1; input steps and an unproved goal climb faster.</span></label>
+    </div>
     <div class="section-gap"><h3 class="settings-subhead">Pending recheck</h3></div>
     <p class="dim small" style="margin:-2px 0 8px">A restart, retry or replan keeps the steps that already passed instead of opening a second Notepad. Steps that failed or sat pending past the allowance get a bounded re-read with a fresh screenshot, and anything still open becomes a task for the operator.</p>
     <label class="check" style="margin-bottom:6px"><input type="checkbox" data-scope="settings" data-key="recheckEnabled" ${recheckValue('enabled', true) ? 'checked' : ''} /> Recheck failed and stalled steps before giving up</label>
@@ -6992,11 +7003,28 @@ function renderDeepFocusCard(run) {
         ${focus.conclusion ? `<p class="small"><b>Conclusion:</b> ${esc(focus.conclusion)}</p>` : ''}
         ${focus.reshaped?.steps?.length ? `<details open><summary class="small">Proposed commands — review before applying</summary><div class="stack" style="gap:6px;margin-top:6px">${focus.reshaped.steps.map((step, index) => `<div class="small"><b>${index + 1}. ${esc(step.name || step.type)}</b> <span class="dim">(${esc(step.type)})</span><pre style="white-space:pre-wrap;overflow-wrap:anywhere;margin:4px 0">${esc(JSON.stringify(step.params || {}, null, 2))}</pre></div>`).join('')}</div></details>` : ''}
         ${focus.applyGate ? `<p class="small dim">Apply gate: snapshot ${esc(String(focus.applyGate.snapshot || '').slice(0, 8))} ${focus.applyGate.blocked ? '(blocked — nothing applied)' : 'ok'}</p>` : ''}
+        ${focus.autoApply ? `<p class="small ${focus.autoApply.ok ? '' : 'dim'}">Automatic apply: ${focus.autoApply.ok ? 'applied and re-queued' : esc(focus.autoApply.message || focus.autoApplyError || 'refused')}</p>` : ''}
         ${focus.error ? `<p class="small" style="color:var(--bad)">${esc(focus.error)}</p>` : ''}
       </div>`}
         <div class="row wrap" style="gap:8px;margin-top:10px">${actions.join('')}<button class="btn btn-sm" data-act="df-presentation" data-id="${esc(run.id)}" title="Turn the focus rounds into a Presentation deck">Form presentation</button></div>
     </div>
   </section>`;
+}
+
+/** What the automatic repair did for this run — and how much focus it carried. */
+function renderAutoRepairCard(run) {
+  const auto = run.autoRepair;
+  const monitor = run.monitor;
+  const focus = Number(run.focusLevel || 1);
+  if (!auto && !monitor && focus <= 1) return '';
+  const bits = [];
+  if (focus > 1) bits.push(`focus level ${focus}/5`);
+  if (Number(monitor?.reads) > 0) bits.push(`${Number(monitor.reads)} screen read(s)`);
+  if (Number(monitor?.reorders) > 0) bits.push(`${Number(monitor.reorders)} reorder(s)${monitor.lastNote ? ` — ${monitor.lastNote}` : ''}`);
+  if (Number(auto?.appended) > 0) bits.push(`${Number(auto.appended)} step(s) appended automatically`);
+  if (auto?.analyzed) bits.push('incomplete steps analysed');
+  if (auto?.error) bits.push(auto.error);
+  return `<div class="hint-box" style="margin-top:8px;border-color:rgba(56,189,248,.35)"><strong>Automatic repair</strong><div class="small" style="margin-top:3px">${esc(bits.join(' · ') || 'nothing to do')}</div>${(auto?.notes || []).length ? `<div class="small dim" style="margin-top:3px">${auto.notes.map((note) => esc(note)).join(' · ')}</div>` : ''}</div>`;
 }
 
 /** Follow a background re-plan until it queues a retry or says why it did not. */
@@ -9969,6 +9997,14 @@ async function runAction(name, ds, el) {
           retries: Number(settings.screenReviewRetries ?? settings.screenReview?.retries ?? 1),
           retryDelayMs: Number(settings.screenReviewRetryDelayMs ?? settings.screenReview?.retryDelayMs ?? 1200),
           minConfidence: Number(settings.screenReviewMinConfidence ?? settings.screenReview?.minConfidence ?? 0.6),
+        },
+        autoRepair: {
+          appendFixes: settings.autoRepairAppendFixes ?? settings.autoRepair?.appendFixes ?? false,
+          analyzeIncomplete: settings.autoRepairAnalyzeIncomplete ?? settings.autoRepair?.analyzeIncomplete ?? false,
+          applyReshaped: settings.autoRepairApplyReshaped ?? settings.autoRepair?.applyReshaped ?? false,
+          monitorReplan: settings.autoRepairMonitorReplan ?? settings.autoRepair?.monitorReplan ?? false,
+          monitorIntervalMs: Number(settings.autoRepairMonitorMs ?? settings.autoRepair?.monitorIntervalMs ?? 3000),
+          maxFocusLevel: Number(settings.autoRepairMaxFocusLevel ?? settings.autoRepair?.maxFocusLevel ?? 5),
         },
       };
       const res = await api('/api/settings', { method: 'PATCH', body });

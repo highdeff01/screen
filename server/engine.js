@@ -32,6 +32,7 @@ import { firewallCheck } from './firewall.js';
 import { addNote } from './handoff.js';
 import { noteStepOutcome, pinStepIntents, similarSolutions, spotIntent } from './step-factoring.js';
 import { closeoutFor, recordCloseout } from './closeout.js';
+import { afterRunAutoRepair, autoRepairSettings, focusLevelFor, importanceOf, incompleteStepEntries } from './auto-repair.js';
 import { checkStepMonitor } from './monitors.js';
 import { beginRunObservation, endRunObservation } from './app-observer.js';
 import { liveControl, probeLiveBackend, isPlatformRefusal } from './platform.js';
@@ -317,6 +318,11 @@ export function summary(run) {
     continuedAfterFailure: Boolean(run.continuedAfterFailure),
     replanCount: Number(run.replanCount || 0),
     replannedAfterFailure: Boolean(run.replannedAfterFailure),
+    focusLevel: Number(run.focusLevel || 1),
+    autoRepair: run.autoRepair || null,
+    monitor: run.monitor
+      ? { reads: Number(run.monitor.reads || 0), reorders: Number(run.monitor.reorders || 0), lastNote: run.monitor.lastNote || '', lastReadAt: run.monitor.lastReadAt || null }
+      : null,
     supersededSteps: (run.supersededSteps || []).slice(-8),
     agentReplans: (run.agentReplans || []).slice(-4).map((entry) => ({
       step: entry.step,
@@ -442,6 +448,9 @@ export function createRun(workflow, { trigger = 'manual', dryRun = null, agentRo
     aiReplan: aiReplan == null ? db().settings.agentReplans !== false : Boolean(aiReplan),
     replanCount: 0,
     replannedAfterFailure: false,
+    // How much attention this attempt gets: 1 on the first run, climbing with
+    // each retry and with how much the step matters (capped at five).
+    focusLevel: 1,
     agentReplans: [],
     supersededSteps: [],
     visualWarnings: [],
@@ -3773,6 +3782,12 @@ async function executeRun(runId) {
   try {
     recordCloseout(run);
   } catch { /* the prediction never breaks the finish */ }
+  // The automatic pass: write the follow-up / fix steps into the workflow now
+  // instead of leaving them in the panel, and analyse a run whose steps could
+  // not be detected. Off by default; nothing here changes the verdict.
+  void afterRunAutoRepair(run, { analyze: analyzeRun }).catch((err) => {
+    run.log.push({ at: now(), level: 'warn', message: `Auto-repair scheduling failed: ${err.message}` });
+  });
   run.retryCount = run.steps.reduce((total, step) => total + Math.max(0, Number(step.attempts || 0) - 1), 0);
   run.recovered =
     run.status === 'passed' &&
@@ -3808,7 +3823,7 @@ async function executeRun(runId) {
   // passed but whose goal was not proved still gets an evidence-gathering pass.
   if (!run.dryRun && !run.shadow && ['failed', 'needs_review'].includes(run.status)) {
     try {
-      enqueue({ kind: 'deep-focus', payload: { id: run.id }, key: `deep-focus:${run.id}`, priority: 3 });
+      enqueue({ kind: 'deep-focus', payload: { id: run.id, rounds: run.focusLevel }, key: `deep-focus:${run.id}`, priority: 3 });
     } catch { /* pipeline may not be available during boot */ }
   }
   if (run.status === 'passed' && run.replannedAfterFailure && run.replanLesson && !run.replanLessonSaved) {
@@ -3908,7 +3923,10 @@ async function executeRun(runId) {
     run.triageDone = false;
   }
 
-  if (db().settings.autoNotes && !run.shadow) {
+  // When automatic repair already analyses this run's incomplete steps, the
+  // auto-notes pass stays out of the way instead of paying for a second call.
+  const autoRepairCoversAnalysis = autoRepairSettings().analyzeIncomplete && incompleteStepEntries(run).length > 0;
+  if (db().settings.autoNotes && !run.shadow && !autoRepairCoversAnalysis) {
     if (shouldAnalyze) {
       void analyzeRun(run)
         .then((analysis) => {
@@ -4057,6 +4075,7 @@ export async function retryRun(id, { replan = true, planner = planSteps, carry =
   run.retryOf = original.id;
   // Depth stops the automatic recheck from retrying itself in a loop.
   run.retryDepth = Number(original.retryDepth || 0) + 1;
+  run.focusLevel = focusLevelFor({ run, importance: importanceOf(failedStep, original) });
   if (run.carriedSteps?.length) {
     logActivity('run', `Passed through ${run.carriedSteps.length} completed step(s) from ${original.id}.`, { runId: run.id });
   }
