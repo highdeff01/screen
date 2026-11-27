@@ -185,6 +185,15 @@ function seedDb() {
       },
       workflows: [],
       runs: [],
+      commands: [
+        {
+          id: 'cmd_goal_probe',
+          name: 'goal-probe',
+          command: `node -e "console.log('asset saved')"`,
+          description: 'Prints the state the goal names.',
+          createdAt: '2026-11-27T10:00:00.000Z',
+        },
+      ],
       agents: [
         {
           id: agentId,
@@ -289,6 +298,24 @@ test('the goal is saved on the agent and the check is recorded and served', { ti
     assert.equal(failed.body.check.status, 'incomplete');
     assert.match(failed.body.check.wentWrong[0].detail, /access denied/);
     assert.equal(failed.body.agent.goalChecks.length, 2, 'both checks are kept');
+
+    // Running a saved command on the agent's behalf is the other check point:
+    // the command's own output is the evidence, so a successful run can settle
+    // the goal where the screen read could not.
+    await request(base, `/api/agents/${agentId}`, 'PATCH', { goal: 'Verify the asset saved.' });
+    const commandRun = await request(base, '/api/commands/goal-probe/run', 'POST', { agentId });
+    assert.equal(commandRun.status, 200);
+    assert.equal(commandRun.body.ok, true);
+    assert.ok(commandRun.body.goalCheck, 'the command run records a goal check');
+    assert.equal(commandRun.body.goalCheck.trigger, 'command');
+    assert.equal(commandRun.body.goalCheck.status, 'complete');
+    assert.equal(commandRun.body.goalCheck.command.name, 'goal-probe');
+    const stateAfterCommand = await (await fetch(`${base}/api/state`)).json();
+    assert.equal(
+      stateAfterCommand.agents.find((entry) => entry.id === agentId).goalCheck.status,
+      'complete',
+      'and the agent keeps it'
+    );
 
     const cleared = await request(base, `/api/agents/${agentId}`, 'PATCH', { goal: '   ' });
     assert.equal(cleared.body.agent.goal, '');

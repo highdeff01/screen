@@ -1627,10 +1627,11 @@ route('POST', /^\/api\/commands\/([^/]+)\/run$/, async (req, res, [id]) => {
     const result = await runCommand(id, { timeoutMs: body.timeoutMs });
     // A command can run on an agent's behalf: the check then records where that
     // agent's goal stands after this command, from the command's own output.
+    let goalCheck = null;
     if (body?.agentId) {
       const agent = db().agents.find((entry) => entry.id === body.agentId);
       if (agent) {
-        recordGoalCheck(
+        goalCheck = recordGoalCheck(
           agent,
           checkGoal({
             goal: agentGoal(agent),
@@ -1649,7 +1650,7 @@ route('POST', /^\/api\/commands\/([^/]+)\/run$/, async (req, res, [id]) => {
         persist();
       }
     }
-    sendJson(res, 200, { ok: true, ...result });
+    sendJson(res, 200, { ok: true, ...result, goalCheck });
   } catch (err) {
     fail(res, 400, err.message);
   }

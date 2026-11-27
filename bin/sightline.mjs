@@ -13,7 +13,7 @@
  *   sightline notes add "text" --by me
  *   sightline cmd list
  *   sightline cmd add pull-and-test -- "git pull && npm test"
- *   sightline cmd run pull-and-test
+ *   sightline cmd run pull-and-test [--agent agent_watchdog]
  *   sightline cmd rm pull-and-test
  *
  * The console must be running (npm start); set SIGHTLINE_URL to reach another
@@ -117,7 +117,7 @@ async function main() {
           '  pr <number>                  fetch a pull request into pr/<number>',
           '  conflicts ours|theirs|ai|commit',
           '  notes [list] | notes add "text" --by name',
-          '  cmd list | cmd add <name> -- "command" | cmd run <name> | cmd rm <name>',
+          '  cmd list | cmd add <name> -- "command" | cmd run <name> [--agent id] | cmd rm <name>',
           '',
           `Console: ${base} (override with SIGHTLINE_URL)`,
         ].join('\n')
@@ -208,10 +208,14 @@ async function main() {
       if (action === 'run') {
         const name = rest.join(' ');
         if (!name) return fail('Usage: sightline cmd run <name>');
-        const result = await call('POST', `/api/commands/${encodeURIComponent(name)}/run`, {});
+        // --agent runs the command on that agent's behalf, so the console
+        // records where the agent's goal stands after it.
+        const agentId = typeof flags.agent === 'string' ? flags.agent : '';
+        const result = await call('POST', `/api/commands/${encodeURIComponent(name)}/run`, agentId ? { agentId } : {});
         if (result.stdout) say(result.stdout.trimEnd());
         if (result.stderr) process.stderr.write(`${result.stderr.trimEnd()}\n`);
         say(result.ok ? `${result.command?.name || name} → ok` : `${result.command?.name || name} → exit ${result.code}`);
+        if (result.goalCheck) say(`goal check: ${result.goalCheck.status} — ${result.goalCheck.note}`);
         if (!result.ok) process.exitCode = 1;
         return;
       }
