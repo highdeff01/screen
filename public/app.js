@@ -4,6 +4,8 @@
 const ui = {
   data: null,
   view: 'builder',
+  liveMap: null,
+  liveMapBusy: false,
   selectedWorkflow: null,
   selectedStep: null,
   workflowLint: null,
@@ -840,6 +842,7 @@ function render() {
     companion: renderCompanion,
     ambient: renderAmbient,
     continuity: renderContinuity,
+    liveMap: renderLiveMap,
     captures: renderCaptures,
     examples: renderExamples,
     tools: renderTools,
@@ -2417,6 +2420,120 @@ function renderCaptures() {
 async function loadCaptures() {
   const res = await api('/api/captures');
   ui.captures = res.ok ? res.captures : [];
+}
+
+/* ------------------------------------------------------------------ live map */
+// A sample is one presence read plus one small signature, compared with the
+// sample before it. The panel polls only while it is open, so a closed console
+// does not keep reading the desktop.
+let liveMapTimer = null;
+
+function startLiveMapPolling() {
+  if (liveMapTimer) return;
+  loadLiveMap();
+  liveMapTimer = setInterval(() => {
+    if (ui.view === 'liveMap') loadLiveMap();
+  }, 400);
+}
+
+function stopLiveMapPolling() {
+  if (!liveMapTimer) return;
+  clearInterval(liveMapTimer);
+  liveMapTimer = null;
+}
+
+async function loadLiveMap() {
+  if (ui.liveMapBusy) return;
+  ui.liveMapBusy = true;
+  try {
+    const res = await api('/api/live-map', { method: 'POST', body: { action: 'sample' } });
+    if (res.ok && res.map) ui.liveMap = res.map;
+    else ui.liveMap = { ...(ui.liveMap || {}), error: res.error || 'the live map could not be read' };
+  } catch (err) {
+    ui.liveMap = { ...(ui.liveMap || {}), error: err.message || 'the live map could not be read' };
+  } finally {
+    ui.liveMapBusy = false;
+  }
+  if (ui.view === 'liveMap') render();
+}
+
+function renderLiveMap() {
+  const map = ui.liveMap;
+  const head = `
+  <div class="page-head">
+    <div>
+      <h1>Live map</h1>
+      <p>A short ring of cheap screen reads: each sample is a small colour grid and the window it belongs to, compared with the sample before it. Movement, the share of the grid that changed and the pointer's travel are measured as the sample arrives — no screenshot, no click, no focus change.</p>
+    </div>
+    <div class="page-head-actions">
+      <span class="badge">${map ? `${map.samples} / ${map.limit} samples` : 'waiting'}</span>
+      <button class="btn btn-sm" data-act="live-map-sample">Sample now</button>
+      <button class="btn btn-sm btn-ghost" data-act="live-map-reset">Clear</button>
+    </div>
+  </div>`;
+  if (!map) {
+    return head + '<div class="empty"><strong>Reading the screen…</strong>The first sample is being taken.</div>';
+  }
+  const current = map.current;
+  const previous = map.previous;
+  const error = map.error || current?.error || '';
+  if (!current) {
+    return (
+      head +
+      `<div class="empty"><strong>No samples yet</strong>${esc(error || 'The ring is empty; the next read starts the history.')}</div>`
+    );
+  }
+  const rect = current.window;
+  const motion = map.motion;
+  const pointer = map.pointer;
+  const frameCell = (label, sample) =>
+    sample
+      ? `<tr><td class="dim small">${esc(label)}</td><td class="mono small">${esc(fmtTime(sample.at))}</td><td class="mono small">${esc(
+          sample.window ? `${sample.window.left},${sample.window.top} · ${sample.window.width}×${sample.window.height}` : 'window unknown'
+        )}</td><td class="mono small">${esc(sample.signatureHash || '—')}</td><td class="small">${sample.changedPct == null ? '<span class="dim">—</span>' : `${sample.changedPct}% changed`}</td></tr>`
+      : `<tr><td class="dim small">${esc(label)}</td><td colspan="4" class="dim small">nothing to compare yet</td></tr>`;
+  const trend = (map.trend || [])
+    .slice()
+    .reverse()
+    .map(
+      (sample) => `<tr><td class="mono small">${esc(fmtTime(sample.at))}</td><td class="mono small">${esc(
+        sample.window ? `${sample.window.left},${sample.window.top}` : '—'
+      )}</td><td class="mono small">${sample.cursor ? `${sample.cursor.x},${sample.cursor.y}` : '—'}</td><td class="mono small">${sample.dx == null ? '—' : `${sample.dx}, ${sample.dy}`}</td><td class="small">${sample.changedPct == null ? '—' : `${sample.changedPct}%`}</td><td class="small">${sample.error ? `<span class="warnbadge">${esc(sample.error)}</span>` : ''}</td></tr>`
+    )
+    .join('');
+  return `${head}
+  ${error ? `<div class="hint-box" style="border-left-color:rgba(251,113,133,.6)">${esc(error)}</div>` : ''}
+  <div class="stack">
+    <div class="card">
+      <div class="card-head"><h3>Frames</h3><span class="dim small">current and the one before it</span></div>
+      <div class="card-body" style="overflow:auto">
+        <table class="data-table">
+          <thead><tr><th>Frame</th><th>Read at</th><th>Window</th><th>Signature</th><th>Change</th></tr></thead>
+          <tbody>${frameCell('Current', current)}${frameCell('Previous', previous)}</tbody>
+        </table>
+        <p class="dim small" style="margin-top:8px">Foreground: ${esc(current.foreground?.title || 'unknown')}${current.foreground?.process ? ` · ${esc(current.foreground.process)}` : ''} · pointer ${current.cursor ? `${current.cursor.x}, ${current.cursor.y}` : 'unknown'} · ${current.cells || 0} cells</p>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-head"><h3>Movement</h3><span class="badge ${motion?.changed ? 'warnbadge' : 'okbadge'}">${motion?.changed ? 'moved' : 'still'}</span></div>
+      <div class="card-body">
+        <div class="detail-cols">
+          <div><h4 class="mini-head">Window</h4><p class="small">${motion ? esc(motion.note) : 'no movement measured yet'}</p><p class="dim small">dx ${motion?.dx ?? '—'} · dy ${motion?.dy ?? '—'} · ${motion?.distance ?? '—'} px${motion?.resized ? ' · resized' : ''}</p></div>
+          <div><h4 class="mini-head">Pointer</h4><p class="small">${pointer ? `${pointer.distance} px since the previous read` : 'no pointer travel measured'}</p><p class="dim small">dx ${pointer?.dx ?? '—'} · dy ${pointer?.dy ?? '—'}</p></div>
+          <div><h4 class="mini-head">Window now</h4><p class="mono small">${rect ? `${rect.left},${rect.top} · ${rect.width}×${rect.height}` : 'unreadable'}</p><p class="dim small">${rect?.title ? esc(rect.title) : 'no window rect'}</p></div>
+        </div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-head"><h3>Recent reads</h3><span class="dim small">newest first · ${(map.trend || []).length} shown</span></div>
+      <div class="card-body" style="overflow:auto">
+        <table class="data-table">
+          <thead><tr><th>Read</th><th>Window at</th><th>Pointer</th><th>Movement</th><th>Change</th><th></th></tr></thead>
+          <tbody>${trend || '<tr><td colspan="6" class="dim small">No reads yet.</td></tr>'}</tbody>
+        </table>
+      </div>
+    </div>
+  </div>`;
 }
 
 /* ------------------------------------------------------------------ shortcuts */
@@ -7176,6 +7293,16 @@ async function runAction(name, ds, el) {
       await refresh();
       break;
     }
+    case 'live-map-sample': {
+      await loadLiveMap();
+      break;
+    }
+    case 'live-map-reset': {
+      const res = await api('/api/live-map', { method: 'POST', body: { action: 'reset' } });
+      if (res.ok) ui.liveMap = res.map;
+      render();
+      break;
+    }
     case 'admin-open': {
       await loadAuth();
       if (!ui.auth?.authenticated) ui.authDraft = { username: ui.auth?.defaultUser || 'admin', password: '', current: '', next: '' };
@@ -10181,6 +10308,8 @@ document.addEventListener('click', (event) => {
     ui.view = nav.dataset.nav;
     if (ui.view === 'runs') ui.runDetailOpen = false;
     if (ui.view === 'captures') loadCaptures();
+    if (ui.view === 'liveMap') startLiveMapPolling();
+    else stopLiveMapPolling();
     if (ui.view === 'files') {
       if (ui.fileTab === 'history') loadChat();
       loadFiles().then(render);
