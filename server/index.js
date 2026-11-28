@@ -304,7 +304,11 @@ import {
   setupSummary,
 } from './setup-commands.js';
 
-const PORT = Number(process.env.PORT) || 4317;
+const START_PORT = Number(process.env.PORT) || 4317;
+// Mutable: when the requested port is taken the console listens on the next
+// free one, and the links and exports it hands out use the port it actually got.
+let PORT = START_PORT;
+const PORT_ATTEMPTS = 20;
 // The desktop-control API stays loopback-only by default, especially on Windows.
 // This explicit Linux-only flag is for isolated sandbox previews, not remote control.
 const HOST = process.platform !== 'win32' && process.argv.includes('--sandbox-preview') ? '0.0.0.0' : '127.0.0.1';
@@ -5101,17 +5105,25 @@ setRunFinishedHook(async (run) => {
   }
 });
 
-// A bind failure (another console instance or another app on the port) should
-// end with a clear message, not a crash report — the fix is picking a free
-// PORT, and the crash-report round-trip hides that.
+// A taken port is normal — another console instance or another app is bound to
+// it — so move up to the next free one instead of ending the process. Only when
+// every port in the range is taken does this stop with a message.
 server.on('error', (err) => {
-  if (err?.code === 'EADDRINUSE') {
-    console.error(`Port ${PORT} is already in use — another instance or app is bound to it. Start with a different port: PORT=<port> npm start`);
+  if (err?.code !== 'EADDRINUSE') return;
+  if (PORT - START_PORT + 1 >= PORT_ATTEMPTS || PORT >= 65535) {
+    console.error(`Ports ${START_PORT}-${PORT} are all in use — start on a free one: PORT=<port> npm start`);
     process.exit(1);
   }
+  console.warn(`Port ${PORT} is already in use — trying ${PORT + 1}.`);
+  PORT += 1;
+  // The failed handle is closed, so the same server can listen again; startup
+  // work still runs once, on whichever port actually binds.
+  server.listen(PORT, HOST, onListening);
 });
 
-server.listen(PORT, HOST, () => {
+server.listen(PORT, HOST, onListening);
+
+function onListening() {
   ensureToolFiles();
   ensurePythonFiles();
   reconcileStuckRecoveryPacks();
@@ -5187,7 +5199,7 @@ server.listen(PORT, HOST, () => {
   console.log(`Data: ${DATA}`);
   const control = liveControl();
   console.log(`Platform: ${process.platform} — live control via ${control.label} (${control.input}; capture: ${control.capture}).`);
-});
+}
 
 function shutdown() {
   console.log('\nShutting down…');
