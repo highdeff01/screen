@@ -282,6 +282,7 @@ import {
   tickAgentNow,
   activeRunCount,
   queuedCount,
+  clampParallelRuns,
   resumeQueue,
   workflowStats,
   writeRunNote as writeNoteForRun,
@@ -4520,8 +4521,9 @@ route('PATCH', /^\/api\/settings$/, async (req, res) => {
     s.dryRun = dryRun;
   }
   if (body.parallelRuns !== undefined) {
-    const wanted = Math.round(Number(body.parallelRuns));
-    s.parallelRuns = Number.isFinite(wanted) ? Math.max(1, Math.min(6, wanted)) : 3;
+    // The engine owns the 1..6 clamp; storing anything else would make the
+    // saved setting and the scheduler disagree.
+    s.parallelRuns = clampParallelRuns(body.parallelRuns);
     // A raised limit should start the runs that were waiting for a slot.
     resumeQueue();
   }

@@ -110,6 +110,8 @@ const MAX_RUNS = 120;
 // The ceiling for settings.parallelRuns: enough to keep the machine busy, few
 // enough that several runs cannot pile up on one model endpoint.
 const MAX_PARALLEL_RUNS = 6;
+// What an unset parallelRuns means: three workflows in flight.
+const DEFAULT_PARALLEL_RUNS = 3;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 // Steps that send input into the desktop themselves.
 const INPUT_STEPS = new Set([
@@ -556,13 +558,25 @@ export function createRun(workflow, { trigger = 'manual', dryRun = null, agentRo
 }
 
 /**
+ * The one clamp for settings.parallelRuns. The settings route stores what this
+ * returns and the scheduler reads it back through the same function, so the
+ * value the API saves is exactly the value the scheduler honours. A missing or
+ * non-numeric value keeps the default; a number is held inside 1..MAX.
+ */
+export function clampParallelRuns(value) {
+  const raw = typeof value === 'string' ? value.trim() : value;
+  if (raw === null || raw === undefined || raw === '') return DEFAULT_PARALLEL_RUNS;
+  const wanted = Math.round(Number(raw));
+  if (!Number.isFinite(wanted)) return DEFAULT_PARALLEL_RUNS;
+  return Math.max(1, Math.min(MAX_PARALLEL_RUNS, wanted));
+}
+
+/**
  * How many workflows may be in flight at once. `settings.parallelRuns` is the
  * operator's knob; 1 keeps the old one-run-at-a-time behaviour.
  */
 export function parallelRunLimit() {
-  const raw = Number(db().settings.parallelRuns);
-  const wanted = Number.isFinite(raw) && raw >= 1 ? Math.round(raw) : 3;
-  return Math.max(1, Math.min(MAX_PARALLEL_RUNS, wanted));
+  return clampParallelRuns(db().settings.parallelRuns);
 }
 
 /**

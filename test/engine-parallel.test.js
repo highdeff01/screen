@@ -85,7 +85,9 @@ test('the run limit is clamped and defaults to three', () => {
   d.settings.parallelRuns = 2;
   assert.equal(engine.parallelRunLimit(), 2);
   d.settings.parallelRuns = 0;
-  assert.equal(engine.parallelRunLimit(), 3, 'an empty or zero value keeps the default');
+  assert.equal(engine.parallelRunLimit(), 1, 'below the range is held at one');
+  d.settings.parallelRuns = undefined;
+  assert.equal(engine.parallelRunLimit(), 3, 'an unset value keeps the default');
   d.settings.parallelRuns = 1;
   assert.equal(engine.parallelRunLimit(), 1, 'one restores the old one-at-a-time behaviour');
 });
