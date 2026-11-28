@@ -27,6 +27,7 @@ import path from 'node:path';
 import { DATA, logActivity } from './store.js';
 import { chat, parseJsonLoose } from './llm.js';
 import { vision } from './vision-engine.js';
+import { reviewerFindings, setFindingsSource } from './vision-findings.js';
 
 export const MAX_LABELS = 24;
 export const REVIEW_GAP_MS = 2000;
@@ -254,6 +255,22 @@ export function createVisionReviewer({
     }
   }
 
+  /**
+   * What this reviewer has named right now, ready for a prompt: its last
+   * reading plus the elements the engine still tracks. A reading belongs to the
+   * reviewer, never to the engine, so a planner asks here instead of reaching
+   * for a summary the engine does not keep.
+   */
+  function findings(options = {}) {
+    let elements = [];
+    try {
+      elements = liveState().elements || [];
+    } catch {
+      elements = [];
+    }
+    return reviewerFindings({ review: lastReview, elements, ...options });
+  }
+
   function state() {
     return {
       enabled,
@@ -272,7 +289,21 @@ export function createVisionReviewer({
     };
   }
 
-  return { start, stop, state, reviewNow, consider };
+  return { start, stop, state, reviewNow, consider, findings };
 }
 
 export const visionReview = createVisionReviewer();
+
+/**
+ * The main reviewer's current findings, for a prompt that is about to name
+ * controls: the labels it pinned, where they are, and what it summarised.
+ * `null` when nothing has been read yet, so a prompt never claims a reading it
+ * does not have.
+ */
+export function lastFindings(options = {}) {
+  return visionReview.findings(options);
+}
+
+// A planner or a replan asks for the reading through the pure module, so their
+// prompts can quote it without loading this engine (and its frame directory).
+setFindingsSource((options) => visionReview.findings(options));

@@ -11,6 +11,7 @@ const load = (name) => import(pathToFileURL(path.join(root, name)).href);
 const store = await load('server/store.js');
 const engine = await load('server/engine.js');
 const pageRead = await load('server/page-read.js');
+const findingsSource = await load('server/vision-findings.js');
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -87,6 +88,56 @@ test('the question asks what is on screen, not whether the step matched', () => 
   assert.match(system, /starting the video/);
   assert.match(user, /chrome go to youtube type diamond lattice/);
   assert.match(user, /Steps the plan still has after this one: Screen check/);
+});
+
+test('the reader is offered the controls the reviewer already named, not points', () => {
+  const findings = {
+    seq: 7,
+    at: null,
+    ageMs: 4000,
+    summary: 'A Chrome profile chooser covers the page.',
+    next: 'choose the Work profile',
+    labels: [
+      { text: 'Work', at: { x: 0.5, y: 0.42 }, seen: 2 },
+      { text: 'Add', at: { x: 0.62, y: 0.42 }, seen: 1 },
+    ],
+  };
+  const withFindings = pageRead.pageReadPrompt({ goal: 'go to youtube', stepName: 'Open the browser', findings });
+  assert.match(withFindings.system, /never guess a point for a control that is already named/);
+  assert.match(withFindings.user, /Controls the vision reviewer already found/);
+  assert.match(withFindings.user, /“Work” at \(0\.50,0\.42\) seen 2×/);
+  assert.match(withFindings.user, /A Chrome profile chooser covers the page\./);
+  assert.match(withFindings.user, /choose the Work profile/);
+
+  // Without a reading the prompt is exactly what it was: no empty section, and
+  // no claim about a screen nobody has looked at.
+  const without = pageRead.pageReadPrompt({ goal: 'go to youtube', stepName: 'Open the browser' });
+  assert.doesNotMatch(without.user, /vision reviewer/);
+});
+
+test('a between-step reading passes the findings to the model', async () => {
+  const framePath = path.join(store.DATA, 'fixture.png', 'frame.png');
+  fs.mkdirSync(path.dirname(framePath), { recursive: true });
+  fs.writeFileSync(framePath, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+  const prompts = [];
+  const result = await pageRead.readPage({
+    goal: 'close the export dialog',
+    stepName: 'Click Export',
+    findings: {
+      seq: 4,
+      ageMs: 1000,
+      summary: 'An export dialog is open.',
+      next: 'click Save',
+      labels: [{ text: 'Save', at: { x: 0.75, y: 0.12 }, seen: 2 }],
+    },
+    capture: async () => ({ path: 'fixture.png/frame.png', width: 100, height: 60 }),
+    ask: async (messages) => {
+      prompts.push(messages);
+      return { ok: true, content: JSON.stringify(neutral()), ms: 5 };
+    },
+  });
+  assert.equal(result.ok, true);
+  assert.match(String(prompts[0][1].content), /“Save” at \(0\.75,0\.12\) seen 2×/);
 });
 
 /* -------------------------------------------------------------- engine wiring */
@@ -168,6 +219,43 @@ async function settle(runId) {
   }
   return store.db().runs.find((entry) => entry.id === runId);
 }
+
+test('a run hands the reviewer’s finding to the page reader after a step', async () => {
+  const d = resetDb();
+  const wf = typeWorkflow('wf_page_read_findings');
+  d.workflows = [wf];
+  const seen = [];
+  const { probe } = probeWith();
+  probe.pageRead = async ({ step, findings }) => {
+    seen.push({ step: step.name, findings });
+    return { ok: true, reading: pageRead.parsePageRead(JSON.stringify(neutral())) };
+  };
+  // The reviewer registers where its reading comes from; the run asks there.
+  findingsSource.setFindingsSource((options) =>
+    findingsSource.reviewerFindings({
+      review: {
+        seq: 3,
+        at: null,
+        summary: 'Notepad is open with the caret in the document.',
+        next: 'type the note',
+        labels: ['Untitled - Notepad'],
+      },
+      elements: [{ label: 'Untitled - Notepad', x: 0.05, y: 0.02, w: 0.4, h: 0.05, seen: 2 }],
+      ...options,
+    })
+  );
+  try {
+    const run = engine.createRun(wf, { dryRun: false, probe, repair: false, aiReplan: false });
+    const done = await settle(run.id);
+    assert.equal(done.status, 'passed');
+    assert.equal(seen.length, 1, 'the step was read once');
+    assert.equal(seen[0].findings.labels[0].text, 'Untitled - Notepad');
+    assert.deepEqual(seen[0].findings.labels[0].at, { x: 0.25, y: 0.045 });
+    assert.match(seen[0].findings.summary, /caret in the document/);
+  } finally {
+    findingsSource.setFindingsSource(null);
+  }
+});
 
 test('an input with no window is unblocked by the screen and retried once', async () => {
   const d = resetDb();

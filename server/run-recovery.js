@@ -8,6 +8,7 @@ import { listShortcuts } from './shortcuts.js';
 import { firstAppStep, opensTargetBefore, launchAndWaitSteps } from './app-launch-hints.js';
 import { revisePlan, isTransientFailure } from './replan.js';
 import { readScreenContext } from './automation.js';
+import { currentFindings } from './vision-findings.js';
 
 const MAX_PACKS = 80;
 const MAX_PLAN_STEPS = 40;
@@ -17,6 +18,18 @@ const PLAN_TIMEOUT_MS = 45000;
 // only have fed to a model that is not answering.
 const AI_OUTAGE_MS = 120000;
 let aiOutageUntil = 0;
+
+/**
+ * The reviewer's reading for a replan prompt, if there is one. A failed run
+ * never waits on the vision agent: no reading means no section, not no replan.
+ */
+function replanFindings() {
+  try {
+    return currentFindings();
+  } catch {
+    return null;
+  }
+}
 // Durable rows are small — timings, the winning candidate, the retry verdict —
 // so the whole comparison history stays inside the saved store.
 const MAX_TELEMETRY = 200;
@@ -737,6 +750,7 @@ export async function prepareRecovery(
         error: failedRuntime?.error || '',
       },
       desktop,
+      findings: replanFindings(),
       evidence: evidenceFacts,
       // Off means the revision may not plan video or playback work at all.
       allowMedia: d.settings.replanMedia !== false,

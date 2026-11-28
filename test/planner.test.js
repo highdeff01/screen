@@ -41,6 +41,22 @@ test('downloading an app satisfies the download phase without a media download s
   assert.equal(issues.includes('missing playback'), false);
 });
 
+test('a plan prompt names the controls the reviewer already found, or says it has none', () => {
+  const named = planner.planFindingsText({
+    seq: 9,
+    ageMs: 2000,
+    summary: 'A Save dialog is open over the document.',
+    next: 'click Save',
+    labels: [{ text: 'Save', at: { x: 0.8, y: 0.1 }, seen: 2 }],
+  });
+  assert.match(named, /Controls the vision reviewer already found on the current screen/);
+  assert.match(named, /“Save” at \(0\.80,0\.10\) seen 2×/);
+  assert.match(named, /clickElement params\.name/);
+  assert.match(named, /A Save dialog is open over the document\./);
+  assert.match(named, /click Save/);
+  assert.match(planner.planFindingsText(null), /No live vision reading yet/);
+});
+
 test('a window title is normalized to a focus step and a bare URL gains a scheme', () => {
   const titleStep = planner.normalizeStep(
     { type: 'launchApp', name: 'Open Google Search', params: { target: 'Open Google Search - Google Chrome' } },

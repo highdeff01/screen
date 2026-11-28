@@ -15,6 +15,7 @@ import { chat, parseJsonLoose } from './llm.js';
 import { normalizePlanSteps } from './planner.js';
 import { STEP_TYPES } from './automation.js';
 import { courtesyBrief } from './courtesy.js';
+import { findingsBrief } from './vision-findings.js';
 
 const MAX_STEPS = 24;
 const MAX_PREP = 4;
@@ -188,6 +189,7 @@ export function buildRevisionPrompt({
   lessons = [],
   workflows = [],
   evidence = [],
+  findings = null,
   allowMedia = true,
 } = {}) {
   const system =
@@ -196,7 +198,8 @@ export function buildRevisionPrompt({
     'Return JSON only: {"decision":"continue|rearrange|rebuild","note":"one sentence explaining the change",' +
     '"prep":[],"steps":[]}. Every prep and steps entry is one step object such as ' +
     '{"type":"launchApp","name":"Open Notepad","params":{"target":"notepad.exe"}} — never a string and never a nested "step" field. ' +
-    'No prose outside the JSON.';
+    'No prose outside the JSON. ' +
+    'When the prompt lists controls the vision reviewer already found, use those exact labels for clickElement params.name instead of guessed coordinates.';
 
   const plan = (steps || []).length
     ? steps.map((step, index) => `${stepLine(step, index)}${index === failedIndex ? '  <-- failed here' : ''}`).join('\n')
@@ -205,6 +208,11 @@ export function buildRevisionPrompt({
   const types = STEP_TYPES.map((entry) => `${entry.type} (${entry.group})`).join(', ');
   const refused = refusedWindow(failure);
   const facts = (Array.isArray(evidence) ? evidence : []).slice(0, 10).map((entry) => `- ${text(entry, 220)}`);
+  // What the console has already named on this desktop: a revision can click a
+  // control by its label instead of inventing a point for it.
+  const vision = findingsBrief(findings, {
+    lead: 'Controls the vision reviewer already found on this desktop (use the exact label as clickElement params.name instead of a guessed point)',
+  });
 
   const prompt = `Goal: ${text(goal || workflow.description || workflow.name || 'unknown', 700)}
 Workflow: ${text(workflow.name, 90)} — ${text(workflow.description, 400)}
@@ -222,7 +230,7 @@ ${remaining.map((step, index) => `${index + 1}) ${step.type} “${text(step.name
 
 Live desktop right now:
 ${desktopSummary(desktop)}
-
+${vision ? `\n${vision}\n` : ''}
 Rules, suggestions and lessons:
 ${rulesSummary({ suggestions, lessons })}
 

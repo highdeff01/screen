@@ -57,6 +57,7 @@ import { diffSignatures, signatureHash, shouldAuditVisual, visualChangeMatters }
 import { adaptiveAdvice, gateDecision, gateSummary } from './gate.js';
 import { optionsFor, positionLine, positionOf, referenceCompare, whereToNext } from './navigate.js';
 import { waitUntilStill } from './frames.js';
+import { currentFindings } from './vision-findings.js';
 import {
   describeReading,
   duplicatesStep,
@@ -2018,6 +2019,19 @@ function storePageReadEvidence(run, step, result) {
  * never fails a step that nothing actually contradicted, and a run with no
  * pixels (simulated, shadow, desktop-free probe) is never read at all.
  */
+/**
+ * What the reviewer has already named on screen, or nothing. A run never waits
+ * on the vision agent: a reading that is missing or broken leaves the prompt
+ * without labels and the step is read from pixels exactly as before.
+ */
+function readFindings() {
+  try {
+    return currentFindings();
+  } catch {
+    return null;
+  }
+}
+
 async function takePageReading(run, step, workflow, probe = null, { enforceCap = true, shot = null } = {}) {
   if (run.dryRun || run.shadow) return null;
   if (probe && typeof probe.pageRead !== 'function') return null;
@@ -2025,9 +2039,11 @@ async function takePageReading(run, step, workflow, probe = null, { enforceCap =
   if (!cfg.enabled) return null;
   if (enforceCap && !shouldReadPage(step, { reads: (run.pageReads || []).length, settings: cfg })) return null;
   try {
+    const findings = readFindings();
     const result = probe?.pageRead
-      ? await probe.pageRead({ run, step, workflow, settings: cfg })
+      ? await probe.pageRead({ run, step, workflow, settings: cfg, findings })
       : await readPage({
+          findings,
           run,
           goal: run.goal || workflow?.description || workflow?.name || '',
           stepName: step.name,

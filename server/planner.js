@@ -8,6 +8,7 @@ import { slug } from './store.js';
 import { eligibleShortcuts } from './shortcuts.js';
 import { recallWorkflowMemory, recallWorkflowTemplate, formatWorkflowMemory, planStepsFromMemory } from './workflow-memory.js';
 import { buildWorkflowResearch, compactResearch } from './research.js';
+import { currentFindings, findingsBrief } from './vision-findings.js';
 import { platformMethodGuidance, strategyBrief } from './strategy.js';
 import { liveControl } from './platform.js';
 import { parseDirective, directiveSteps } from './step-plan.js';
@@ -1939,13 +1940,26 @@ Rules:
 - Use verifyScreen after the last phase. Never repeat identical steps.
 Common knowledge examples are platform-specific; use the detected platform methods and app inventory, and never reuse an executable path or installer from another OS. A real sample video URL is ${SAMPLE_VIDEO_URL}.`;
 
+/**
+ * The reviewer's findings, as a plan prompt quotes them: the controls it has
+ * already named, where they are, its summary and its suggestion. A step that
+ * names one of those labels is clicked by identity; a plan that names a control
+ * nobody rendered fails on its first step.
+ */
+export function planFindingsText(findings = null) {
+  const brief = findingsBrief(findings, {
+    lead: 'Controls the vision reviewer already found on the current screen (use these exact labels for clickElement params.name, never a guessed coordinate)',
+  });
+  return brief || 'No live vision reading yet — name controls only as the app itself shows them.';
+}
+
 async function repairPlan(goal, original, appContext, research = null) {
   const reply = await chat(
     [
       { role: 'system', content: REPAIR_SYSTEM },
       {
         role: 'user',
-        content: `Goal: ${goal}\nThe first draft was incomplete (${planIssues(original, goal).join(', ') || 'too generic'}). Produce the complete corrected plan now.\n${platformContextText()}\nSTRATEGY BRIEF:\n${strategyBrief({ goal, longTermGoal: db().settings?.longTermGoal || '', platform: db().settings?.targetPlatform || 'win32' }).text}\n${research?.promptText ? `Research evidence from prior attempts:\n${research.promptText}` : ''}`,
+        content: `Goal: ${goal}\nThe first draft was incomplete (${planIssues(original, goal).join(', ') || 'too generic'}). Produce the complete corrected plan now.\n${platformContextText()}\nSTRATEGY BRIEF:\n${strategyBrief({ goal, longTermGoal: db().settings?.longTermGoal || '', platform: db().settings?.targetPlatform || 'win32' }).text}\n${research?.promptText ? `Research evidence from prior attempts:\n${research.promptText}` : ''}\n${planFindingsText(currentFindings())}`,
       },
     ],
     { format: 'json', kind: 'plan-repair', timeoutMs: 90000, temperature: 0.1, maxTokens: 8000 }
@@ -2093,7 +2107,7 @@ async function buildPlan(goal, workflow, options = {}) {
         role: 'user',
         content: `Goal: ${goal}\n${platformContextText()}\n${ctx}\n${contextText}\nGoal app: ${
           namedApp ? `${namedApp.name}${namedApp.process ? ` (process ${namedApp.process})` : ''}` : 'not named'
-        }\nSTRATEGY BRIEF — plan against this, keep the fallback order and the continuations:\n${strategyText}\nValidated shortcuts from passed live reviewed runs (only reuse when the same app/control matches; otherwise prefer the visible control):\n${shortcutText}\nPrior workflow memory and visual checks from this workstation (use as evidence, adapt to the current screen, and do not repeat a known hindrance):\n${memoryText}\nRESEARCH PACK (conversation, failed attempts, screenshots and all-workflow history):\n${research?.promptText || 'No cross-referenced history yet.'}\nIf you reuse a learned shortcut, set the key step's params.foreground to the window title shown for it so the runner refuses the wrong window.\nUse the goal app above. Never use Notepad unless the goal says Notepad.\n${decompositionBrief(goal)}\nReturn JSON.`,
+        }\nSTRATEGY BRIEF — plan against this, keep the fallback order and the continuations:\n${strategyText}\nValidated shortcuts from passed live reviewed runs (only reuse when the same app/control matches; otherwise prefer the visible control):\n${shortcutText}\nPrior workflow memory and visual checks from this workstation (use as evidence, adapt to the current screen, and do not repeat a known hindrance):\n${memoryText}\n${planFindingsText(currentFindings())}\nRESEARCH PACK (conversation, failed attempts, screenshots and all-workflow history):\n${research?.promptText || 'No cross-referenced history yet.'}\nIf you reuse a learned shortcut, set the key step's params.foreground to the window title shown for it so the runner refuses the wrong window.\nUse the goal app above. Never use Notepad unless the goal says Notepad.\n${decompositionBrief(goal)}\nReturn JSON.`,
       },
     ],
     { format: 'json', kind: 'plan', timeoutMs: 90000, temperature: 0.15, maxTokens: 12000, images: research?.images || [] }

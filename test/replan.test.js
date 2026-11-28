@@ -255,6 +255,30 @@ test('the desktop summary names the foreground and the other windows separately'
   assert.match(summary, /Other open windows: Sightline - Google Chrome \(chrome\)/);
 });
 
+test('a revision names the controls the reviewer already found on the desktop', () => {
+  const { prompt } = buildRevisionPrompt({
+    goal: 'export the report',
+    steps: plan(),
+    failedIndex: 2,
+    failure: { error: 'there is no such control' },
+    desktop: { foreground: { title: 'Sightline - Notepad', process: 'notepad' }, windows: [] },
+    findings: {
+      seq: 5,
+      ageMs: 3000,
+      summary: 'An Export dialog is open over the editor.',
+      next: 'click Save',
+      labels: [{ text: 'Save', at: { x: 0.75, y: 0.12 }, seen: 3 }],
+    },
+  });
+  assert.match(prompt, /Controls the vision reviewer already found on this desktop/);
+  assert.match(prompt, /“Save” at \(0\.75,0\.12\) seen 3×/);
+  assert.match(prompt, /An Export dialog is open over the editor\./);
+  assert.match(prompt, /clickElement params\.name/);
+
+  const without = buildRevisionPrompt({ goal: 'export the report', steps: plan(), failedIndex: 2, failure: { error: 'x' } }).prompt;
+  assert.doesNotMatch(without, /vision reviewer/, 'no reading is no section');
+});
+
 const REFUSAL = {
   type: 'type',
   name: 'Type the note',

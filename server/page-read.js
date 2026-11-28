@@ -21,6 +21,7 @@ import path from 'node:path';
 import { liveScreenshot } from './automation.js';
 import { chat, parseJsonLoose } from './llm.js';
 import { DATA } from './store.js';
+import { findingsBrief } from './vision-findings.js';
 
 const DEFAULTS = Object.freeze({
   enabled: true,
@@ -91,7 +92,7 @@ export function shouldReadPage(step, { reads = 0, settings = DEFAULTS } = {}) {
  * The question. It is deliberately open: a verifier that is only allowed to say
  * "match" or "mismatch" can never notice the profile chooser the plan forgot.
  */
-export function pageReadPrompt({ goal = '', stepName = '', nextNames = [], variables = {} } = {}) {
+export function pageReadPrompt({ goal = '', stepName = '', nextNames = [], variables = {}, findings = null } = {}) {
   const system =
     'You read one live desktop screenshot between automation steps and answer what is actually there. ' +
     'Judge only from visible pixels, never from step names, logs, titles or assumptions. ' +
@@ -103,6 +104,8 @@ export function pageReadPrompt({ goal = '', stepName = '', nextNames = [], varia
     '"goalLooksMet":true|false,"confidence":0-1}. ' +
     'usable is true only when the visible state can be used without a password, payment or an unverifiable guess; ' +
     'a sign-in or account wall that needs a secret is usable=false with nextAction=null. ' +
+    'When the prompt lists controls the vision reviewer already found, click them by that exact label in params.name; ' +
+    'use x,y only for something the reviewer has not named, and never guess a point for a control that is already named. ' +
     'nextAction is the single action a person would take here to move the goal forward. Report one even when the plan ' +
     'did not name it: choosing a browser profile, dismissing a consent prompt, clicking a search field, pressing Enter, ' +
     'picking the matching result, and starting the video when the goal implies playing one are all valid next actions. ' +
@@ -119,11 +122,15 @@ export function pageReadPrompt({ goal = '', stepName = '', nextNames = [], varia
     .slice(0, 4)
     .map(([key, value]) => `${key}="${str(value, 80)}"`)
     .join(', ');
+  const visionText = findingsBrief(findings, {
+    lead: 'Controls the vision reviewer already found (use the exact label in params.name instead of guessing coordinates)',
+  });
   const user =
     `Goal: ${str(goal, 600) || '(the workflow description)'}\n` +
     `Step that just settled: ${str(stepName, 160) || '(none)'}\n` +
     `Steps the plan still has after this one: ${next.length ? next.join(' → ') : '(none)'}\n` +
     (variableText ? `Text the run already holds: ${variableText}\n` : '') +
+    (visionText ? `${visionText}\n` : '') +
     'Read the screenshot now. If it shows a state the plan has to handle first, name that action in nextAction.';
   return { system, user };
 }
@@ -274,6 +281,7 @@ export async function readPage({
   nextNames = [],
   variables = {},
   target = null,
+  findings = null,
   capture = null,
   ask = chat,
 } = {}) {
@@ -281,7 +289,7 @@ export async function readPage({
   const view = shot?.vision || { path: shot?.path, width: shot?.width, height: shot?.height };
   const image = await readImage(view?.path);
   if (!image) return { ok: false, error: 'the frame could not be read', shot };
-  const { system, user } = pageReadPrompt({ goal, stepName, nextNames, variables });
+  const { system, user } = pageReadPrompt({ goal, stepName, nextNames, variables, findings });
   const reply = await ask(
     [
       { role: 'system', content: system },
