@@ -1,18 +1,16 @@
 {
   "version": 1,
   "by": "sentinel",
-  "updatedAt": "2026-11-28T07:03:56.573Z",
-  "head": "b6e8933affee",
+  "updatedAt": "2026-11-28T08:02:37.532Z",
+  "head": "e28df4ab24a6",
   "lastRun": {
-    "at": "2026-11-28T07:03:56.542Z",
-    "ok": false,
+    "at": "2026-11-28T08:02:37.532Z",
+    "ok": true,
     "tests": 950,
-    "pass": 942,
-    "fail": 1,
+    "pass": 943,
+    "fail": 0,
     "isolated": true,
-    "failingTests": [
-      "a live run runs the declared hand-off steps after its verdict (31285.8691ms)"
-    ]
+    "failingTests": []
   },
   "open": 20,
   "items": [
