@@ -178,6 +178,8 @@ import { activePresenter, listPositionMemory, presenterUserInput } from './foreg
 import { latestMonitorSuggestions, monitorState, startLiveMonitor, stopLiveMonitor } from './live-monitor.js';
 import { observerState } from './app-observer.js';
 import { livePreview } from './live-preview.js';
+import { vision } from './vision-engine.js';
+import { registerVisionRoutes } from './vision-api.js';
 import { liveMap } from './live-map.js';
 import { findSimulation, listSimulations, simulationSummary, startSimulation } from './screenshot-sim.js';
 import { buildTestReview, SORTS as TEST_REVIEW_SORTS } from './test-review.js';
@@ -1819,6 +1821,7 @@ route('POST', /^\/api\/local-model\/stop$/, async (req, res) => {
 });
 
 route('GET', /^\/api\/live\/preview$/, async (req, res) => sendJson(res, 200, { ok: true, preview: livePreview.state() }));
+registerVisionRoutes({ route, sendJson, fail, readBody });
 route('POST', /^\/api\/live\/preview$/, async (req, res) => {
   let body;
   try { body = await readBody(req); } catch { return fail(res, 400, 'Invalid request body'); }
@@ -5230,6 +5233,7 @@ function shutdown() {
   stopAmbient();
   stopAgents();
   livePreview.stop();
+  vision.stop();
   stopVerificationLoop();
   stopAutoSync();
   stopSentinel();

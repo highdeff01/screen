@@ -133,6 +133,8 @@ const ui = {
   presentationAudit: null,
   presentationError: '',
   videoBusy: false,
+  vision: null,
+  visionDigest: '',
   videoUrl: null,
   videoDeckId: null,
   videoError: '',
@@ -1817,6 +1819,7 @@ function renderControlPanel() {
     </div>
   </div>
   ${renderLiveWatch()}
+  ${renderVisionEngine()}
   ${renderLivePreview()}`;
 }
 
@@ -1936,6 +1939,50 @@ async function changeLivePreview(action) {
     schedulePreviewPoll();
   }
   updatePreviewCard(true);
+}
+
+function renderVisionEngine() {
+  const engine = ui.vision || {};
+  const running = Boolean(engine.running);
+  const stats = engine.stats || {};
+  const goal = engine.goal || {};
+  const current = engine.current || null;
+  const elements = (engine.elements || []).slice(0, 6);
+  const frameUrl = current?.file ? `/api/files/raw?path=${encodeURIComponent(current.file)}` : null;
+  return `<div class="side-card section-gap" id="vision-card">
+    <div class="side-card-head"><h3>Vision engine</h3>${running ? `<span class="pill live">${engine.fps} fps</span>` : '<span class="pill simulated">idle</span>'}</div>
+    <div class="side-card-body">
+      <p class="muted small" style="margin-bottom:8px">Captures the desktop several times a second and keeps only the frames that changed. Each new frame is split into 12 sections, so a reader can look at the part that moved; labelled elements keep their identity while they move; and the loop stops when the goal is reached.</p>
+      <div class="row wrap" style="gap:6px;align-items:center">
+        <button class="btn btn-sm ${running ? 'btn-ghost' : 'btn-primary'}" data-act="vision" data-mode="${running ? 'stop' : 'start'}">${running ? 'Stop vision' : 'Start vision'}</button>
+        <button class="btn btn-sm" data-act="vision-digest">Review digest</button>
+        <span class="dim small">${engine.frameCount ? `${engine.frameCount} kept · ${stats.changed || 0} change(s) · ${stats.skipRate ?? 0}% unchanged · ${engine.measuredFps ?? '—'} fps` : 'no frames yet'}</span>
+      </div>
+      <div class="row wrap section-gap" style="gap:6px;align-items:center">
+        <input class="input" id="vision-goal" placeholder="Goal to watch for" value="${esc(goal.text || '')}" style="flex:1;min-width:140px">
+        <button class="btn btn-sm" data-act="vision-goal">Set goal</button>
+        <button class="btn btn-sm btn-ghost" data-act="vision-goal" data-reached="1">Mark reached</button>
+      </div>
+      ${goal.reachedAt ? `<p class="small section-gap" style="margin:0"><span class="badge okbadge">goal reached</span> ${esc(goal.reason || '')}</p>` : ''}
+      ${frameUrl ? `<figure class="preview-frame section-gap"><img src="${frameUrl}" alt="Latest vision frame"><figcaption class="dim small">Frame #${current.seq} · ${esc(current.at || '')} · ${current.changedPct === null ? 'unreadable' : `${current.changedPct}% changed`}${current.dirtySections ? ` · ${current.dirtySections} section(s) moved` : ''}</figcaption></figure>` : running ? '<p class="dim small section-gap">Waiting for the first change…</p>' : ''}
+      ${(current?.labels || []).length ? `<div class="section-gap"><span class="dim small">Labels on this frame</span><div class="row wrap" style="gap:4px;margin-top:4px">${current.labels.map((text) => `<span class="badge">${esc(text)}</span>`).join('')}</div></div>` : ''}
+      ${elements.length ? `<div class="section-gap"><span class="dim small">Tracked elements</span><ul class="small" style="margin:4px 0 0;padding-left:16px">${elements.map((element) => `<li>${esc(element.label || '')} <span class="dim">· ${esc(element.id || '')} · seen ${element.seen || 1}×</span></li>`).join('')}</ul></div>` : ''}
+      ${ui.visionDigest ? `<pre class="console-out section-gap">${esc(ui.visionDigest)}</pre>` : ''}
+      ${stats.lastError ? `<pre class="console-out err section-gap">${esc(stats.lastError)}</pre>` : ''}
+    </div>
+  </div>`;
+}
+
+async function loadVision() {
+  try {
+    const res = await api('/api/vision');
+    if (!res.ok || !res.vision) return;
+    ui.vision = res.vision;
+    const card = document.getElementById('vision-card');
+    if (card) card.outerHTML = renderVisionEngine();
+  } catch {
+    // The console keeps showing the last state it had.
+  }
 }
 
 function renderLiveWatch() {
@@ -8413,6 +8460,50 @@ async function runAction(name, ds, el) {
       renderModal();
       break;
     }
+    case 'vision': {
+      const mode = ds.mode === 'stop' ? 'stop' : 'start';
+      const res = await api('/api/vision', { method: 'POST', body: { action: mode } });
+      if (!res.ok) {
+        ui.controlOut = res.error || 'The vision engine did not start.';
+        ui.controlErr = true;
+        render();
+        break;
+      }
+      ui.vision = res.vision;
+      ui.controlOut = mode === 'start' ? `Vision engine running at ${res.vision.fps} fps — only changed frames are kept.` : 'Vision engine stopped.';
+      ui.controlErr = false;
+      render();
+      break;
+    }
+    case 'vision-goal': {
+      const reached = ds.reached === '1';
+      const goalText = document.getElementById('vision-goal')?.value || '';
+      const res = reached
+        ? await api('/api/vision', { method: 'POST', body: { action: 'goal', reached: true, reason: 'the operator marked the goal reached' } })
+        : await api('/api/vision', { method: 'POST', body: { action: 'goal', goal: goalText } });
+      if (!res.ok) {
+        ui.controlOut = res.error || 'The goal was not updated.';
+        ui.controlErr = true;
+      } else {
+        ui.controlOut = reached ? 'Goal marked reached.' : `Watching for: ${goalText || '(no goal)'}`;
+        ui.controlErr = false;
+      }
+      await loadVision();
+      render();
+      break;
+    }
+    case 'vision-digest': {
+      const res = await api('/api/vision', { method: 'POST', body: { action: 'digest', count: 30 } });
+      if (!res.ok) {
+        ui.controlOut = res.error || 'There is no frame history to review yet.';
+        ui.controlErr = true;
+      } else {
+        ui.visionDigest = res.digest;
+        ui.controlErr = false;
+      }
+      render();
+      break;
+    }
     case 'live-watch': {
       const mode = ds.mode === 'stop' ? 'stop' : 'start';
       const res = await api('/api/live/monitor', { method: 'POST', body: { action: mode } });
@@ -11128,6 +11219,10 @@ async function boot() {
     }
   };
   pollState();
+  loadVision();
+  // While the stream runs, keep the card's frame and counters current without
+  // rebuilding the whole view.
+  setInterval(() => { if (ui.vision?.running) loadVision(); }, 1500);
   setInterval(loadHealth, 60000);
   setInterval(async () => {
     if (!ui.data?.live?.running) return;
