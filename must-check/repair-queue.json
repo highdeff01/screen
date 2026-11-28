@@ -1,19 +1,43 @@
 {
   "version": 1,
   "by": "sentinel",
-  "updatedAt": "2026-11-28T06:35:10.062Z",
-  "head": "a270cb9b07a9",
+  "updatedAt": "2026-11-28T07:03:56.573Z",
+  "head": "b6e8933affee",
   "lastRun": {
-    "at": "2026-11-28T06:35:10.061Z",
-    "ok": true,
-    "tests": 948,
-    "pass": 941,
-    "fail": 0,
+    "at": "2026-11-28T07:03:56.542Z",
+    "ok": false,
+    "tests": 950,
+    "pass": 942,
+    "fail": 1,
     "isolated": true,
-    "failingTests": []
+    "failingTests": [
+      "a live run runs the declared hand-off steps after its verdict (31285.8691ms)"
+    ]
   },
   "open": 20,
   "items": [
+    {
+      "id": "sent_mx02dxmma487d8",
+      "at": "2026-11-28T07:03:56.542Z",
+      "status": "queued",
+      "attempts": 1,
+      "fail": 1,
+      "pass": 942,
+      "tests": [
+        "a live run runs the declared hand-off steps after its verdict (31285.8691ms)"
+      ],
+      "details": [
+        {
+          "name": "a live run runs the declared hand-off steps after its verdict",
+          "file": "",
+          "line": null,
+          "message": ""
+        }
+      ],
+      "plan": "",
+      "planError": "",
+      "report": "must-check/2026-11-28T07-03-56-a-live-run-runs-the-declared-hand-off-st.md"
+    },
     {
       "id": "sent_mwzy4bgf67f159",
       "at": "2026-11-28T05:04:29.452Z",
@@ -518,28 +542,6 @@
       "plan": "",
       "planError": "",
       "report": "must-check/2026-11-19T22-22-19-the-mirror-is-cloned-once-then-follows-g.md"
-    },
-    {
-      "id": "sent_mwo0a3580d5251",
-      "at": "2026-11-19T20:31:43.724Z",
-      "status": "queued",
-      "attempts": 1,
-      "fail": 1,
-      "pass": 589,
-      "tests": [
-        "share proxy only forwards safe reads and dry executions (22.1477ms)"
-      ],
-      "details": [
-        {
-          "name": "share proxy only forwards safe reads and dry executions",
-          "file": "",
-          "line": null,
-          "message": ""
-        }
-      ],
-      "plan": "",
-      "planError": "",
-      "report": "must-check/2026-11-19T20-31-43-share-proxy-only-forwards-safe-reads-and.md"
     }
   ]
 }
