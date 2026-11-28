@@ -53,6 +53,9 @@ function controllerFor(id) {
   const controller = createVisionController({
     engine: session.engine,
     sessionId: key,
+    // The reviewer reads this session's frames, so its summary is the reading
+    // the decision prompt needs; the engine itself never holds one.
+    readReview: () => reviewerFor(key).state()?.lastReview,
     publish: (type, data) => visionBus.publish(type, data),
   });
   controllers.set(key, controller);

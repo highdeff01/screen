@@ -40,6 +40,7 @@
 import { chat, parseJsonLoose } from './llm.js';
 import { executeStep, runPowerShell } from './automation.js';
 import { vision } from './vision-engine.js';
+import { visionReview } from './vision-review.js';
 import { visionBus } from './vision-bus.js';
 import { logActivity } from './store.js';
 
@@ -262,6 +263,7 @@ export function createVisionController({
   ask = chat,
   act = null,
   publish = () => {},
+  readReview = null,
   log = logActivity,
   clock = () => Date.now(),
   wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
@@ -426,15 +428,29 @@ export function createVisionController({
     return finish(`goal reached — ${reason}`);
   }
 
+  /**
+   * The session reviewer's last reading. It belongs to the reviewer, not to the
+   * engine: the engine only records pixels, so a summary read off it is always
+   * empty and the decision would be made blind to what the screen says.
+   */
+  function lastReading() {
+    if (typeof readReview !== 'function') return null;
+    try {
+      return readReview() || null;
+    } catch {
+      // A reviewer that cannot be asked is a decision made without it.
+      return null;
+    }
+  }
+
   /** Ask for one action, with the failure that made the last one wrong. */
   async function decide({ frame, elements, failure }) {
-    const live = engine.state?.() || {};
     const messages = controlPrompt({
       goal,
       frame,
       digest: typeof engine.digest === 'function' ? engine.digest({ count: 20 }) : '',
       elements,
-      review: live.lastReview || null,
+      review: lastReading(),
       history,
       failure,
     });
@@ -654,6 +670,7 @@ export function createVisionController({
 export const visionControl = createVisionController({
   engine: vision,
   sessionId: 'main',
+  readReview: () => visionReview.state()?.lastReview,
   publish: (type, data) => {
     try {
       visionBus.publish(type, data);

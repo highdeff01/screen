@@ -288,6 +288,45 @@ test('a check that never gets a fresh frame is unknown, not a miss', async () =>
   assert.match(String(prompts[1][1].content), /no check/, 'the next decision is told there was no check');
 });
 
+test("the decision prompt carries the reviewer's reading of the screen", async () => {
+  // The engine records pixels and never a reading, so the summary has to come
+  // from the session's reviewer; reading it off the engine loses it silently.
+  const engine = fakeEngine({ changes: [100] });
+  const { controller: loop, prompts } = controller({
+    engine,
+    answers: [{ done: true, why: 'the dialog is gone' }],
+    act: async () => ({ output: '' }),
+    readReview: () => ({ seq: 3, summary: 'an export dialog is open with a Save button', next: 'click Save' }),
+  });
+  loop.start({ goal: 'close the export dialog' });
+  await waitFor(() => loop.state().running === false);
+
+  assert.equal(prompts.length, 1);
+  assert.match(String(prompts[0][1].content), /Reader: an export dialog is open with a Save button/);
+  assert.match(String(prompts[0][1].content), /Next it suggested: click Save/);
+});
+
+test('a reviewer that cannot be asked leaves the decision without a reading, not without an action', async () => {
+  const engine = fakeEngine({ changes: [100], elements: [{ label: 'Save', x: 0.7, y: 0.1, w: 0.1, h: 0.04, seen: 2 }] });
+  const actions = [];
+  const { controller: loop, prompts } = controller({
+    engine,
+    answers: [{ action: { type: 'click', target: 'Save' } }, { done: true, why: 'saved' }],
+    act: async (action) => {
+      actions.push(action);
+      return { output: 'clicked' };
+    },
+    readReview: () => {
+      throw new Error('the reviewer has no session');
+    },
+  });
+  loop.start({ goal: 'save the report' });
+  await waitFor(() => loop.state().running === false);
+
+  assert.equal(actions.length, 1, 'a broken reviewer does not stop the loop acting');
+  assert.doesNotMatch(String(prompts[0][1].content), /Reader:/);
+});
+
 test('the actor maps a normalized point onto the desktop, origin included', async () => {
   let step = null;
   const actor = createLiveActor({
