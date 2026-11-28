@@ -139,6 +139,11 @@ test('a failed step records what went wrong and what is still pending', async ()
     failed.wentWrong.some((item) => /Save button never appeared/.test(item.detail || '')),
     'the check says what went wrong, while the run is still going'
   );
+  assert.equal(
+    failed.wentWrong.filter((item) => /Save the profile/.test(item.what || '')).length,
+    1,
+    'the failure is listed once, not as both a command and a step'
+  );
   assert.ok(
     failed.remaining.some((item) => /Capture the second screen/.test(item.text)),
     'and what the plan has not reached yet'
