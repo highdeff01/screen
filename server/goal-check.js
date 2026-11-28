@@ -300,6 +300,7 @@ export function checkGoal({
   at = null,
   allowInference = true,
   evidenceSteps = null,
+  commandIsStep = false,
   activity = 'tick',
 } = {}) {
   const statedGoal = tidy(goal, 600);
@@ -365,7 +366,9 @@ export function checkGoal({
   }
 
   const wentWrong = [];
-  if (failedCommand) {
+  // When the command is the run's step, the step entry below already names the
+  // failure and carries its error: the command entry would list it twice.
+  if (failedCommand && !commandIsStep) {
     const detail = tidy(
       [command.stderr, command.error, command.code != null ? `exit ${command.code}` : '', command.stdout]
         .filter(Boolean)
@@ -560,7 +563,7 @@ export function checkRunStep(run, step, { goal = '', at = null } = {}) {
     error: String(step.status || '') === 'failed' ? tidy(step.error, 300) : '',
     stdout: tidy([step.output, step.error].filter(Boolean).join(' '), 2000),
   };
-  return runGoalCheck(run, { goal, at, command, evidenceSteps: settled, step });
+  return runGoalCheck(run, { goal, at, command, evidenceSteps: settled, step, commandIsStep: true });
 }
 
 /** The verdict's own check: the run is settled, so it can say yes or no. */
@@ -569,7 +572,7 @@ export function checkRunGoal(run, { goal = '', at = null } = {}) {
   return runGoalCheck(run, { goal, at });
 }
 
-function runGoalCheck(run, { goal = '', at = null, command = null, evidenceSteps = null, step = null }) {
+function runGoalCheck(run, { goal = '', at = null, command = null, evidenceSteps = null, step = null, commandIsStep = false }) {
   const record = recordGoalCheck(
     run,
     checkGoal({
@@ -578,6 +581,7 @@ function runGoalCheck(run, { goal = '', at = null, command = null, evidenceSteps
       command,
       run,
       evidenceSteps,
+      commandIsStep,
       at,
       allowInference: false,
       activity: 'step',
