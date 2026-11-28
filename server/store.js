@@ -546,11 +546,41 @@ export function writeFileDurable(file, text, { append = false } = {}) {
   }
 }
 
+// Windows refuses a replace while another process holds the file open — a second
+// console saving the same database, a reader, or the shell. Short backoffs let
+// it finish instead of losing the save.
+const REPLACE_BUSY = new Set(['EPERM', 'EBUSY', 'EACCES']);
+
+function sleepSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+function replaceFile(tmp, file) {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      fs.renameSync(tmp, file);
+      return;
+    } catch (err) {
+      if (!REPLACE_BUSY.has(err?.code) || attempt >= 8) throw err;
+      sleepSync(15 * (attempt + 1));
+    }
+  }
+}
+
 /** Durable replace: write a sibling temp file, fsync it, then rename it into place. */
 export function writeFileAtomic(file, text) {
-  const tmp = `${file}.tmp`;
-  writeFileDurable(tmp, text);
-  fs.renameSync(tmp, file);
+  // Two consoles can share one data folder (a dev watcher next to a started
+  // instance), so the temp name is per process: with one shared `db.json.tmp`
+  // the faster writer renames it first and the other save dies with ENOENT.
+  const tmp = `${file}.${process.pid}.tmp`;
+  try {
+    writeFileDurable(tmp, text);
+    replaceFile(tmp, file);
+  } catch (err) {
+    // Never leave half-written bytes behind for the next save to inherit.
+    try { fs.rmSync(tmp, { force: true }); } catch {}
+    throw err;
+  }
   syncDirectory(path.dirname(file));
 }
 
