@@ -1,22 +1,51 @@
 {
   "version": 1,
   "by": "sentinel",
-  "updatedAt": "2026-11-28T10:36:03.313Z",
-  "head": "c631df469bcd",
+  "updatedAt": "2026-11-28T12:25:13.034Z",
+  "head": "eda19d87c1ba",
   "lastRun": {
-    "at": "2026-11-28T10:36:03.303Z",
+    "at": "2026-11-28T12:25:13.020Z",
     "ok": false,
     "tests": 967,
     "pass": 958,
     "fail": 2,
     "isolated": true,
     "failingTests": [
-      "state polling retries failures without overlapping polls (1.4806ms)",
-      "boot renders state without waiting for optional startup requests (21.7731ms)"
+      "state polling retries failures without overlapping polls (1.2957ms)",
+      "boot renders state without waiting for optional startup requests (19.3343ms)"
     ]
   },
   "open": 20,
   "items": [
+    {
+      "id": "sent_mx0dv3gc6b1568",
+      "at": "2026-11-28T12:25:13.020Z",
+      "status": "queued",
+      "attempts": 1,
+      "fail": 2,
+      "pass": 958,
+      "tests": [
+        "state polling retries failures without overlapping polls (1.2957ms)",
+        "boot renders state without waiting for optional startup requests (19.3343ms)"
+      ],
+      "details": [
+        {
+          "name": "state polling retries failures without overlapping polls",
+          "file": "",
+          "line": null,
+          "message": ""
+        },
+        {
+          "name": "boot renders state without waiting for optional startup requests",
+          "file": "",
+          "line": null,
+          "message": ""
+        }
+      ],
+      "plan": "",
+      "planError": "",
+      "report": "must-check/2026-11-28T12-25-13-state-polling-retries-failures-without-o.md"
+    },
     {
       "id": "sent_mx09ypnra27fae",
       "at": "2026-11-28T10:36:03.303Z",
@@ -558,19 +587,6 @@
       "plan": "",
       "planError": "",
       "report": "must-check/2026-11-25T11-27-53-keep-running-continues-after-an-unrepair.md"
-    },
-    {
-      "id": "sent_mwrp79kjaf6983",
-      "at": "2026-11-22T10:32:41.011Z",
-      "status": "queued",
-      "attempts": 1,
-      "fail": null,
-      "pass": null,
-      "tests": [],
-      "details": [],
-      "plan": "",
-      "planError": "",
-      "report": "must-check/2026-11-22T10-32-41-suite.md"
     }
   ]
 }
