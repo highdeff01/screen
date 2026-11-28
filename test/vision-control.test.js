@@ -61,7 +61,7 @@ function scripted(answers) {
   return { ask, prompts };
 }
 
-function controller({ engine, answers, act }) {
+function controller({ engine, answers, act, ...options }) {
   const script = scripted(answers);
   const controller = createVisionController({
     engine,
@@ -73,6 +73,7 @@ function controller({ engine, answers, act }) {
     settleMs: 0,
     retryDelayMs: 0,
     maxSteps: 1,
+    ...options,
   });
   return { controller, prompts: script.prompts };
 }
@@ -179,6 +180,112 @@ test('an answer with no usable action is replanned and then stopped, not looped 
   const state = loop.state();
   assert.equal(state.replans, 4, 'maxReplans + 1 decisions, then a stop');
   assert.match(state.stopReason, /no progress/);
+});
+
+test('the after-action check waits for a frame captured after the action, not the stream\'s held one', async () => {
+  // The stream never stops capturing, so right after a click its newest frame is
+  // the one taken before it, and a busy read hands exactly that frame back.
+  // Judging that frame calls a click that worked a miss and re-plans it.
+  let seq = 0;
+  let current = null;
+  let acted = false;
+  let busyReads = 0;
+  const engine = {
+    reached: null,
+    state: () => ({ goal: { text: 'the goal', reachedAt: engine.reached }, elements: [], current }),
+    digest: () => '',
+    async step() {
+      if (!acted) {
+        seq += 1;
+        current = { seq, at: 'before', changedPct: 100, dirtySections: [], labels: [], elements: [] };
+        return current;
+      }
+      // A capture that was already in flight when the click landed.
+      if (busyReads < 2) {
+        busyReads += 1;
+        return { skipped: true, busy: true, at: 'before' };
+      }
+      seq += 1;
+      current = { seq, at: 'after', changedPct: 12, dirtySections: [], labels: [], elements: [] };
+      return current;
+    },
+    markGoalReached(reason) {
+      engine.reached = reason;
+      return { reason };
+    },
+    setGoal() {},
+    onFrame: () => () => {},
+  };
+  let clicks = 0;
+  const { controller: loop, prompts } = controller({
+    engine,
+    answers: [
+      { action: { type: 'click', x: 0.5, y: 0.5 } },
+      { action: { type: 'click', x: 0.5, y: 0.5 } },
+    ],
+    act: async () => {
+      clicks += 1;
+      acted = true;
+      return { output: 'clicked' };
+    },
+  });
+  loop.start({ goal: 'open the export dialog' });
+  await waitFor(() => loop.state().running === false);
+
+  const state = loop.state();
+  assert.equal(clicks, 1, 'the click that worked was not repeated');
+  assert.equal(state.replans, 0, 'a frame from before the action is not a failed action');
+  assert.equal(state.history[0].changed, true, 'the fresh frame after the action judged it');
+  assert.equal(prompts.length, 1, 'the model was asked once — the click was never re-planned');
+  assert.doesNotMatch(String(prompts[0][1].content), /did not change/);
+});
+
+test('a check that never gets a fresh frame is unknown, not a miss', async () => {
+  let seq = 0;
+  let current = null;
+  let acted = false;
+  const engine = {
+    reached: null,
+    state: () => ({ goal: { text: 'the goal', reachedAt: engine.reached }, elements: [], current }),
+    digest: () => '',
+    async step() {
+      if (!acted) {
+        seq += 1;
+        current = { seq, at: 'before', changedPct: 100, dirtySections: [], labels: [], elements: [] };
+        return current;
+      }
+      // The stream is mid-capture for the whole window the check is allowed.
+      return { skipped: true, busy: true, at: 'before' };
+    },
+    markGoalReached(reason) {
+      engine.reached = reason;
+      return { reason };
+    },
+    setGoal() {},
+    onFrame: () => () => {},
+  };
+  let clicks = 0;
+  const { controller: loop, prompts } = controller({
+    engine,
+    answers: [{ action: { type: 'click', x: 0.5, y: 0.5 } }, { done: true, why: 'it opened' }],
+    act: async () => {
+      clicks += 1;
+      acted = true;
+      return { output: 'clicked' };
+    },
+    verifyTimeoutMs: 40,
+    verifyPollMs: 1,
+    // A second turn, so the next decision can be checked for how it was told.
+    maxSteps: 2,
+  });
+  loop.start({ goal: 'open the export dialog' });
+  await waitFor(() => loop.state().running === false);
+
+  const state = loop.state();
+  assert.equal(clicks, 1, 'the action was not repeated over a missing frame');
+  assert.equal(state.history[0].changed, null, 'an impossible check is recorded as no check');
+  assert.equal(state.replans, 0, 'a missing frame is never a replan');
+  assert.match(String(prompts[1][1].content), /no check/, 'the next decision is told there was no check');
 });
 
 test('the actor maps a normalized point onto the desktop, origin included', async () => {

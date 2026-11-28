@@ -15,8 +15,10 @@
  *             guessed coordinates, so a button the labeller already found is
  *             clicked by identity even after it moved.
  *   act       the same desktop automation a run uses, one action at a time.
- *   verify    the frame after the action. A screen that did not change is a
- *             fact, not a pass, and it is handed straight back to the model.
+ *   verify    a frame captured after the action, never one the stream was
+ *             already holding: a frame taken before the action says nothing
+ *             about it. A screen that did not change is a fact, not a pass, and
+ *             it is handed straight back to the model.
  *
  * Two automatic recoveries, because a live loop that stops at the first miss is
  * a very slow screenshot tool:
@@ -48,6 +50,9 @@ export const MAX_REPLANS = 3;
 export const DECISION_TIMEOUT_MS = 60000;
 export const SETTLE_MS = 350;
 export const PULSE_MS = 2000;
+/** How long the after-action check keeps asking for a fresh capture. */
+export const VERIFY_TIMEOUT_MS = 2500;
+export const VERIFY_POLL_MS = 120;
 /** A frame that moved less than this is a screen that did not change. */
 export const NO_CHANGE_PCT = 1;
 
@@ -270,6 +275,8 @@ export function createVisionController({
   settleMs = SETTLE_MS,
   retryDelayMs = 400,
   pulseMs = PULSE_MS,
+  verifyTimeoutMs = VERIFY_TIMEOUT_MS,
+  verifyPollMs = VERIFY_POLL_MS,
   maxErrors = 3,
 } = {}) {
   if (!engine || typeof engine.step !== 'function') throw new Error('A live controller needs a vision engine.');
@@ -324,8 +331,8 @@ export function createVisionController({
     };
   }
 
-  /** The newest frame. A busy engine's current frame is just as good. */
-  async function look() {
+  /** One capture attempt, in the outcome shape the engine reports. */
+  async function read() {
     let outcome = null;
     try {
       outcome = await engine.step();
@@ -335,9 +342,48 @@ export function createVisionController({
       });
     }
     if (outcome?.error) throw Object.assign(new Error(outcome.error), { unreadable: true });
-    if (outcome?.busy) return engine.state().current;
-    if (outcome?.skipped) return engine.state().current;
     return outcome;
+  }
+
+  /** The newest frame the stream has. A busy engine's current frame is just as good. */
+  async function look() {
+    const outcome = await read();
+    if (outcome?.busy || outcome?.skipped) return engine.state?.().current || null;
+    return outcome;
+  }
+
+  /**
+   * The frame after an action, from a capture this check started itself.
+   *
+   * The stream is already capturing, so the frame sitting in the engine may have
+   * been taken before the action being judged — `busy` hands back exactly that
+   * one. Judging it calls a click that worked a screen that “did not change” and
+   * re-plans work already done. So every poll asks for its own capture, and only
+   * an answer produced by one counts: a capture that was already in flight is
+   * `busy` and is asked again rather than trusted. A capture that reports the
+   * desktop identical to the last frame it kept is a real “nothing changed”.
+   *
+   * `changed: null` means no fresh frame arrived in time. That is not a failed
+   * action, and it must never become a replan.
+   */
+  async function verify({ sinceSeq = 0, timeoutMs = verifyTimeoutMs } = {}) {
+    const deadline = clock() + Math.max(0, timeoutMs);
+    for (;;) {
+      const outcome = await read();
+      if (outcome?.identical === true || outcome?.quiet === true) {
+        return { frame: engine.state?.().current || null, changed: false, fresh: true };
+      }
+      const seq = Number(outcome?.seq);
+      if (Number.isFinite(seq) && seq > 0) {
+        return {
+          frame: outcome,
+          changed: seq > sinceSeq && (outcome.changedPct === null || outcome.changedPct === undefined || outcome.changedPct >= NO_CHANGE_PCT),
+          fresh: true,
+        };
+      }
+      if (clock() >= deadline) return { frame: engine.state?.().current || null, changed: null, fresh: false };
+      await wait(verifyPollMs);
+    }
   }
 
   function startPulse() {
@@ -487,29 +533,38 @@ export function createVisionController({
         return { ok: true };
       }
       await wait(settleMs);
-      let after = null;
+      // What the stream had when the action finished: only a frame stored after
+      // this one can be evidence about the action, so the check below asks for a
+      // capture of its own instead of reading this one back.
+      const sinceSeq = Number(engine.state?.().current?.seq) || Number(frame?.seq) || 0;
+      let check = { frame: null, changed: null, fresh: false };
       try {
-        after = await look();
+        check = await verify({ sinceSeq });
       } catch (err) {
         lastError = String(err?.message || err).slice(0, 240);
         errors += 1;
       }
-      const changed = Boolean(after && after.seq !== frame.seq && (after.changedPct === null || after.changedPct >= NO_CHANGE_PCT));
+      const changed = check.changed;
       history.unshift({
         at: new Date(clock()).toISOString(),
         action: describeAction(action),
         changed,
         why: action.why || '',
-        ...(changed || !reason ? {} : { reason }),
+        ...(changed === false && reason ? { reason } : {}),
       });
       history.length = Math.min(history.length, 40);
-      if (changed) return { ok: true };
+      if (check.frame?.seq) frame = check.frame;
+      if (changed === true) return { ok: true };
+      if (changed === null) {
+        // No capture of its own arrived, so there is no verdict on the action.
+        // Neither a panic nor a repeat: carry on from the newest frame.
+        return { ok: true };
+      }
       // The action ran and nothing moved: that is the one result a live loop
       // must never accept as success. Ask again with the fact.
       replans += 1;
       failure = `The screen did not change after ${describeAction(action)}. It probably missed its target; choose a different route.`;
       emit('replan', { reason: failure, step: steps });
-      if (after?.seq) frame = after;
     }
     return finish(`no progress after ${decisions} decision(s); the last attempt was ${lastAction || 'none'}`);
   }
