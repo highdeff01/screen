@@ -126,6 +126,39 @@ export function describeAction(action) {
   return action.type;
 }
 
+/**
+ * How far behind the frame being decided a reading may be before it is dropped.
+ *
+ * The reviewer reads changed frames on a gap, so its newest reading is normally
+ * a frame or two older than the one the loop is about to act on. Past that it
+ * describes a screen that has already moved: a dialog the model was told is open
+ * may have closed, and a summary quoted as current is worse than no summary.
+ */
+export const MAX_REVIEW_LAG = 3;
+
+/**
+ * The reviewer's reading as one line that says which frame it describes and how
+ * far behind the frame being decided that is — or nothing at all when the
+ * reading is too old to be about this screen. A reading with no frame number
+ * cannot be placed in time, so it is dropped rather than presented as current.
+ */
+export function readerLine({ review = null, frame = {}, maxLag = MAX_REVIEW_LAG } = {}) {
+  const summary = textOf(review?.summary, 400);
+  if (!summary) return null;
+  const readSeq = Number(review?.seq);
+  if (!Number.isFinite(readSeq) || readSeq <= 0) return null;
+  const next = textOf(review?.next, 300);
+  const tail = next ? ` Next it suggested: ${next}` : '';
+  const nowSeq = Number(frame?.seq);
+  if (!Number.isFinite(nowSeq) || nowSeq <= 0) {
+    return `Reader on frame #${readSeq} (the current frame is unknown): ${summary}${tail}`;
+  }
+  const behind = Math.max(0, nowSeq - readSeq);
+  if (behind > maxLag) return null;
+  const when = behind === 0 ? 'the frame being decided' : behind === 1 ? `1 frame behind #${nowSeq}` : `${behind} frames behind #${nowSeq}`;
+  return `Reader on frame #${readSeq} (${when}): ${summary}${tail}`;
+}
+
 /** The decision prompt: the goal, this screen, and what has already failed. */
 export function controlPrompt({
   goal = '',
@@ -133,6 +166,7 @@ export function controlPrompt({
   digest = '',
   elements = [],
   review = null,
+  maxReviewLag = MAX_REVIEW_LAG,
   history = [],
   failure = '',
 } = {}) {
@@ -145,6 +179,7 @@ export function controlPrompt({
     'Coordinates are normalized: x and y between 0 and 1 from the top-left of the screen. Prefer "target" naming a tracked label; use x and y only for something with no label.',
     'After your action the screen is read again and you will be asked for the next one, so do not chain actions in one answer and do not repeat an action the log says failed — choose a different route.',
     `Set "done":true only when the goal is visibly reached. At most ${MAX_STEPS} actions are allowed.`,
+    'A “Reader” line is another agent\'s reading of the frame it names, and that frame may be older than the one above; trust the frame and its tracked labels for what is on screen now.',
   ].join(' ');
   const lines = [goal ? `Goal: ${goal}` : 'Goal: none set — describe what should happen next.'];
   if (frame?.seq) {
@@ -163,7 +198,8 @@ export function controlPrompt({
   });
   if (labelled.length) lines.push('', 'Tracked labels:', labelled.join('; '));
   else lines.push('', 'Tracked labels: none yet — use coordinates from the frame, or wait for a label.');
-  if (review?.summary) lines.push('', `Reader: ${review.summary}${review.next ? ` Next it suggested: ${review.next}` : ''}`);
+  const reader = readerLine({ review, frame, maxLag: maxReviewLag });
+  if (reader) lines.push('', reader);
   if (digest) lines.push('', 'Recent timeline:', String(digest).slice(0, 3000));
   if (history.length) {
     lines.push('', 'What has been tried:');
@@ -264,6 +300,7 @@ export function createVisionController({
   act = null,
   publish = () => {},
   readReview = null,
+  maxReviewLagFrames = MAX_REVIEW_LAG,
   log = logActivity,
   clock = () => Date.now(),
   wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
@@ -451,6 +488,7 @@ export function createVisionController({
       digest: typeof engine.digest === 'function' ? engine.digest({ count: 20 }) : '',
       elements,
       review: lastReading(),
+      maxReviewLag: maxReviewLagFrames,
       history,
       failure,
     });

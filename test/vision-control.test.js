@@ -14,6 +14,7 @@ import {
   cleanAction,
   describeAction,
   controlPrompt,
+  readerLine,
   screenPoint,
   stepForAction,
 } from '../server/vision-control.js';
@@ -296,14 +297,84 @@ test("the decision prompt carries the reviewer's reading of the screen", async (
     engine,
     answers: [{ done: true, why: 'the dialog is gone' }],
     act: async () => ({ output: '' }),
-    readReview: () => ({ seq: 3, summary: 'an export dialog is open with a Save button', next: 'click Save' }),
+    readReview: () => ({ seq: 1, summary: 'an export dialog is open with a Save button', next: 'click Save' }),
   });
   loop.start({ goal: 'close the export dialog' });
   await waitFor(() => loop.state().running === false);
 
   assert.equal(prompts.length, 1);
-  assert.match(String(prompts[0][1].content), /Reader: an export dialog is open with a Save button/);
+  assert.match(String(prompts[0][1].content), /Reader on frame #1 \(the frame being decided\): an export dialog is open with a Save button/);
   assert.match(String(prompts[0][1].content), /Next it suggested: click Save/);
+});
+
+test("a reading of an older frame is shown with the frame it describes and how far behind it is", async () => {
+  // The reviewer only reads changed frames and skips a gap, so by the time the
+  // action after next is decided its summary is about an earlier screen. Saying
+  // "Reader:" as if it were this frame is how a closed dialog stays "open".
+  const engine = fakeEngine({ changes: [100, 20] });
+  const { controller: loop, prompts } = controller({
+    engine,
+    answers: [{ action: { type: 'click', x: 0.5, y: 0.5 } }, { done: true, why: 'the dialog is gone' }],
+    act: async () => ({ output: 'clicked' }),
+    readReview: () => ({ seq: 1, summary: 'an export dialog is open', next: 'click Save' }),
+    maxSteps: 2,
+  });
+  loop.start({ goal: 'close the export dialog' });
+  await waitFor(() => loop.state().running === false);
+
+  assert.equal(prompts.length, 2);
+  const second = String(prompts[1][1].content);
+  assert.match(second, /^Frame #2/m);
+  assert.match(second, /Reader on frame #1 \(1 frame behind #2\): an export dialog is open/);
+  assert.match(second, /Next it suggested: click Save/);
+});
+
+test('a reading too old for the frame being decided is dropped from the prompt', async () => {
+  // A reading seven frames behind is not about this screen; quoting it would
+  // tell the model something that may have already changed.
+  const engine = {
+    reached: null,
+    state: () => ({
+      goal: { text: 'the goal', reachedAt: engine.reached },
+      elements: [],
+      current: { seq: 9, changedPct: 10, dirtySections: [], labels: [], elements: [] },
+    }),
+    digest: () => '',
+    async step() {
+      return { skipped: true, quiet: true, changedPct: 0 };
+    },
+    markGoalReached(reason) {
+      engine.reached = reason;
+      return { reason };
+    },
+    setGoal() {},
+    onFrame: () => () => {},
+  };
+  const { controller: loop, prompts } = controller({
+    engine,
+    answers: [{ done: true, why: 'nothing left to do' }],
+    act: async () => ({ output: '' }),
+    readReview: () => ({ seq: 2, summary: 'an export dialog is open', next: 'click Save' }),
+  });
+  loop.start({ goal: 'close the export dialog' });
+  await waitFor(() => loop.state().running === false);
+
+  assert.equal(prompts.length, 1);
+  const prompt = String(prompts[0][1].content);
+  assert.match(prompt, /^Frame #9/m);
+  assert.doesNotMatch(prompt, /Reader/);
+  assert.doesNotMatch(prompt, /an export dialog is open/);
+});
+
+test('a reading with no frame number cannot be placed in time, so it is not quoted as current', () => {
+  const frame = { seq: 12 };
+  assert.equal(readerLine({ review: { summary: 'a dialog is open' }, frame }), null, 'no frame number, no reading');
+  assert.equal(readerLine({ review: { seq: 12, summary: 'a dialog is open' }, frame }), 'Reader on frame #12 (the frame being decided): a dialog is open');
+  assert.equal(readerLine({ review: { seq: 12, summary: 'a dialog is open', next: 'close it' }, frame }), 'Reader on frame #12 (the frame being decided): a dialog is open Next it suggested: close it');
+  assert.match(readerLine({ review: { seq: 11, summary: 'a dialog is open' }, frame }), /\(1 frame behind #12\)/);
+  assert.match(readerLine({ review: { seq: 9, summary: 'a dialog is open' }, frame }), /\(3 frames behind #12\)/);
+  assert.equal(readerLine({ review: { seq: 8, summary: 'a dialog is open' }, frame }), null, 'four frames behind is too old');
+  assert.match(readerLine({ review: { seq: 3, summary: 'a dialog is open' }, frame: {} }), /the current frame is unknown/, 'a reading is never shown as current when the frame has no number');
 });
 
 test('a reviewer that cannot be asked leaves the decision without a reading, not without an action', async () => {
@@ -376,6 +447,7 @@ test('the decision prompt carries the goal, the labels and the last failure', ()
     elements: [{ label: 'Save', x: 0.7, y: 0.1, w: 0.1, h: 0.04, seen: 3 }],
     history: [{ action: 'click at 0.10,0.10', changed: false }],
     failure: 'the screen did not change after click at 0.10,0.10',
+    review: { seq: 4, summary: 'a save dialog is open', next: 'click Save' },
   });
   assert.match(system.content, /"action"/);
   assert.match(system.content, /one action/i);
@@ -384,4 +456,6 @@ test('the decision prompt carries the goal, the labels and the last failure', ()
   assert.match(user.content, /“Save” \(0\.75,0\.12\) seen 3×/);
   assert.match(user.content, /click at 0\.10,0\.10 — the screen did not change/);
   assert.match(user.content, /Last attempt failed: the screen did not change/);
+  assert.match(user.content, /Reader on frame #4 \(the frame being decided\): a save dialog is open/);
+  assert.match(system.content, /may be older than the one above/);
 });
