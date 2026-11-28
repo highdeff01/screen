@@ -1,19 +1,51 @@
 {
   "version": 1,
   "by": "sentinel",
-  "updatedAt": "2026-11-28T03:48:49.131Z",
-  "head": "c25ea4de4123",
+  "updatedAt": "2026-11-28T05:04:30.796Z",
+  "head": "a5760c2429af",
   "lastRun": {
-    "at": "2026-11-28T03:48:49.131Z",
-    "ok": true,
+    "at": "2026-11-28T05:04:29.452Z",
+    "ok": false,
     "tests": 946,
-    "pass": 939,
-    "fail": 0,
+    "pass": 937,
+    "fail": 2,
     "isolated": true,
-    "failingTests": []
+    "failingTests": [
+      "a repair that opens another app is adopted by the presenter and verifier (25063.943ms)",
+      "the engine rewrites the remainder after an irreparable action and still passes (45030.8625ms)"
+    ]
   },
-  "open": 19,
+  "open": 20,
   "items": [
+    {
+      "id": "sent_mwzy4bgf67f159",
+      "at": "2026-11-28T05:04:29.452Z",
+      "status": "queued",
+      "attempts": 1,
+      "fail": 2,
+      "pass": 937,
+      "tests": [
+        "a repair that opens another app is adopted by the presenter and verifier (25063.943ms)",
+        "the engine rewrites the remainder after an irreparable action and still passes (45030.8625ms)"
+      ],
+      "details": [
+        {
+          "name": "a repair that opens another app is adopted by the presenter and verifier",
+          "file": "",
+          "line": null,
+          "message": ""
+        },
+        {
+          "name": "the engine rewrites the remainder after an irreparable action and still passes",
+          "file": "",
+          "line": null,
+          "message": ""
+        }
+      ],
+      "plan": "",
+      "planError": "",
+      "report": "must-check/2026-11-28T05-04-29-a-repair-that-opens-another-app-is-adopt.md"
+    },
     {
       "id": "sent_mwzv5qhtf85c95",
       "at": "2026-11-28T03:41:36.738Z",
