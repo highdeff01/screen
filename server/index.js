@@ -282,6 +282,7 @@ import {
   workflowStats,
   writeRunNote as writeNoteForRun,
   setRunFinishedHook,
+  setStepFrameSource,
   verifyRunSilently,
   recheckRun,
   recoverInterruptedRuns,
@@ -5018,6 +5019,19 @@ function queueRecoveryRetry(run, pack, snapshot, { source = 'auto-recovery', dry
   });
   return retry;
 }
+
+// A running vision stream is already looking at the desktop, so every passing
+// step records the frame it produced. A stopped stream contributes nothing.
+setStepFrameSource(() => {
+  const live = vision.state();
+  if (!live.running || !live.current) return null;
+  return {
+    seq: live.current.seq,
+    file: live.current.file,
+    at: live.current.at,
+    changedPct: live.current.changedPct,
+  };
+});
 
 setRunFinishedHook(async (run) => {
   if (run.trigger === 'shadow') return;

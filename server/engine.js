@@ -87,9 +87,19 @@ import {
 const queue = [];
 let busy = false;
 let runFinishedHook = null;
+let stepFrameSource = null;
 
 export function setRunFinishedHook(fn) {
   runFinishedHook = typeof fn === 'function' ? fn : null;
+}
+
+/**
+ * Where a passing step can find the live vision engine's newest frame, or null
+ * when nothing is watching. The engine stays independent of that stream: it
+ * asks for a reference and records it, nothing more.
+ */
+export function setStepFrameSource(fn) {
+  stepFrameSource = typeof fn === 'function' ? fn : null;
 }
 let tickTimer = null;
 
@@ -3608,6 +3618,17 @@ async function executeRun(runId) {
         pushLog(run, 'warn', `Presenter verification failed: ${err.message}`, step.id);
       }
       step.status = 'passed';
+      // The stream already holds the desktop, so a step that ran while it was
+      // watching carries that frame: later review reads the picture this step
+      // produced instead of taking another look at a screen that has moved on.
+      if (stepFrameSource) {
+        try {
+          const liveFrame = stepFrameSource();
+          if (liveFrame) step.visionFrame = liveFrame;
+        } catch {
+          // No stream, no reference; a step is not failed by an absent observer.
+        }
+      }
       rememberWindow(run, step);
       // A screenshot is taken after every action, automatically, so the review
       // is evidence in the run instead of a button the operator has to press.
