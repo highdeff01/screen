@@ -1,23 +1,51 @@
 {
   "version": 1,
   "by": "sentinel",
-  "updatedAt": "2026-11-28T16:27:11.019Z",
-  "head": "10f504895765",
+  "updatedAt": "2026-11-28T18:28:39.402Z",
+  "head": "e3d82e761b22",
   "lastRun": {
-    "at": "2026-11-28T16:27:11.007Z",
+    "at": "2026-11-28T18:28:39.376Z",
     "ok": false,
-    "tests": 990,
-    "pass": 980,
-    "fail": 3,
+    "tests": 1008,
+    "pass": 999,
+    "fail": 2,
     "isolated": true,
     "failingTests": [
-      "boot renders state without waiting for optional startup requests (22.7946ms)",
-      "a second console on one data folder stops and names the console that owns it (3362.6207ms)",
-      "state polling retries failures without overlapping polls (3.4202ms)"
+      "boot renders state without waiting for optional startup requests (35.218ms)",
+      "state polling retries failures without overlapping polls (4.4195ms)"
     ]
   },
   "open": 20,
   "items": [
+    {
+      "id": "sent_mx0quhbzdc9302",
+      "at": "2026-11-28T18:28:39.376Z",
+      "status": "queued",
+      "attempts": 1,
+      "fail": 2,
+      "pass": 999,
+      "tests": [
+        "boot renders state without waiting for optional startup requests (35.218ms)",
+        "state polling retries failures without overlapping polls (4.4195ms)"
+      ],
+      "details": [
+        {
+          "name": "boot renders state without waiting for optional startup requests",
+          "file": "",
+          "line": null,
+          "message": ""
+        },
+        {
+          "name": "state polling retries failures without overlapping polls",
+          "file": "",
+          "line": null,
+          "message": ""
+        }
+      ],
+      "plan": "",
+      "planError": "",
+      "report": "must-check/2026-11-28T18-28-39-boot-renders-state-without-waiting-for-o.md"
+    },
     {
       "id": "sent_mx0mi9lr939a5e",
       "at": "2026-11-28T16:27:11.007Z",
@@ -587,28 +615,6 @@
       "plan": "",
       "planError": "",
       "report": "must-check/2026-11-25T22-43-10-verified-backend-permits-saved-and-expli.md"
-    },
-    {
-      "id": "sent_mwwnjw9v70d3c9",
-      "at": "2026-11-25T21:45:21.955Z",
-      "status": "queued",
-      "attempts": 1,
-      "fail": 1,
-      "pass": 749,
-      "tests": [
-        "a repair that opens another app is adopted by the presenter and verifier (25093.5206ms)"
-      ],
-      "details": [
-        {
-          "name": "a repair that opens another app is adopted by the presenter and verifier",
-          "file": "",
-          "line": null,
-          "message": ""
-        }
-      ],
-      "plan": "",
-      "planError": "",
-      "report": "must-check/2026-11-25T21-45-21-a-repair-that-opens-another-app-is-adopt.md"
     }
   ]
 }
