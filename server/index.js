@@ -4518,6 +4518,10 @@ route('PATCH', /^\/api\/settings$/, async (req, res) => {
     }
     s.dryRun = dryRun;
   }
+  if (body.parallelRuns !== undefined) {
+    const wanted = Math.round(Number(body.parallelRuns));
+    s.parallelRuns = Number.isFinite(wanted) ? Math.max(1, Math.min(6, wanted)) : 3;
+  }
   if (body.autoSync !== undefined) s.autoSync = Boolean(body.autoSync);
   if (body.autoPull !== undefined) s.autoPull = Boolean(body.autoPull);
   if (body.autoSyncIntervalMs !== undefined) {

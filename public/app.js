@@ -5658,6 +5658,7 @@ function settingsFields(s) {
       <label class="field"><span>Agent tick (seconds)</span><input type="number" min="3" value="${Math.round(
         (s.agentTickMs || 5000) / 1000
       )}" data-scope="settings" data-key="agentTickMsSeconds" /></label>
+      <label class="field"><span>Workflows at once</span><input type="number" min="1" max="6" value="${Math.round(Number(s.parallelRuns) || 3)}" data-scope="settings" data-key="parallelRuns" title="Live runs still share one desktop: only one can drive the mouse and keyboard at a time." /></label>
     </div>
     <label class="check" style="margin-bottom:6px"><input type="checkbox" data-scope="settings" data-key="autoNotes" ${
       s.autoNotes !== false ? 'checked' : ''
@@ -10653,6 +10654,7 @@ async function runAction(name, ds, el) {
         apiStyle: settings.apiStyle === 'openai' ? 'openai' : 'ollama',
         dryRun: settings.dryRun === true || settings.dryRun === 'true',
         agentTickMs: Number(settings.agentTickMsSeconds || 5) * 1000,
+        parallelRuns: Number(settings.parallelRuns || 3),
         missionCheckIntervalMs: Number(settings.missionCheckIntervalSeconds || 5) * 1000,
         replanModel: settings.replanModel || '',
         visualTesterUrl: settings.visualTesterUrl || '',

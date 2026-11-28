@@ -86,7 +86,9 @@ import {
 } from './repair.js';
 
 const queue = [];
-let busy = false;
+// Runs in flight: runId → { live }. A live run holds the one real desktop;
+// simulated runs never touch it, so they can share the machine with it.
+const running = new Map();
 let runFinishedHook = null;
 let stepFrameSource = null;
 
@@ -105,6 +107,9 @@ export function setStepFrameSource(fn) {
 let tickTimer = null;
 
 const MAX_RUNS = 120;
+// The ceiling for settings.parallelRuns: enough to keep the machine busy, few
+// enough that several runs cannot pile up on one model endpoint.
+const MAX_PARALLEL_RUNS = 6;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 // Steps that send input into the desktop themselves.
 const INPUT_STEPS = new Set([
@@ -550,28 +555,96 @@ export function createRun(workflow, { trigger = 'manual', dryRun = null, agentRo
   return run;
 }
 
-async function pump() {
-  if (busy) return;
-  const nextId = queue.shift();
-  if (!nextId) return;
-  busy = true;
-  try {
-    await executeRun(nextId);
-  } catch (err) {
-    console.error('[engine] run crashed:', err);
-    const run = findRun(nextId);
-    if (run) {
-      run.status = 'failed';
-      run.endedAt = now();
-      clearPresenceHold(run);
-      run.log.push({ at: now(), level: 'error', message: `Engine error: ${err.message}` });
-      if (run.shadow) delete run.workflowSnapshot;
-      persist();
-      reportRunFailure(run, `engine crash: ${err.message}`, err.stack || err.message);
+/**
+ * How many workflows may be in flight at once. `settings.parallelRuns` is the
+ * operator's knob; 1 keeps the old one-run-at-a-time behaviour.
+ */
+export function parallelRunLimit() {
+  const raw = Number(db().settings.parallelRuns);
+  const wanted = Number.isFinite(raw) && raw >= 1 ? Math.round(raw) : 3;
+  return Math.max(1, Math.min(MAX_PARALLEL_RUNS, wanted));
+}
+
+/**
+ * Which queued runs may start now. A live run drives the one real mouse and
+ * keyboard, so at most one live run may hold that desk; simulated runs never
+ * touch it and take the remaining slots. Queue order is kept for both.
+ */
+export function startableRuns({ queued = [], runningIds = [], deskHeld = false, limit = 1, isLive = () => false } = {}) {
+  const slots = Math.max(0, Math.floor(Number(limit) || 1) - runningIds.length);
+  const picked = [];
+  let desk = Boolean(deskHeld);
+  for (const entry of queued) {
+    if (picked.length >= slots) break;
+    const live = Boolean(isLive(entry));
+    if (live && desk) continue;
+    picked.push(entry);
+    if (live) desk = true;
+  }
+  return picked;
+}
+
+/** Why a live run is still queued, instead of leaving the wait unexplained. */
+function noteDeskWait(id) {
+  const run = findRun(id);
+  if (!run || run.deskWait) return;
+  const holder = [...running.entries()].find(([, entry]) => entry.live);
+  const heldBy = holder ? findRun(holder[0]) : null;
+  run.deskWait = { at: now(), heldBy: heldBy?.workflowName || 'another live run' };
+  pushLog(
+    run,
+    'info',
+    `Waiting to start: “${run.deskWait.heldBy}” is using the real desktop, and only one live run can drive the mouse and keyboard at a time.`,
+    null
+  );
+}
+
+function startRun({ id, live }) {
+  running.set(id, { live });
+  const started = findRun(id);
+  if (started?.deskWait) {
+    delete started.deskWait;
+    persist();
+  }
+  executeRun(id)
+    .catch((err) => {
+      console.error('[engine] run crashed:', err);
+      const run = findRun(id);
+      if (run) {
+        run.status = 'failed';
+        run.endedAt = now();
+        clearPresenceHold(run);
+        run.log.push({ at: now(), level: 'error', message: `Engine error: ${err.message}` });
+        if (run.shadow) delete run.workflowSnapshot;
+        persist();
+        reportRunFailure(run, `engine crash: ${err.message}`, err.stack || err.message);
+      }
+    })
+    .finally(() => {
+      running.delete(id);
+      pump();
+    });
+}
+
+/** Fill every free slot; a live run takes the desk, a simulated one does not. */
+function pump() {
+  const limit = parallelRunLimit();
+  while (running.size < limit && queue.length) {
+    const deskHeld = [...running.values()].some((entry) => entry.live);
+    const [pick] = startableRuns({
+      queued: queue.map((id) => ({ id, live: findRun(id)?.dryRun === false })),
+      runningIds: [...running.keys()],
+      deskHeld,
+      limit,
+      isLive: (entry) => entry.live,
+    });
+    if (!pick) {
+      // Only a live run can be held back here: say so instead of sitting quiet.
+      noteDeskWait(queue[0]);
+      return;
     }
-  } finally {
-    busy = false;
-    if (queue.length) void pump();
+    queue.splice(queue.indexOf(pick.id), 1);
+    startRun(pick);
   }
 }
 
