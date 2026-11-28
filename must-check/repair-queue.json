@@ -1,19 +1,67 @@
 {
   "version": 1,
   "by": "sentinel",
-  "updatedAt": "2026-11-28T09:01:24.473Z",
-  "head": "749478c3fafe",
+  "updatedAt": "2026-11-28T10:02:54.285Z",
+  "head": "d69e9785468f",
   "lastRun": {
-    "at": "2026-11-28T09:01:24.472Z",
-    "ok": true,
-    "tests": 950,
-    "pass": 943,
-    "fail": 0,
+    "at": "2026-11-28T10:02:54.273Z",
+    "ok": false,
+    "tests": 962,
+    "pass": 951,
+    "fail": 4,
     "isolated": true,
-    "failingTests": []
+    "failingTests": [
+      "state polling retries failures without overlapping polls (2.0525ms)",
+      "boot renders state without waiting for optional startup requests (33.2054ms)",
+      "a frame that could not be captured is unverified, not a mismatch (12885.2916ms)",
+      "the retry budget is respected when retries are turned off (12696.1558ms)"
+    ]
   },
   "open": 20,
   "items": [
+    {
+      "id": "sent_mx08s2wxbcf79b",
+      "at": "2026-11-28T10:02:54.273Z",
+      "status": "queued",
+      "attempts": 1,
+      "fail": 4,
+      "pass": 951,
+      "tests": [
+        "state polling retries failures without overlapping polls (2.0525ms)",
+        "boot renders state without waiting for optional startup requests (33.2054ms)",
+        "a frame that could not be captured is unverified, not a mismatch (12885.2916ms)",
+        "the retry budget is respected when retries are turned off (12696.1558ms)"
+      ],
+      "details": [
+        {
+          "name": "state polling retries failures without overlapping polls",
+          "file": "",
+          "line": null,
+          "message": ""
+        },
+        {
+          "name": "boot renders state without waiting for optional startup requests",
+          "file": "",
+          "line": null,
+          "message": ""
+        },
+        {
+          "name": "a frame that could not be captured is unverified, not a mismatch",
+          "file": "",
+          "line": null,
+          "message": ""
+        },
+        {
+          "name": "the retry budget is respected when retries are turned off",
+          "file": "",
+          "line": null,
+          "message": ""
+        }
+      ],
+      "plan": "",
+      "planError": "",
+      "report": "must-check/2026-11-28T10-02-54-state-polling-retries-failures-without-o.md"
+    },
     {
       "id": "sent_mx02dxmma487d8",
       "at": "2026-11-28T07:03:56.542Z",
@@ -518,28 +566,6 @@
       "plan": "",
       "planError": "",
       "report": "must-check/2026-11-20T00-55-25-live-requests-are-refused-before-reachin.md"
-    },
-    {
-      "id": "sent_mwo48bmx583b03",
-      "at": "2026-11-19T22:22:19.881Z",
-      "status": "queued",
-      "attempts": 1,
-      "fail": 1,
-      "pass": 594,
-      "tests": [
-        "the mirror is cloned once, then follows GitHub in both directions (7512.5273ms)"
-      ],
-      "details": [
-        {
-          "name": "the mirror is cloned once, then follows GitHub in both directions",
-          "file": "",
-          "line": null,
-          "message": ""
-        }
-      ],
-      "plan": "",
-      "planError": "",
-      "report": "must-check/2026-11-19T22-22-19-the-mirror-is-cloned-once-then-follows-g.md"
     }
   ]
 }
