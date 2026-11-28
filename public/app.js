@@ -1949,6 +1949,8 @@ function renderVisionEngine() {
   const current = engine.current || null;
   const elements = (engine.elements || []).slice(0, 6);
   const frameUrl = current?.file ? `/api/files/raw?path=${encodeURIComponent(current.file)}` : null;
+  const review = ui.visionReview || {};
+  const lastReview = review.lastReview || null;
   return `<div class="side-card section-gap" id="vision-card">
     <div class="side-card-head"><h3>Vision engine</h3>${running ? `<span class="pill live">${engine.fps} fps</span>` : '<span class="pill simulated">idle</span>'}</div>
     <div class="side-card-body">
@@ -1963,6 +1965,13 @@ function renderVisionEngine() {
         <button class="btn btn-sm" data-act="vision-goal">Set goal</button>
         <button class="btn btn-sm btn-ghost" data-act="vision-goal" data-reached="1">Mark reached</button>
       </div>
+      <div class="row wrap section-gap" style="gap:6px;align-items:center">
+        <button class="btn btn-sm ${review.enabled ? 'btn-ghost' : ''}" data-act="vision-review" data-mode="${review.enabled ? 'stop' : 'start'}">${review.enabled ? 'Stop labelling' : 'Label with model'}</button>
+        <button class="btn btn-sm btn-ghost" data-act="vision-review-now"${current ? '' : ' disabled'}>Label now</button>
+        <span class="dim small">${review.enabled || review.calls ? `${review.calls || 0} review(s) · ${review.labels || 0} label(s)${review.errors ? ` · ${review.errors} error(s)` : ''}${review.busy ? ' · reading…' : ''}` : 'model labelling off'}</span>
+      </div>
+      ${lastReview ? `<div class="section-gap small"><strong>Review of frame #${lastReview.seq}</strong> <span class="dim">${esc(lastReview.at || '')}${lastReview.ms ? ` · ${lastReview.ms} ms` : ''}</span><div>${esc(lastReview.summary || '')}</div>${lastReview.next ? `<div class="dim">Next: ${esc(lastReview.next)}</div>` : ''}</div>` : ''}
+      ${review.lastError ? `<pre class="console-out err section-gap">${esc(review.lastError)}</pre>` : ''}
       ${goal.reachedAt ? `<p class="small section-gap" style="margin:0"><span class="badge okbadge">goal reached</span> ${esc(goal.reason || '')}</p>` : ''}
       ${frameUrl ? `<figure class="preview-frame section-gap"><img src="${frameUrl}" alt="Latest vision frame"><figcaption class="dim small">Frame #${current.seq} · ${esc(current.at || '')} · ${current.changedPct === null ? 'unreadable' : `${current.changedPct}% changed`}${current.dirtySections ? ` · ${current.dirtySections} section(s) moved` : ''}</figcaption></figure>` : running ? '<p class="dim small section-gap">Waiting for the first change…</p>' : ''}
       ${(current?.labels || []).length ? `<div class="section-gap"><span class="dim small">Labels on this frame</span><div class="row wrap" style="gap:4px;margin-top:4px">${current.labels.map((text) => `<span class="badge">${esc(text)}</span>`).join('')}</div></div>` : ''}
@@ -1978,6 +1987,7 @@ async function loadVision() {
     const res = await api('/api/vision');
     if (!res.ok || !res.vision) return;
     ui.vision = res.vision;
+    ui.visionReview = res.review || ui.visionReview || {};
     const card = document.getElementById('vision-card');
     if (card) card.outerHTML = renderVisionEngine();
   } catch {
@@ -8492,6 +8502,37 @@ async function runAction(name, ds, el) {
       render();
       break;
     }
+    case 'vision-review': {
+      const mode = ds.mode === 'stop' ? 'stop' : 'start';
+      const res = await api('/api/vision', { method: 'POST', body: { action: 'review', enabled: mode === 'start' } });
+      if (!res.ok) {
+        ui.controlOut = res.error || 'Model labelling did not change.';
+        ui.controlErr = true;
+        render();
+        break;
+      }
+      ui.vision = res.vision;
+      ui.visionReview = res.review;
+      ui.controlOut = mode === 'start' ? 'Model labelling on — each changed frame is named for the planner.' : 'Model labelling stopped.';
+      ui.controlErr = false;
+      render();
+      break;
+    }
+    case 'vision-review-now': {
+      const res = await api('/api/vision', { method: 'POST', body: { action: 'review-now' } });
+      if (!res.ok) {
+        ui.controlOut = res.error || 'The frame was not reviewed.';
+        ui.controlErr = true;
+        render();
+        break;
+      }
+      ui.vision = res.vision;
+      ui.visionReview = res.review;
+      ui.controlOut = `Reviewed frame #${res.entry.seq}: ${res.entry.summary}`;
+      ui.controlErr = false;
+      render();
+      break;
+    }
     case 'vision-digest': {
       const res = await api('/api/vision', { method: 'POST', body: { action: 'digest', count: 30 } });
       if (!res.ok) {
@@ -11222,7 +11263,7 @@ async function boot() {
   loadVision();
   // While the stream runs, keep the card's frame and counters current without
   // rebuilding the whole view.
-  setInterval(() => { if (ui.vision?.running) loadVision(); }, 1500);
+  setInterval(() => { if (ui.vision?.running || ui.visionReview?.enabled) loadVision(); }, 1500);
   setInterval(loadHealth, 60000);
   setInterval(async () => {
     if (!ui.data?.live?.running) return;

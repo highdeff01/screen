@@ -184,6 +184,9 @@ export function createVisionEngine({
   let consecutiveErrors = 0;
   let startedAt = null;
   let lastFrameAt = null;
+  // Frame listeners are how the labelling agent hears about a changed frame
+  // without the loop waiting for it: a model call is slower than the stream.
+  const listeners = new Set();
   const stats = { captures: 0, skipped: 0, quiet: 0, changed: 0, undecodable: 0, errors: 0, lastError: '' };
 
   function resetFrames() {
@@ -200,6 +203,22 @@ export function createVisionEngine({
     seq = 0;
   }
   resetFrames();
+
+  /** Tell every listener about a stored frame. Their failures are theirs. */
+  function notifyFrame(record) {
+    for (const listener of listeners) {
+      try {
+        const outcome = listener(record);
+        if (outcome && typeof outcome.catch === 'function') {
+          outcome.catch((err) => {
+            stats.lastError = `a frame listener failed: ${String(err?.message || err).slice(0, 200)}`;
+          });
+        }
+      } catch (err) {
+        stats.lastError = `a frame listener failed: ${String(err?.message || err).slice(0, 200)}`;
+      }
+    }
+  }
 
   function trim() {
     while (frames.length > keep) {
@@ -312,6 +331,7 @@ export function createVisionEngine({
       lastFrameAt = now();
       stats.changed += 1;
       trim();
+      notifyFrame(record);
 
       if (goal.reachedAt === null && typeof until === 'function') {
         let verdict = false;
@@ -512,7 +532,14 @@ export function createVisionEngine({
     };
   }
 
-  return { step, start, stop, state, digest, labelFrame, markGoalReached, setGoal, intervalMs };
+  /** Subscribe to changed frames. Returns the unsubscribe function. */
+  function onFrame(listener) {
+    if (typeof listener !== 'function') throw new TypeError('a frame listener must be a function');
+    listeners.add(listener);
+    return () => listeners.delete(listener);
+  }
+
+  return { step, start, stop, state, digest, labelFrame, markGoalReached, setGoal, intervalMs, onFrame };
 }
 
 export const vision = createVisionEngine();

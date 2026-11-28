@@ -180,6 +180,7 @@ import { observerState } from './app-observer.js';
 import { livePreview } from './live-preview.js';
 import { vision } from './vision-engine.js';
 import { registerVisionRoutes } from './vision-api.js';
+import { visionReview } from './vision-review.js';
 import { liveMap } from './live-map.js';
 import { findSimulation, listSimulations, simulationSummary, startSimulation } from './screenshot-sim.js';
 import { buildTestReview, SORTS as TEST_REVIEW_SORTS } from './test-review.js';
@@ -5234,6 +5235,7 @@ function shutdown() {
   stopAgents();
   livePreview.stop();
   vision.stop();
+  visionReview.stop();
   stopVerificationLoop();
   stopAutoSync();
   stopSentinel();

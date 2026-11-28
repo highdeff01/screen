@@ -7,10 +7,13 @@
  * served by the existing `/api/files/raw` route — no second image endpoint.
  */
 import { vision } from './vision-engine.js';
+import { visionReview } from './vision-review.js';
 import { logActivity } from './store.js';
 
 export function registerVisionRoutes({ route, sendJson, fail, readBody }) {
-  route('GET', /^\/api\/vision$/, async (req, res) => sendJson(res, 200, { ok: true, vision: vision.state() }));
+  route('GET', /^\/api\/vision$/, async (req, res) =>
+    sendJson(res, 200, { ok: true, vision: vision.state(), review: visionReview.state() })
+  );
 
   route('POST', /^\/api\/vision$/, async (req, res) => {
     let body;
@@ -50,10 +53,29 @@ export function registerVisionRoutes({ route, sendJson, fail, readBody }) {
         logActivity('vision', `Labeled frame ${result.frame} (${result.added.length} new element(s))`);
         return sendJson(res, 200, { ok: true, ...result, vision: vision.state() });
       }
+      // The labelling agent: on, off, or one look at the newest frame now.
+      if (action === 'review') {
+        if (body.enabled === false) {
+          const review = visionReview.stop();
+          logActivity('vision', 'Model labelling stopped');
+          return sendJson(res, 200, { ok: true, review, vision: vision.state() });
+        }
+        // A label agent with no stream has nothing to read, so turning it on
+        // starts the stream too rather than idling behind a second button.
+        const already = vision.state().running;
+        if (!already) vision.start({ fps: body.fps, goal: body.goal });
+        const review = visionReview.start();
+        logActivity('vision', already ? 'Model labelling on' : 'Vision engine started and model labelling on');
+        return sendJson(res, 200, { ok: true, review, vision: vision.state() });
+      }
+      if (action === 'review-now') {
+        const entry = await visionReview.reviewNow();
+        return sendJson(res, 200, { ok: true, entry, review: visionReview.state(), vision: vision.state() });
+      }
       if (action === 'digest') {
         return sendJson(res, 200, { ok: true, digest: vision.digest({ count: body.count }) });
       }
-      return fail(res, 400, 'action must be start, stop, step, goal, label or digest');
+      return fail(res, 400, 'action must be start, stop, step, goal, label, review, review-now or digest');
     } catch (err) {
       return fail(res, 400, String(err?.message || err).slice(0, 300));
     }
