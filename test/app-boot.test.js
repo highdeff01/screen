@@ -50,6 +50,14 @@ test('window actions and drag-copy have editor metadata', async () => {
   }
   assert.ok(editor.FIELDS.windowAction.some((field) => field.key === 'action'));
   assert.ok(editor.FIELDS.dragCopy.some((field) => field.key === 'outputVar'));
+  // Every coordinate step can be recorded inside its window instead of on the
+  // screen, which is what lets it survive the window being moved.
+  for (const type of ['click', 'doubleClick', 'rightClick', 'move', 'drag', 'scroll']) {
+    const anchor = editor.FIELDS[type].find((field) => field.key === 'anchor');
+    assert.ok(anchor, `${type} offers a window anchor`);
+    assert.deepEqual([...anchor.options], ['screen', 'window'], 'the editor offers both anchors');
+    assert.equal(anchor.default, 'screen', 'existing steps keep absolute coordinates');
+  }
 });
 
 test('unavailable desktop control is not presented as live mode', () => {

@@ -18,6 +18,7 @@
 import { db, now, persist, uid } from './store.js';
 import { executeStep, findUiElement, findUiElementByOcr, readPresence, readCursor as readCursorPoint, readWindowRect, elementLabels } from './automation.js';
 import { adjustPoint, describeMotion, motionBetween, workableZone } from './motion.js';
+import { fromWindowOffset, isWindowRelative } from './window-relative.js';
 
 /** The person at the desk must be still: this is not a race for the pointer. */
 export const AIM_MIN_IDLE_MS = 1200;
@@ -39,6 +40,12 @@ function runState(runId) {
 
 const targetTypes = new Set(['click', 'doubleClick', 'rightClick', 'clickElement', 'type', 'scroll', 'drag']);
 
+/** How to name the window a relative point is measured inside. */
+function targetWindowLabel(window) {
+  const title = String(window || '').trim();
+  return title ? `“${title}”` : 'the window in front';
+}
+
 /**
  * Where this step wants the pointer, in the terms the step itself uses: an
  * explicit coordinate, or the control it names.
@@ -51,7 +58,18 @@ export function aimTargetFor(step) {
   const y = Number(params.y);
   const window = String(params.window || params.title || (params.foreground === true ? '' : params.foreground) || '').trim();
   if (Number.isFinite(x) && Number.isFinite(y)) {
-    return { kind: 'point', x: Math.round(x), y: Math.round(y), name: '', window, label: `${Math.round(x)}, ${Math.round(y)}` };
+    // A window-relative point is an offset until the window is read; the move is
+    // resolved against the window's current rectangle just before it happens.
+    const relative = isWindowRelative(params);
+    return {
+      kind: 'point',
+      x: Math.round(x),
+      y: Math.round(y),
+      relative,
+      name: '',
+      window,
+      label: relative ? `${Math.round(x)}, ${Math.round(y)} inside ${targetWindowLabel(window)}` : `${Math.round(x)}, ${Math.round(y)}`,
+    };
   }
   const name = String(params.name || params.label || params.control || params.target || '').trim();
   if (!name) return null;
@@ -101,7 +119,8 @@ export function aimDisabledReason(run, target) {
  */
 export function knownAimPoint(target) {
   if (!target) return null;
-  if (target.kind === 'point') return { x: Math.round(Number(target.x)), y: Math.round(Number(target.y)) };
+  // A relative point is an offset, not a place the pointer could already be on.
+  if (target.kind === 'point') return target.relative ? null : { x: Math.round(Number(target.x)), y: Math.round(Number(target.y)) };
   const x = Number(target.fallback?.x);
   const y = Number(target.fallback?.y);
   if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
@@ -228,7 +247,7 @@ function recordAim(run, target, point, { moved, ms, log, tracker }) {
 export async function aimAt(
   run,
   target,
-  { log = null, find = findUiElement, readText = findUiElementByOcr, presence = readPresence, move = movePointer, cursor = readCursorPoint, tolerance = AIM_NEAR_PX } = {}
+  { log = null, find = findUiElement, readText = findUiElementByOcr, presence = readPresence, move = movePointer, cursor = readCursorPoint, readRect = readWindowRect, tolerance = AIM_NEAR_PX } = {}
 ) {
   if (!run?.id || !target) return { ok: false, reason: 'nothing to aim at' };
   const tracker = runState(run.id);
@@ -265,7 +284,23 @@ export async function aimAt(
     const activity = await presence();
     const check = shouldAim({ run, presence: activity, target, last: tracker.last });
     if (!check.ok) return pause(check.reason);
-    const point = await resolveAimPoint(target, { find, readText });
+    // A point recorded inside the window has to be placed on the screen first:
+    // the offset is what survives the window being dragged.
+    let resolveTarget = target;
+    if (target.relative) {
+      let rect = null;
+      try {
+        rect = await readRect(target.window || '');
+      } catch {
+        rect = null;
+      }
+      const placed = fromWindowOffset({ x: target.x, y: target.y }, rect);
+      if (!placed) {
+        return pause(`${targetWindowLabel(target.window)} could not be located, so “${target.label}” has no screen point`);
+      }
+      resolveTarget = { ...target, kind: 'point', relative: false, x: placed.x, y: placed.y };
+    }
+    const point = await resolveAimPoint(resolveTarget, { find, readText });
     if (!point) return pause(`“${target.label}” could not be located on screen`);
     // Where the pointer is comes free with the presence read; a target resolved
     // by UI Automation can land on the pointer without any further work.
@@ -342,7 +377,9 @@ export async function aimBeforeStep(run, step, options = {}) {
     const readRect = typeof options.windowRect === 'function' ? options.windowRect : readWindowRect;
     let rect = null;
     try {
-      rect = await readRect(target.window || '');
+      // Without a guard the remembered point does not say which window it was
+      // learned in, and the window in front would be a guess at its origin.
+      rect = target.window ? await readRect(target.window) : null;
     } catch {
       rect = null;
     }

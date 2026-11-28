@@ -9,6 +9,7 @@ import { findSetupCommand, runSetupCommand, setupSummary } from './setup-command
 import { executePortableStep, portableLiveScreenshot } from './portable.js';
 import { mapVisionPoint } from './vision-map.js';
 import { caretNote, placeCaret } from './caret.js';
+import { anchorWindowFor, hasWindowPoint, isWindowRelative, resolveWindowRelative } from './window-relative.js';
 import { lineInk, matchOcrLine, ocrLineAnchor, ocrLines, ocrScreenPoint } from './ocr-locate.js';
 import { decidePreview, describeSurroundings } from './step-context.js';
 import { judgeMode, judgeTargetFor, mergeJudgement, recordJudgement, windowFacts } from './judgement.js';
@@ -585,15 +586,22 @@ export function budgetLeft(budget, reserveMs = 3000, floorMs = 1000, at = Date.n
   return Math.max(floorMs, budget.totalMs - reserveMs - (at - budget.startedAt));
 }
 
+/** Say when a point is measured inside the window rather than on the screen. */
+function anchorSuffix(p = {}) {
+  if (!isWindowRelative(p)) return '';
+  const window = anchorWindowFor(p);
+  return ` measured inside ${window ? `“${window}”` : 'the window in front'}`;
+}
+
 function describe(step) {
   const p = step.params || {};
   switch (step.type) {
     case 'move':
-      return `pointer to ${num(p.x)},${num(p.y)}`;
+      return `pointer to ${num(p.x)},${num(p.y)}${anchorSuffix(p)}`;
     case 'click':
-      return `${p.button || 'left'} click at ${num(p.x)},${num(p.y)}`;
+      return `${p.button || 'left'} click at ${num(p.x)},${num(p.y)}${anchorSuffix(p)}`;
     case 'drag':
-      return `drag ${num(p.x1)},${num(p.y1)} to ${num(p.x2)},${num(p.y2)}`;
+      return `drag ${num(p.x1)},${num(p.y1)} to ${num(p.x2)},${num(p.y2)}${anchorSuffix(p)}`;
     case 'verifyScreen':
       return `look at the screen: ${String(p.question || p.title || '').slice(0, 90)}`;
     case 'verifyPlayback':
@@ -605,11 +613,11 @@ function describe(step) {
     case 'closeWindow':
       return `close the foreground window only if its title contains \"${str(p.title, 'YouTube')}\"`;
     case 'doubleClick':
-      return `double click at ${num(p.x)},${num(p.y)}`;
+      return `double click at ${num(p.x)},${num(p.y)}${anchorSuffix(p)}`;
     case 'rightClick':
-      return `right click at ${num(p.x)},${num(p.y)}`;
+      return `right click at ${num(p.x)},${num(p.y)}${anchorSuffix(p)}`;
     case 'scroll':
-      return `scroll ${num(p.amount)} at ${p.x ?? 'current'},${p.y ?? 'current'}`;
+      return `scroll ${num(p.amount)} at ${p.x ?? 'current'},${p.y ?? 'current'}${anchorSuffix(p)}`;
     case 'type':
       return `type ${String(p.text || '').length} characters`;
     case 'key':
@@ -1964,11 +1972,21 @@ if ([double]::IsNaN($rh) -or $rh -gt 1e12 -or $rh -lt -1e12) { $rh = 0 }
 export async function readWindowRect(title = '') {
   if (!IS_WINDOWS) return { found: false, reason: 'window rectangles require Windows' };
   const needle = str(title).trim();
-  if (!needle) return { found: false, reason: 'a window title is required' };
+  // No title means the window in front. That is the window an unguarded pointer
+  // step is acting on, so it is the one a relative step can be resolved against.
   const script = `${BASE_PRELUDE}
+$needle = ${psQuote(needle)}
 $pattern = ${psQuote('*' + needle + '*')}
-$target = Get-Process | Where-Object { $_.MainWindowHandle -ne 0 -and $_.MainWindowTitle -like $pattern } | Sort-Object Id | Select-Object -First 1
-if (-not $target) {
+$fg = [IntPtr]::Zero
+if ($needle -eq '') { $fg = [SightlineInput]::GetForegroundWindow() }
+$target = $null
+if ($fg -ne [IntPtr]::Zero) {
+  $target = Get-Process | Where-Object { $_.MainWindowHandle -ne 0 -and $_.MainWindowHandle -eq $fg } | Select-Object -First 1
+}
+if (-not $target -and $needle -ne '') {
+  $target = Get-Process | Where-Object { $_.MainWindowHandle -ne 0 -and $_.MainWindowTitle -like $pattern } | Sort-Object Id | Select-Object -First 1
+}
+if (-not $target -and $needle -ne '') {
   $target = Get-Process | Where-Object { $_.MainWindowHandle -ne 0 -and $_.ProcessName -like $pattern } | Sort-Object Id | Select-Object -First 1
 }
 if (-not $target) { Write-Output '{"found":false,"reason":"window not found"}'; exit 0 }
@@ -3729,6 +3747,36 @@ async function placeCaretForTyping(step, ctx) {
   });
   return caretNote(result);
 }
+
+/**
+ * Turn a window-relative step into screen coordinates using where its window is
+ * now. This throws rather than clicking the offsets as if they were screen
+ * positions: an offset of 200,150 would be near the top-left of the desktop,
+ * not the control the step meant.
+ */
+async function resolveStepWindowPoint(step) {
+  // A step whose point is optional (scroll) has nothing to resolve.
+  if (!hasWindowPoint(step.params || {})) return null;
+  const title = anchorWindowFor(step.params || {});
+  let rect = null;
+  try {
+    rect = await readWindowRect(title);
+  } catch (err) {
+    rect = { found: false, reason: err.message };
+  }
+  const resolved = resolveWindowRelative(step, rect);
+  if (!resolved) {
+    throw new Error(
+      `“${step.name || step.type}” is measured inside ${
+        title ? `“${title}”` : 'the window in front'
+      }, but that window's position could not be read (${rect?.reason || 'no usable rectangle'}), so the step was not performed.`
+    );
+  }
+  return resolved;
+}
+
+// Steps whose coordinates can be measured inside their window.
+const WINDOW_POINT_STEPS = new Set(['move', 'click', 'doubleClick', 'rightClick', 'drag', 'scroll']);
 
 export async function executeStep(step, ctx) {
   let p = step.params || {};
@@ -5824,6 +5872,18 @@ try {
     caretLine = await placeCaretForTyping(step, ctx);
   }
 
+  // A pointer step can record its point inside its window instead of on the
+  // screen. Resolve it here, after any focus step above has settled, so the
+  // click follows the window rather than the place the window used to be.
+  let anchored = null;
+  if (WINDOW_POINT_STEPS.has(step.type) && isWindowRelative(step.params)) {
+    anchored = await resolveStepWindowPoint(step);
+    if (anchored) {
+      step = { ...step, params: anchored.params };
+      p = step.params;
+    }
+  }
+
   const script = buildScript(step);
   if (!script) throw new Error(`Unsupported step type: ${step.type}`);
   let timeout = step.timeoutMs || 15000;
@@ -5889,9 +5949,28 @@ try {
     }
   }
   const focusContext = step.type === 'focusWindow' ? await readForegroundWindow() : null;
+  // Where a relative step landed, in the same sentence the step writes.
+  const anchoredNote = anchored
+    ? `measured inside ${
+        anchored.window.title ? `“${anchored.window.title}”` : 'the window in front'
+      } (window corner ${anchored.window.rect.left},${anchored.window.rect.top}): ${anchored.points
+        .map((entry) => `${entry.offset.x},${entry.offset.y} → ${entry.point.x},${entry.point.y}`)
+        .join('; ')}`
+    : '';
   return {
-    output: [res.stdout || describe(step), caretLine].filter(Boolean).join(' | '),
+    output: [res.stdout || describe(step), anchoredNote, caretLine].filter(Boolean).join(' | '),
     evidence: [],
+    // The point a relative click resolved to is where it really clicked.
+    ...(anchored && ['click', 'doubleClick', 'rightClick'].includes(step.type)
+      ? {
+          clickPoint: {
+            x: anchored.points[0].point.x,
+            y: anchored.points[0].point.y,
+            name: String(p.name || step.name || '').slice(0, 80),
+            method: 'window-relative',
+          },
+        }
+      : {}),
     ...(appContext || focusContext ? { appContext: focusContext || appContext } : {}),
   };
 }

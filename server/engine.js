@@ -23,6 +23,7 @@ import {
 import { judgeTargetFor, normalizeText } from './judgement.js';
 import { enqueueFrameJob, drainFrameQueue, clearFrameQueue, markReaderBlind, readerIsBlind } from './frame-queue.js';
 import { aimBeforeStep, aimAt, aimTargetForChoice, aimWithin, resetAimState } from './aim.js';
+import { isWindowRelative } from './window-relative.js';
 import { registerActiveStep, clearActiveStep } from './nudge.js';
 import { assessStep, launchProducedNewWindow, looksLikeSavedDocument, reviewPrevious } from './step-context.js';
 import { classifyPresence, holdDecision, learnHold, completionFor, isFocusStealing, isQuickStep, silentChecksFor, isOwnInput } from './presence.js';
@@ -1376,6 +1377,9 @@ export function clickPointOf(step) {
       method: String(direct.method || 'click').slice(0, 80),
     };
   }
+  // A window-relative step stores an offset, not a place on the screen: the
+  // screen point is only known while it runs, where the executor reports it.
+  if (isWindowRelative(params)) return null;
   if (['click', 'doubleClick', 'rightClick'].includes(type) && Number.isFinite(Number(params.x)) && Number.isFinite(Number(params.y))) {
     return {
       x: Math.round(Number(params.x)),

@@ -348,6 +348,17 @@ const TYPE_META = {
   testApp: { label: 'Launch and test app', glyph: '✓' },
 };
 
+// One definition for the pointer steps: a point is either on the screen or inside
+// its window, where it survives the window being dragged.
+const ANCHOR_FIELD = {
+  key: 'anchor',
+  label: 'Coordinates are',
+  type: 'select',
+  options: ['screen', 'window'],
+  default: 'screen',
+  help: 'window: X and Y are measured from the window’s top-left, so the step still lands on the same control after the window is moved. The window is the one named in “Require foreground window”, else the window in front.',
+};
+
 const FIELDS = {
   launchApp: [
     { key: 'target', label: 'App, executable or document', type: 'text', placeholder: 'Kiro or notepad.exe' },
@@ -369,21 +380,25 @@ const FIELDS = {
   move: [
     { key: 'x', label: 'X', type: 'number', placeholder: '400' },
     { key: 'y', label: 'Y', type: 'number', placeholder: '300' },
+    ANCHOR_FIELD,
   ],
   click: [
     { key: 'x', label: 'X', type: 'number', placeholder: '400' },
     { key: 'y', label: 'Y', type: 'number', placeholder: '300' },
+    ANCHOR_FIELD,
     { key: 'button', label: 'Button', type: 'select', options: ['left', 'right', 'middle'], default: 'left' },
     { key: 'foreground', label: 'Require foreground window contains', type: 'text', placeholder: 'YouTube', help: 'Refuses to click if another app is in front.' },
   ],
   doubleClick: [
     { key: 'x', label: 'X', type: 'number', placeholder: '400' },
     { key: 'y', label: 'Y', type: 'number', placeholder: '300' },
+    ANCHOR_FIELD,
     { key: 'foreground', label: 'Require foreground window contains', type: 'text', placeholder: 'YouTube' },
   ],
   rightClick: [
     { key: 'x', label: 'X', type: 'number', placeholder: '400' },
     { key: 'y', label: 'Y', type: 'number', placeholder: '300' },
+    ANCHOR_FIELD,
     { key: 'foreground', label: 'Require foreground window contains', type: 'text', placeholder: 'YouTube' },
   ],
   drag: [
@@ -391,6 +406,7 @@ const FIELDS = {
     { key: 'y1', label: 'Start Y', type: 'number', placeholder: '300' },
     { key: 'x2', label: 'End X', type: 'number', placeholder: '700' },
     { key: 'y2', label: 'End Y', type: 'number', placeholder: '300' },
+    ANCHOR_FIELD,
     { key: 'durationMs', label: 'Duration (ms)', type: 'number', placeholder: '600' },
     { key: 'button', label: 'Button', type: 'select', options: ['left', 'right', 'middle'], default: 'left' },
     { key: 'foreground', label: 'Require foreground window contains', type: 'text', placeholder: 'YouTube' },
@@ -410,6 +426,7 @@ const FIELDS = {
     { key: 'amount', label: 'Wheel lines', type: 'number', placeholder: '3', help: 'Positive scrolls up, negative down.' },
     { key: 'x', label: 'X (optional)', type: 'number', placeholder: '' },
     { key: 'y', label: 'Y (optional)', type: 'number', placeholder: '' },
+    ANCHOR_FIELD,
     { key: 'foreground', label: 'Require foreground window contains', type: 'text', placeholder: 'YouTube' },
   ],
   type: [
