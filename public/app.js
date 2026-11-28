@@ -1941,8 +1941,102 @@ async function changeLivePreview(action) {
   updatePreviewCard(true);
 }
 
+function scheduleVisionCard() {
+  if (ui.visionCardTimer) return;
+  ui.visionCardTimer = setTimeout(() => {
+    ui.visionCardTimer = null;
+    const card = document.getElementById('vision-card');
+    const focused = document.activeElement;
+    // A frame arrives several times a second; rebuilding the card under a
+    // half-typed goal would eat the operator's text.
+    if (card && focused && card.contains(focused) && /INPUT|SELECT|TEXTAREA/.test(focused.tagName)) return;
+    if (card) card.outerHTML = renderVisionEngine();
+  }, 350);
+}
+
+/** Fold one pushed event into the card's state, without waiting for a poll. */
+function noteVisionEvent(type, data = {}) {
+  const control = ui.visionControl || {};
+  if (type === 'start') {
+    ui.visionControl = { ...control, running: true, goal: data.goal || control.goal, steps: 0, retries: 0, replans: 0, errors: 0, stopReason: null, lastError: '' };
+  } else if (type === 'pulse') {
+    ui.visionControl = { ...control, busy: true, pulses: data.pulses, steps: data.steps ?? control.steps };
+  } else if (type === 'action') {
+    ui.visionControl = { ...control, busy: false, steps: data.step ?? control.steps, lastAction: data.action, history: [{ action: data.action, changed: null, why: data.why || '' }, ...(control.history || [])].slice(0, 12) };
+  } else if (type === 'retry') {
+    ui.visionControl = { ...control, busy: false, retries: (Number(control.retries) || 0) + 1, lastError: data.reason || control.lastError };
+  } else if (type === 'replan') {
+    ui.visionControl = { ...control, busy: false, replans: (Number(control.replans) || 0) + 1, lastError: data.reason || control.lastError };
+  } else if (type === 'error') {
+    ui.visionControl = { ...control, busy: false, errors: (Number(control.errors) || 0) + 1, lastError: data.error || control.lastError };
+  } else if (type === 'stop') {
+    ui.visionControl = { ...control, running: false, busy: false, stopReason: data.reason || control.stopReason, steps: data.steps ?? control.steps, retries: data.retries ?? control.retries, replans: data.replans ?? control.replans };
+  } else {
+    return;
+  }
+  scheduleVisionCard();
+}
+
+/** One SSE connection per viewed session: frames and decisions as they happen. */
+function openVisionStream() {
+  if (typeof EventSource === 'undefined') return;
+  const session = ui.visionSession || 'main';
+  if (ui.visionStream && ui.visionStreamSession === session) return;
+  try { ui.visionStream?.close?.(); } catch { /* already closed */ }
+  let source = null;
+  try { source = new EventSource(`/api/vision/stream?session=${encodeURIComponent(session)}`); } catch { return; }
+  ui.visionStream = source;
+  ui.visionStreamSession = session;
+  ui.visionStreamState = 'connecting';
+  source.addEventListener('ready', (event) => {
+    ui.visionStreamState = 'open';
+    try {
+      const data = JSON.parse(event.data);
+      if (data.vision) ui.vision = data.vision;
+      if (data.control) ui.visionControl = data.control;
+    } catch {
+      // A hello that cannot be read still means the pipe is open.
+    }
+    scheduleVisionCard();
+  });
+  source.addEventListener('frame', (event) => {
+    let data = null;
+    try { data = JSON.parse(event.data); } catch { return; }
+    if (!data?.frame || (data.session || 'main') !== (ui.visionSession || 'main')) return;
+    const vision = ui.vision || {};
+    ui.vision = {
+      ...vision,
+      running: true,
+      frameCount: Number(vision.frameCount || 0) + 1,
+      current: {
+        ...data.frame,
+        labels: (data.frame.labels || []).map((label) => label.text || label),
+        dirtySections: Array.isArray(data.frame.dirtySections) ? data.frame.dirtySections.length : 0,
+      },
+      elements: data.frame.elements || vision.elements || [],
+    };
+    scheduleVisionCard();
+  });
+  for (const type of ['start', 'pulse', 'action', 'retry', 'replan', 'error', 'stop']) {
+    source.addEventListener(type, (event) => {
+      let data = {};
+      try { data = JSON.parse(event.data) || {}; } catch { data = {}; }
+      noteVisionEvent(type, data);
+    });
+  }
+  source.onerror = () => {
+    ui.visionStreamState = 'offline';
+    // EventSource reconnects on its own; closing it here would leave the card
+    // polling forever, which is exactly what this connection replaced.
+    scheduleVisionCard();
+  };
+}
+
 function renderVisionEngine() {
   const engine = ui.vision || {};
+  const sessions = ui.visionSessions || [];
+  const activeSession = ui.visionSession || 'main';
+  const control = ui.visionControl || {};
   const running = Boolean(engine.running);
   const stats = engine.stats || {};
   const goal = engine.goal || {};
@@ -1952,7 +2046,7 @@ function renderVisionEngine() {
   const review = ui.visionReview || {};
   const lastReview = review.lastReview || null;
   return `<div class="side-card section-gap" id="vision-card">
-    <div class="side-card-head"><h3>Vision engine</h3>${running ? `<span class="pill live">${engine.fps} fps</span>` : '<span class="pill simulated">idle</span>'}</div>
+    <div class="side-card-head"><h3>Vision engine${activeSession !== 'main' ? ` · ${esc(activeSession)}` : ''}</h3>${ui.visionStreamState === 'open' ? '<span class="badge okbadge" title="Server-sent events: frames are pushed">push</span>' : ''}${running ? `<span class="pill live">${engine.fps} fps</span>` : '<span class="pill simulated">idle</span>'}</div>
     <div class="side-card-body">
       <p class="muted small" style="margin-bottom:8px">Captures the desktop several times a second and keeps only the frames that changed. Each new frame is split into 12 sections, so a reader can look at the part that moved; labelled elements keep their identity while they move; and the loop stops when the goal is reached.</p>
       <div class="row wrap" style="gap:6px;align-items:center">
@@ -1965,6 +2059,22 @@ function renderVisionEngine() {
         <button class="btn btn-sm" data-act="vision-goal">Set goal</button>
         <button class="btn btn-sm btn-ghost" data-act="vision-goal" data-reached="1">Mark reached</button>
       </div>
+      <div class="row wrap section-gap" style="gap:6px;align-items:center">
+        <span class="dim small">Session</span>
+        ${sessions.map((s) => `<button class="btn btn-sm ${s.id === activeSession ? 'btn-primary' : 'btn-ghost'}" data-act="vision-session-use" data-id="${esc(s.id)}" title="${esc(s.dir || 'data/vision')}">${esc(s.name)}${s.isolated ? ' · isolated' : ''}</button>`).join('')}
+        <input class="input" id="vision-session-id" placeholder="new session" style="width:110px">
+        <button class="btn btn-sm" data-act="vision-session" data-mode="open">Open isolated</button>
+        ${activeSession !== 'main' ? '<button class="btn btn-sm btn-ghost" data-act="vision-session" data-mode="close">Close</button>' : ''}
+      </div>
+      <p class="dim small" style="margin:6px 0 0">Each session has its own engine, its own capture worker and its own frame ring, so live control and a verifying run never stop or overwrite each other.</p>
+      <div class="row wrap section-gap" style="gap:6px;align-items:center">
+        ${control.running ? `<span class="badge ai">live control · ${control.steps || 0} step(s)</span>` : '<span class="dim small">video mode</span>'}
+        <input class="input" id="vision-control-goal" placeholder="What should happen on screen" value="${esc(control.goal || goal.text || '')}" style="flex:1;min-width:150px">
+        <button class="btn btn-sm ${control.running ? 'btn-ghost' : 'btn-primary'}" data-act="vision-control" data-mode="${control.running ? 'stop' : 'start'}">${control.running ? 'Stop control' : 'Live control'}</button>
+        <span class="dim small">${control.running ? `${control.retries || 0} retr${Number(control.retries) === 1 ? 'y' : 'ies'} · ${control.replans || 0} replan(s)${control.busy ? ' · thinking…' : ''}` : 'one action at a time, retried then re-aimed'}</span>
+      </div>
+      ${(control.history || []).length ? `<div class="section-gap"><span class="dim small">Live control log</span><ul class="small" style="margin:4px 0 0;padding-left:16px">${control.history.slice(0, 6).map((entry) => `<li>${esc(entry.action || '')} <span class="dim">· ${entry.changed === true ? 'screen changed' : entry.changed === false ? 'no change' : 'no check'}${entry.reason ? ` · ${esc(entry.reason)}` : ''}</span></li>`).join('')}</ul></div>` : ''}
+      ${control.stopReason && !control.running ? `<p class="small dim section-gap" style="margin:0">Last live control: ${esc(control.stopReason)}</p>` : ''}
       <div class="row wrap section-gap" style="gap:6px;align-items:center">
         <button class="btn btn-sm ${review.enabled ? 'btn-ghost' : ''}" data-act="vision-review" data-mode="${review.enabled ? 'stop' : 'start'}">${review.enabled ? 'Stop labelling' : 'Label with model'}</button>
         <button class="btn btn-sm btn-ghost" data-act="vision-review-now"${current ? '' : ' disabled'}>Label now</button>
@@ -1984,10 +2094,18 @@ function renderVisionEngine() {
 
 async function loadVision() {
   try {
-    const res = await api('/api/vision');
+    const res = await api(`/api/vision${ui.visionSession && ui.visionSession !== 'main' ? `?session=${encodeURIComponent(ui.visionSession)}` : ''}`);
     if (!res.ok || !res.vision) return;
+    // A session that was swept while its tab was open falls back to the console
+    // stream instead of showing the main engine under another session's name.
+    if (!res.session && ui.visionSession && ui.visionSession !== 'main') ui.visionSession = 'main';
     ui.vision = res.vision;
     ui.visionReview = res.review || ui.visionReview || {};
+    ui.visionSessions = res.sessions || ui.visionSessions || [];
+    ui.visionControl = res.control || ui.visionControl || {};
+    ui.visionStreamInfo = res.stream || ui.visionStreamInfo || {};
+    if (res.session?.id) ui.visionSession = res.session.id;
+    openVisionStream();
     const card = document.getElementById('vision-card');
     if (card) card.outerHTML = renderVisionEngine();
   } catch {
@@ -8472,7 +8590,7 @@ async function runAction(name, ds, el) {
     }
     case 'vision': {
       const mode = ds.mode === 'stop' ? 'stop' : 'start';
-      const res = await api('/api/vision', { method: 'POST', body: { action: mode } });
+      const res = await api('/api/vision', { method: 'POST', body: { action: mode, session: ui.visionSession || 'main' } });
       if (!res.ok) {
         ui.controlOut = res.error || 'The vision engine did not start.';
         ui.controlErr = true;
@@ -8489,8 +8607,8 @@ async function runAction(name, ds, el) {
       const reached = ds.reached === '1';
       const goalText = document.getElementById('vision-goal')?.value || '';
       const res = reached
-        ? await api('/api/vision', { method: 'POST', body: { action: 'goal', reached: true, reason: 'the operator marked the goal reached' } })
-        : await api('/api/vision', { method: 'POST', body: { action: 'goal', goal: goalText } });
+        ? await api('/api/vision', { method: 'POST', body: { action: 'goal', session: ui.visionSession || 'main', reached: true, reason: 'the operator marked the goal reached' } })
+        : await api('/api/vision', { method: 'POST', body: { action: 'goal', session: ui.visionSession || 'main', goal: goalText } });
       if (!res.ok) {
         ui.controlOut = res.error || 'The goal was not updated.';
         ui.controlErr = true;
@@ -8504,7 +8622,7 @@ async function runAction(name, ds, el) {
     }
     case 'vision-review': {
       const mode = ds.mode === 'stop' ? 'stop' : 'start';
-      const res = await api('/api/vision', { method: 'POST', body: { action: 'review', enabled: mode === 'start' } });
+      const res = await api('/api/vision', { method: 'POST', body: { action: 'review', session: ui.visionSession || 'main', enabled: mode === 'start' } });
       if (!res.ok) {
         ui.controlOut = res.error || 'Model labelling did not change.';
         ui.controlErr = true;
@@ -8519,7 +8637,7 @@ async function runAction(name, ds, el) {
       break;
     }
     case 'vision-review-now': {
-      const res = await api('/api/vision', { method: 'POST', body: { action: 'review-now' } });
+      const res = await api('/api/vision', { method: 'POST', body: { action: 'review-now', session: ui.visionSession || 'main' } });
       if (!res.ok) {
         ui.controlOut = res.error || 'The frame was not reviewed.';
         ui.controlErr = true;
@@ -8533,8 +8651,66 @@ async function runAction(name, ds, el) {
       render();
       break;
     }
+    case 'vision-session-use': {
+      ui.visionSession = ds.id || 'main';
+      try { ui.visionStream?.close?.(); } catch { /* already closed */ }
+      ui.visionStream = null;
+      ui.visionStreamState = 'connecting';
+      await loadVision();
+      render();
+      break;
+    }
+    case 'vision-session': {
+      const closing = ds.mode === 'close';
+      const id = (document.getElementById('vision-session-id')?.value || '').trim();
+      const res = await api('/api/vision', {
+        method: 'POST',
+        body: closing ? { action: 'session-close', session: ui.visionSession } : { action: 'session-open', session: id, name: id },
+      });
+      if (!res.ok) {
+        ui.controlOut = res.error || 'The vision session did not change.';
+        ui.controlErr = true;
+        render();
+        break;
+      }
+      ui.visionSessions = res.sessions || ui.visionSessions;
+      ui.visionSession = closing ? 'main' : id || 'main';
+      try { ui.visionStream?.close?.(); } catch { /* already closed */ }
+      ui.visionStream = null;
+      ui.controlOut = closing ? 'Session closed; its frames were removed.' : 'Session opened with its own stream and frame ring.';
+      ui.controlErr = false;
+      await loadVision();
+      render();
+      break;
+    }
+    case 'vision-control': {
+      const stopping = ds.mode === 'stop';
+      const goalText = document.getElementById('vision-control-goal')?.value || ui.visionControl?.goal || '';
+      const res = await api('/api/vision', {
+        method: 'POST',
+        body: {
+          action: stopping ? 'control-stop' : 'control',
+          session: ui.visionSession || 'main',
+          goal: goalText,
+          fps: 4,
+          maxSteps: 40,
+        },
+      });
+      if (!res.ok) {
+        ui.controlOut = res.error || 'Live control did not change.';
+        ui.controlErr = true;
+        render();
+        break;
+      }
+      ui.visionControl = res.control || ui.visionControl;
+      ui.controlOut = stopping ? 'Live control stopped.' : `Live control is watching the screen for “${goalText}”.`;
+      ui.controlErr = false;
+      await loadVision();
+      render();
+      break;
+    }
     case 'vision-digest': {
-      const res = await api('/api/vision', { method: 'POST', body: { action: 'digest', count: 30 } });
+      const res = await api('/api/vision', { method: 'POST', body: { action: 'digest', session: ui.visionSession || 'main', count: 30 } });
       if (!res.ok) {
         ui.controlOut = res.error || 'There is no frame history to review yet.';
         ui.controlErr = true;
