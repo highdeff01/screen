@@ -1,32 +1,85 @@
 {
   "version": 1,
   "by": "sentinel",
-  "updatedAt": "2026-11-28T18:28:39.402Z",
-  "head": "e3d82e761b22",
+  "updatedAt": "2026-11-28T21:57:06.827Z",
+  "head": "e7d302972239",
   "lastRun": {
-    "at": "2026-11-28T18:28:39.376Z",
+    "at": "2026-11-28T21:57:06.776Z",
     "ok": false,
-    "tests": 1008,
-    "pass": 999,
-    "fail": 2,
+    "tests": 1012,
+    "pass": 1000,
+    "fail": 5,
     "isolated": true,
     "failingTests": [
-      "boot renders state without waiting for optional startup requests (35.218ms)",
-      "state polling retries failures without overlapping polls (4.4195ms)"
+      "boot renders state without waiting for optional startup requests (32.8912ms)",
+      "a live run runs the declared hand-off steps after its verdict (30516.6325ms)",
+      "a recheck settles a timed-out wait without repeating the step that passed (13570.9831ms)",
+      "continue-after passes completed steps through and runs only the remainder (14794.0676ms)",
+      "state polling retries failures without overlapping polls (2.8775ms)"
     ]
   },
   "open": 20,
   "items": [
     {
-      "id": "sent_mx0quhbzdc9302",
-      "at": "2026-11-28T18:28:39.376Z",
+      "id": "sent_mx0yak4844f225",
+      "at": "2026-11-28T21:57:06.776Z",
+      "status": "queued",
+      "attempts": 1,
+      "fail": 5,
+      "pass": 1000,
+      "tests": [
+        "boot renders state without waiting for optional startup requests (32.8912ms)",
+        "a live run runs the declared hand-off steps after its verdict (30516.6325ms)",
+        "a recheck settles a timed-out wait without repeating the step that passed (13570.9831ms)",
+        "continue-after passes completed steps through and runs only the remainder (14794.0676ms)",
+        "state polling retries failures without overlapping polls (2.8775ms)"
+      ],
+      "details": [
+        {
+          "name": "boot renders state without waiting for optional startup requests",
+          "file": "",
+          "line": null,
+          "message": ""
+        },
+        {
+          "name": "a live run runs the declared hand-off steps after its verdict",
+          "file": "",
+          "line": null,
+          "message": ""
+        },
+        {
+          "name": "a recheck settles a timed-out wait without repeating the step that passed",
+          "file": "",
+          "line": null,
+          "message": ""
+        },
+        {
+          "name": "continue-after passes completed steps through and runs only the remainder",
+          "file": "",
+          "line": null,
+          "message": ""
+        },
+        {
+          "name": "state polling retries failures without overlapping polls",
+          "file": "",
+          "line": null,
+          "message": ""
+        }
+      ],
+      "plan": "",
+      "planError": "",
+      "report": "must-check/2026-11-28T21-57-06-boot-renders-state-without-waiting-for-o.md"
+    },
+    {
+      "id": "sent_mx0qub39108f34",
+      "at": "2026-11-28T18:28:31.269Z",
       "status": "queued",
       "attempts": 1,
       "fail": 2,
       "pass": 999,
       "tests": [
-        "boot renders state without waiting for optional startup requests (35.218ms)",
-        "state polling retries failures without overlapping polls (4.4195ms)"
+        "boot renders state without waiting for optional startup requests (23.169ms)",
+        "state polling retries failures without overlapping polls (2.4456ms)"
       ],
       "details": [
         {
@@ -44,7 +97,7 @@
       ],
       "plan": "",
       "planError": "",
-      "report": "must-check/2026-11-28T18-28-39-boot-renders-state-without-waiting-for-o.md"
+      "report": "must-check/2026-11-28T18-28-31-boot-renders-state-without-waiting-for-o.md"
     },
     {
       "id": "sent_mx0mi9lr939a5e",
@@ -593,28 +646,6 @@
       "plan": "",
       "planError": "",
       "report": "must-check/2026-11-26T09-58-48-the-engine-executes-an-ai-replacement-an.md"
-    },
-    {
-      "id": "sent_mwwpm8d8b95078",
-      "at": "2026-11-25T22:43:10.172Z",
-      "status": "queued",
-      "attempts": 1,
-      "fail": 1,
-      "pass": 749,
-      "tests": [
-        "verified backend permits saved and explicit live modes (11687.0838ms)"
-      ],
-      "details": [
-        {
-          "name": "verified backend permits saved and explicit live modes",
-          "file": "",
-          "line": null,
-          "message": ""
-        }
-      ],
-      "plan": "",
-      "planError": "",
-      "report": "must-check/2026-11-25T22-43-10-verified-backend-permits-saved-and-expli.md"
     }
   ]
 }
