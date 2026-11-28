@@ -1,24 +1,51 @@
 {
   "version": 1,
   "by": "sentinel",
-  "updatedAt": "2026-11-28T10:02:54.285Z",
-  "head": "d69e9785468f",
+  "updatedAt": "2026-11-28T10:36:03.313Z",
+  "head": "c631df469bcd",
   "lastRun": {
-    "at": "2026-11-28T10:02:54.273Z",
+    "at": "2026-11-28T10:36:03.303Z",
     "ok": false,
-    "tests": 962,
-    "pass": 951,
-    "fail": 4,
+    "tests": 967,
+    "pass": 958,
+    "fail": 2,
     "isolated": true,
     "failingTests": [
-      "state polling retries failures without overlapping polls (2.0525ms)",
-      "boot renders state without waiting for optional startup requests (33.2054ms)",
-      "a frame that could not be captured is unverified, not a mismatch (12885.2916ms)",
-      "the retry budget is respected when retries are turned off (12696.1558ms)"
+      "state polling retries failures without overlapping polls (1.4806ms)",
+      "boot renders state without waiting for optional startup requests (21.7731ms)"
     ]
   },
   "open": 20,
   "items": [
+    {
+      "id": "sent_mx09ypnra27fae",
+      "at": "2026-11-28T10:36:03.303Z",
+      "status": "queued",
+      "attempts": 1,
+      "fail": 2,
+      "pass": 958,
+      "tests": [
+        "state polling retries failures without overlapping polls (1.4806ms)",
+        "boot renders state without waiting for optional startup requests (21.7731ms)"
+      ],
+      "details": [
+        {
+          "name": "state polling retries failures without overlapping polls",
+          "file": "",
+          "line": null,
+          "message": ""
+        },
+        {
+          "name": "boot renders state without waiting for optional startup requests",
+          "file": "",
+          "line": null,
+          "message": ""
+        }
+      ],
+      "plan": "",
+      "planError": "",
+      "report": "must-check/2026-11-28T10-36-03-state-polling-retries-failures-without-o.md"
+    },
     {
       "id": "sent_mx08s2wxbcf79b",
       "at": "2026-11-28T10:02:54.273Z",
@@ -544,28 +571,6 @@
       "plan": "",
       "planError": "",
       "report": "must-check/2026-11-22T10-32-41-suite.md"
-    },
-    {
-      "id": "sent_mwo9p7552f5ba7",
-      "at": "2026-11-20T00:55:25.289Z",
-      "status": "queued",
-      "attempts": 1,
-      "fail": 1,
-      "pass": 646,
-      "tests": [
-        "live requests are refused before reaching the API when the backend is unavailable (5.3522ms)"
-      ],
-      "details": [
-        {
-          "name": "live requests are refused before reaching the API when the backend is unavailable",
-          "file": "",
-          "line": null,
-          "message": ""
-        }
-      ],
-      "plan": "",
-      "planError": "",
-      "report": "must-check/2026-11-20T00-55-25-live-requests-are-refused-before-reachin.md"
     }
   ]
 }
