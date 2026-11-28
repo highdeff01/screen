@@ -648,6 +648,11 @@ function pump() {
   }
 }
 
+/** Start whatever queued run fits now, e.g. after the limit was raised. */
+export function resumeQueue() {
+  pump();
+}
+
 function pushLog(run, level, message, stepId = null) {
   run.log.push({ at: now(), level, message, stepId });
   if (run.log.length > 400) run.log = run.log.slice(-400);

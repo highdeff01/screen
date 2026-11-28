@@ -90,6 +90,46 @@ test('the run limit is clamped and defaults to three', () => {
   assert.equal(engine.parallelRunLimit(), 1, 'one restores the old one-at-a-time behaviour');
 });
 
+test('raising the limit starts the runs that were waiting for a slot', { timeout: 30000 }, async () => {
+  const d = resetDb({ parallelRuns: 1 });
+  const wfA = workflow('wf_slot_a');
+  const wfB = workflow('wf_slot_b');
+  d.workflows = [wfA, wfB];
+
+  let release;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  const probe = (tag) => ({
+    async executeStep() {
+      await gate;
+      return { output: `${tag} done`, evidence: [] };
+    },
+    async captureScreenSignature() {
+      return { at: new Date().toISOString(), cells: [] };
+    },
+  });
+
+  const runA = engine.createRun(wfA, { dryRun: true, probe: probe('A'), repair: false, aiReplan: false });
+  const runB = engine.createRun(wfB, { dryRun: true, probe: probe('B'), repair: false, aiReplan: false });
+  await sleep(80);
+  assert.equal(engine.findRun(runA.id)?.status, 'running', 'the only slot went to the first run');
+  assert.equal(engine.findRun(runB.id)?.status, 'queued', 'the second run waits for a slot');
+
+  d.settings.parallelRuns = 2;
+  engine.resumeQueue();
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline && engine.findRun(runB.id)?.status !== 'running') await sleep(20);
+  release();
+
+  const [doneA, doneB] = await Promise.all([
+    engine.waitForRun(runA.id, { timeoutMs: 20000, intervalMs: 20 }),
+    engine.waitForRun(runB.id, { timeoutMs: 20000, intervalMs: 20 }),
+  ]);
+  assert.equal(doneA.status, 'passed');
+  assert.equal(doneB.status, 'passed', 'the waiting run started once the limit was raised');
+});
+
 test('two simulated workflows are in flight at the same time', { timeout: 30000 }, async () => {
   const d = resetDb();
   const wfA = workflow('wf_parallel_a');

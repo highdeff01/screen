@@ -282,6 +282,7 @@ import {
   tickAgentNow,
   activeRunCount,
   queuedCount,
+  resumeQueue,
   workflowStats,
   writeRunNote as writeNoteForRun,
   setRunFinishedHook,
@@ -4521,6 +4522,8 @@ route('PATCH', /^\/api\/settings$/, async (req, res) => {
   if (body.parallelRuns !== undefined) {
     const wanted = Math.round(Number(body.parallelRuns));
     s.parallelRuns = Number.isFinite(wanted) ? Math.max(1, Math.min(6, wanted)) : 3;
+    // A raised limit should start the runs that were waiting for a slot.
+    resumeQueue();
   }
   if (body.autoSync !== undefined) s.autoSync = Boolean(body.autoSync);
   if (body.autoPull !== undefined) s.autoPull = Boolean(body.autoPull);
