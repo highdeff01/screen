@@ -21,6 +21,7 @@ import {
   resolveInside,
   writeFileDurable,
 } from './store.js';
+import { claimDataFolder, releaseDataFolder, updateDataLock } from './data-lock.js';
 import { executeStep, runPowerShell, STEP_TYPES, IS_WINDOWS, describe, findUiElement, findUiElementByOcr, readFocusedElement, readForegroundWindow, readScreenContext } from './automation.js';
 import { liveControl, probeLiveBackend } from './platform.js';
 import { agentGoal, checkGoal, recordGoalCheck } from './goal-check.js';
@@ -315,6 +316,27 @@ const HOST = process.platform !== 'win32' && process.argv.includes('--sandbox-pr
 const PUBLIC = path.join(ROOT, 'public');
 const PYTHON = path.join(DATA, 'python');
 fs.mkdirSync(PYTHON, { recursive: true });
+// One console per data folder: a second instance on the same database would
+// overwrite the first one's saves, so it names the console that owns the folder
+// and stops instead of starting quietly.
+const SHARED_DATA = process.env.SIGHTLINE_ALLOW_SHARED_DATA === '1';
+let dataClaim = { ok: true, owner: null };
+try {
+  dataClaim = claimDataFolder(DATA);
+} catch (err) {
+  console.warn(`[data] Could not check who owns ${DATA}: ${err.message}`);
+}
+if (!dataClaim.ok) {
+  const owner = dataClaim.owner || {};
+  const who = owner.pid ? ` (pid ${owner.pid})` : '';
+  const where = owner.port ? `http://127.0.0.1:${owner.port}` : 'another address';
+  if (!SHARED_DATA) {
+    console.error(`[data] ${DATA} is already owned by the console on ${where}${who}.`);
+    console.error('[data] Open that console, stop it, or start with SIGHTLINE_ALLOW_SHARED_DATA=1 to share the folder.');
+    process.exit(1);
+  }
+  console.warn(`[data] Sharing ${DATA} with the console on ${where}${who} — saves from either one can overwrite the other.`);
+}
 const MIME = {
   '.html': 'text/html; charset=utf-8',
   '.css': 'text/css; charset=utf-8',
@@ -5112,6 +5134,7 @@ server.on('error', (err) => {
   if (err?.code !== 'EADDRINUSE') return;
   if (PORT - START_PORT + 1 >= PORT_ATTEMPTS || PORT >= 65535) {
     console.error(`Ports ${START_PORT}-${PORT} are all in use — start on a free one: PORT=<port> npm start`);
+    releaseDataFolder(DATA);
     process.exit(1);
   }
   console.warn(`Port ${PORT} is already in use — trying ${PORT + 1}.`);
@@ -5124,6 +5147,7 @@ server.on('error', (err) => {
 server.listen(PORT, HOST, onListening);
 
 function onListening() {
+  updateDataLock(DATA, PORT);
   ensureToolFiles();
   ensurePythonFiles();
   reconcileStuckRecoveryPacks();
@@ -5213,11 +5237,13 @@ function shutdown() {
   stopShare();
   stopGateway();
   flush();
+  releaseDataFolder(DATA);
   server.close(() => process.exit(0));
   setTimeout(() => process.exit(0), 1500);
 }
 process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);
+process.on('exit', () => releaseDataFolder(DATA));
 // A crash is a message too: report it with the stack into the synced
 // must-check folder and keep the console alive if the failure is contained.
 process.on('uncaughtException', (err) => {
