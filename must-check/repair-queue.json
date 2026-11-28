@@ -1,22 +1,51 @@
 {
   "version": 1,
   "by": "sentinel",
-  "updatedAt": "2026-11-28T12:25:13.034Z",
-  "head": "eda19d87c1ba",
+  "updatedAt": "2026-11-28T13:24:40.789Z",
+  "head": "5d563ae1ac2a",
   "lastRun": {
-    "at": "2026-11-28T12:25:13.020Z",
+    "at": "2026-11-28T13:24:40.778Z",
     "ok": false,
     "tests": 967,
     "pass": 958,
     "fail": 2,
     "isolated": true,
     "failingTests": [
-      "state polling retries failures without overlapping polls (1.2957ms)",
-      "boot renders state without waiting for optional startup requests (19.3343ms)"
+      "state polling retries failures without overlapping polls (1.5634ms)",
+      "boot renders state without waiting for optional startup requests (20.4116ms)"
     ]
   },
   "open": 20,
   "items": [
+    {
+      "id": "sent_mx0fzkcq8e171f",
+      "at": "2026-11-28T13:24:40.778Z",
+      "status": "queued",
+      "attempts": 1,
+      "fail": 2,
+      "pass": 958,
+      "tests": [
+        "state polling retries failures without overlapping polls (1.5634ms)",
+        "boot renders state without waiting for optional startup requests (20.4116ms)"
+      ],
+      "details": [
+        {
+          "name": "state polling retries failures without overlapping polls",
+          "file": "",
+          "line": null,
+          "message": ""
+        },
+        {
+          "name": "boot renders state without waiting for optional startup requests",
+          "file": "",
+          "line": null,
+          "message": ""
+        }
+      ],
+      "plan": "",
+      "planError": "",
+      "report": "must-check/2026-11-28T13-24-40-state-polling-retries-failures-without-o.md"
+    },
     {
       "id": "sent_mx0dv3gc6b1568",
       "at": "2026-11-28T12:25:13.020Z",
@@ -565,28 +594,6 @@
       "plan": "",
       "planError": "",
       "report": "must-check/2026-11-25T19-16-48-keep-running-continues-after-an-unrepair.md"
-    },
-    {
-      "id": "sent_mww1htpw08ff5d",
-      "at": "2026-11-25T11:27:53.787Z",
-      "status": "queued",
-      "attempts": 1,
-      "fail": 1,
-      "pass": 737,
-      "tests": [
-        "keep-running continues after an unrepaired failure, up to its cap (14891.5227ms)"
-      ],
-      "details": [
-        {
-          "name": "keep-running continues after an unrepaired failure, up to its cap",
-          "file": "",
-          "line": null,
-          "message": ""
-        }
-      ],
-      "plan": "",
-      "planError": "",
-      "report": "must-check/2026-11-25T11-27-53-keep-running-continues-after-an-unrepair.md"
     }
   ]
 }
