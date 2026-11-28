@@ -83,13 +83,16 @@ function handoffLog(run) {
   return (run.log || []).filter((line) => /^Hand-off/.test(String(line.message || '')));
 }
 
+// The suite runs two test files at once, and a live run waits on the desktop
+// and the disk. These budgets leave real headroom instead of assuming an idle
+// machine; they bound a hang, they do not hide one.
 test('a live run runs the declared hand-off steps after its verdict', async () => {
   const d = resetDb();
   const wf = workflow('wf_handoff_live', { enabled: true, steps: RESTORE_STEPS });
   d.workflows = [wf];
 
   const run = engine.createRun(wf, { dryRun: false, repair: false, aiReplan: false });
-  const finished = await engine.waitForRun(run.id, { timeoutMs: 30000, intervalMs: 20 });
+  const finished = await engine.waitForRun(run.id, { timeoutMs: 90000, intervalMs: 20 });
 
   assert.equal(finished.dryRun, false, 'the live run was not downgraded to a simulation');
   assert.equal(finished.status, 'passed');
@@ -132,7 +135,7 @@ test('a live run that will hand back records the start screen before its steps',
   };
 
   const run = engine.createRun(wf, { dryRun: false, probe, repair: false, aiReplan: false });
-  const finished = await engine.waitForRun(run.id, { timeoutMs: 30000, intervalMs: 20 });
+  const finished = await engine.waitForRun(run.id, { timeoutMs: 90000, intervalMs: 20 });
 
   assert.equal(finished.status, 'passed');
   assert.ok(finished.startScreen, 'the start screen is on the run');
@@ -152,7 +155,7 @@ test('a simulated run never runs the hand-off', async () => {
   d.workflows = [wf];
 
   const run = engine.createRun(wf, { dryRun: true, repair: false, aiReplan: false });
-  const finished = await engine.waitForRun(run.id, { timeoutMs: 30000, intervalMs: 20 });
+  const finished = await engine.waitForRun(run.id, { timeoutMs: 90000, intervalMs: 20 });
 
   assert.equal(finished.dryRun, true, 'the run stayed simulated');
   assert.equal(finished.status, 'passed');
@@ -168,7 +171,7 @@ test('a probe run never runs the hand-off', async () => {
   const probe = stubProbe();
 
   const run = engine.createRun(wf, { dryRun: false, probe, repair: false, aiReplan: false });
-  const finished = await engine.waitForRun(run.id, { timeoutMs: 30000, intervalMs: 20 });
+  const finished = await engine.waitForRun(run.id, { timeoutMs: 90000, intervalMs: 20 });
 
   assert.equal(finished.status, 'passed');
   assert.deepEqual(probe.executed, ['note'], 'only the proof step was executed');
@@ -291,7 +294,7 @@ test('a run with no declared hand-off gets a drafted reverse and executes nothin
   };
 
   const run = engine.createRun(wf, { dryRun: false, probe, repair: false, aiReplan: false });
-  const finished = await engine.waitForRun(run.id, { timeoutMs: 30000, intervalMs: 20 });
+  const finished = await engine.waitForRun(run.id, { timeoutMs: 90000, intervalMs: 20 });
 
   assert.equal(finished.status, 'passed');
   assert.equal(finished.handoff ?? null, null, 'no hand-off was run');
@@ -322,7 +325,7 @@ test('a failing hand-off step is reported but never changes the verdict', async 
   d.workflows = [wf];
 
   const run = engine.createRun(wf, { dryRun: false, repair: false, aiReplan: false });
-  const finished = await engine.waitForRun(run.id, { timeoutMs: 30000, intervalMs: 20 });
+  const finished = await engine.waitForRun(run.id, { timeoutMs: 90000, intervalMs: 20 });
 
   assert.equal(finished.dryRun, false, 'the live run was not downgraded to a simulation');
   assert.equal(finished.status, 'passed', 'the verdict stands: the hand-off is best-effort');

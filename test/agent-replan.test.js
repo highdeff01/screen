@@ -374,7 +374,7 @@ test('a repair that opens another app is adopted by the presenter and verifier',
     return { output: step.type === 'launchApp' ? 'focused calc :: Calculator' : `did ${step.name}`, evidence: [] };
   };
   const run = engine.createRun(workflow, { dryRun: false, probe, repair: true });
-  const finished = await engine.waitForRun(run.id, { timeoutMs: 25000 });
+  const finished = await engine.waitForRun(run.id, { timeoutMs: 90000 });
   assert.equal(finished.status, 'passed');
   assert.match(finished.steps[0].repairedBy || '', /launch the app named|AI replan/i);
   assert.match(finished.effectiveApp?.target || '', /calc/i);

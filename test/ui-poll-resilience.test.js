@@ -69,7 +69,7 @@ test('state polling retries failures without overlapping polls', async () => {
     ui: { data: { counts: {} } },
     document: { activeElement: null, hidden: false },
     render: () => {}, loadAuth: () => {}, loadHealth: () => {},
-    loadCaptures: async () => {}, loadChat: async () => {},
+    loadCaptures: async () => {}, loadChat: async () => {}, loadVision: async () => {},
     refresh: () => {
       calls++;
       if (calls === 1) return Promise.reject(new Error('render failed'));

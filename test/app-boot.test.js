@@ -21,6 +21,7 @@ test('boot renders state without waiting for optional startup requests', async (
     loadCaptures: () => { calls.push('captures'); return pending; },
     loadHealth: () => { calls.push('health'); return pending; },
     loadChat: () => { calls.push('chat'); return pending; },
+    loadVision: () => { calls.push('vision'); return pending; },
     render: () => calls.push(ui.data ? 'render-state' : 'render-loading'),
     document: { activeElement: null, hidden: false },
     setTimeout: () => calls.push('poll-scheduled'),

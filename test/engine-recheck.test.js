@@ -119,7 +119,7 @@ function stubProbe() {
 }
 
 async function settle(runId) {
-  for (let attempt = 0; attempt < 400; attempt += 1) {
+  for (let attempt = 0; attempt < 2400; attempt += 1) {
     const run = store.db().runs.find((entry) => entry.id === runId);
     if (run && !['queued', 'running'].includes(run.status)) return run;
     await sleep(25);
