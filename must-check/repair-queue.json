@@ -1,19 +1,43 @@
 {
   "version": 1,
   "by": "sentinel",
-  "updatedAt": "2026-11-28T01:49:20.838Z",
-  "head": "c2525e7f9856",
+  "updatedAt": "2026-11-28T02:51:46.296Z",
+  "head": "73a50d98164a",
   "lastRun": {
-    "at": "2026-11-28T01:49:20.837Z",
-    "ok": true,
+    "at": "2026-11-28T02:51:46.189Z",
+    "ok": false,
     "tests": 945,
-    "pass": 938,
-    "fail": 0,
+    "pass": 937,
+    "fail": 1,
     "isolated": true,
-    "failingTests": []
+    "failingTests": [
+      "a repair that opens another app is adopted by the presenter and verifier (25036.7668ms)"
+    ]
   },
-  "open": 17,
+  "open": 18,
   "items": [
+    {
+      "id": "sent_mwztdmym085be5",
+      "at": "2026-11-28T02:51:46.189Z",
+      "status": "queued",
+      "attempts": 1,
+      "fail": 1,
+      "pass": 937,
+      "tests": [
+        "a repair that opens another app is adopted by the presenter and verifier (25036.7668ms)"
+      ],
+      "details": [
+        {
+          "name": "a repair that opens another app is adopted by the presenter and verifier",
+          "file": "",
+          "line": null,
+          "message": ""
+        }
+      ],
+      "plan": "",
+      "planError": "",
+      "report": "must-check/2026-11-28T02-51-46-a-repair-that-opens-another-app-is-adopt.md"
+    },
     {
       "id": "sent_mwzklcl9983635",
       "at": "2026-11-27T22:45:49.437Z",

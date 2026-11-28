@@ -3862,13 +3862,6 @@ async function executeRun(runId) {
       lastMismatch?.stepId || null
     );
   }
-  // The verdict is part of the goal's story: one last check with the run settled.
-  try {
-    checkRunGoal(run, { goal: workflowGoal(workflow, run) });
-    persist();
-  } catch {
-    // Advisory, like every other goal check.
-  }
   // Closeout prediction: the state the run leaves behind, judged once.
   try {
     recordCloseout(run);
@@ -3909,6 +3902,16 @@ async function executeRun(runId) {
     run.goalUnverified = true;
     run.errorSummary = `Goal not verified: ${reason}.`;
     pushLog(run, 'warn', `Marked needs review: ${reason}.`);
+  }
+  // The verdict is part of the goal's story: one last check with the run settled.
+  // It is recorded after every status decision — a run whose steps all passed
+  // can still be sent to review just above — so the check describes how the run
+  // actually ended instead of calling a run complete that ends in review.
+  try {
+    checkRunGoal(run, { goal: workflowGoal(workflow, run) });
+    persist();
+  } catch {
+    // Advisory, like every other goal check.
   }
   // Decide after follow-up and goal verification, so a run whose commands all
   // passed but whose goal was not proved still gets an evidence-gathering pass.

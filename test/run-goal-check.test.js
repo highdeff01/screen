@@ -145,3 +145,32 @@ test('a failed step records what went wrong and what is still pending', async ()
   );
   assert.equal(finished.goalCheck.complete, false, 'the settled failed run stays uncompromised');
 });
+
+test('the verdict check is recorded after a passing run flips to review', async () => {
+  quietSettings();
+  const workflow = workflowWith(
+    [
+      { id: 'v1', type: 'screenshot', name: 'Capture the first screen', params: {} },
+      { id: 'v2', type: 'screenshot', name: 'Capture the second screen', params: {} },
+    ],
+    { name: 'Play a video in VLC', description: 'Open VLC and play a video.' }
+  );
+  store.db().workflows = [workflow];
+  // Every step passes, but nothing in the run ever touched VLC: the presenter
+  // withholds the goal and the finish path sends the run to review after the
+  // steps are already done.
+  const run = engine.createRun(workflow, { dryRun: false, probe: probeFor() });
+  const finished = await engine.waitForRun(run.id, { timeoutMs: 30000 });
+
+  assert.equal(finished.status, 'needs_review', 'all steps passed, but the app the goal names was never verified');
+  assert.equal(finished.goalCheck.complete, false, 'the verdict check reads the status the run actually ended with');
+  assert.equal(finished.goalCheck.status, 'incomplete');
+  assert.equal(finished.goalCheck.stepName, '', 'the verdict check belongs to the run, not a step');
+  assert.ok(
+    finished.goalCheck.wentWrong.some((item) => /needs review/i.test(item.what || '')),
+    'the check says the run went to review instead of claiming the goal was reached'
+  );
+  for (const check of (finished.goalChecks || []).filter((item) => item.stepId)) {
+    assert.equal(check.complete, null, 'a passing step of the plan is not the goal');
+  }
+});
